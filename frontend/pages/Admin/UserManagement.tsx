@@ -257,33 +257,21 @@ const UserFormModal: React.FC<{
 const ResetPasswordModal: React.FC<{
   user: User;
   onCancel: () => void;
-  onConfirm: (newPassword: string) => Promise<{ emailSent?: boolean; generatedPassword?: string; message?: string }>;
+  onConfirm: () => Promise<{ emailSent?: boolean; message?: string }>;
 }> = ({ user, onCancel, onConfirm }) => {
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [result, setResult] = useState<{ emailSent?: boolean; generatedPassword?: string; message?: string } | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [result, setResult] = useState<{ emailSent?: boolean; message?: string } | null>(null);
 
   const submit = async () => {
     setError('');
     setResult(null);
-    if (newPassword.length < 6) {
-      setError('Mật khẩu mới phải có ít nhất 6 ký tự.');
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      setError('Mật khẩu xác nhận không khớp.');
-      return;
-    }
     setSubmitting(true);
     try {
-      const response = await onConfirm(newPassword);
+      const response = await onConfirm();
       setResult(response);
-      setCopied(false);
     } catch {
-      setError('Đặt lại mật khẩu thất bại.');
+      setError('Tạo link đặt lại mật khẩu thất bại.');
     } finally {
       setSubmitting(false);
     }
@@ -303,44 +291,13 @@ const ResetPasswordModal: React.FC<{
         </div>
 
         <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">Mật khẩu mới</label>
-            <input
-              type="password"
-              value={newPassword}
-              onChange={e => setNewPassword(e.target.value)}
-              className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-300 outline-none text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">Xác nhận mật khẩu mới</label>
-            <input
-              type="password"
-              value={confirmPassword}
-              onChange={e => setConfirmPassword(e.target.value)}
-              className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-300 outline-none text-sm"
-            />
+          <div className="text-sm text-gray-600 bg-orange-50 border border-orange-100 rounded-xl px-3 py-3">
+            Hệ thống sẽ tạo link đặt lại mật khẩu một lần và gửi đến email của người dùng. Mật khẩu mới không được hiển thị trong trang quản trị.
           </div>
           {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-3 py-2">{error}</div>}
           {result && (
             <div className={`text-sm rounded-xl px-3 py-3 border ${result.emailSent ? 'text-emerald-700 bg-emerald-50 border-emerald-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
-              <div className="font-semibold">{result.emailSent ? 'Đã gửi mail thành công cho người dùng.' : 'Đã đặt lại mật khẩu nhưng gửi mail chưa thành công.'}</div>
-              {result.generatedPassword && (
-                <div className="mt-2 flex items-center justify-between gap-3 rounded-lg bg-white/70 px-3 py-2 border border-white/60">
-                  <div>Mật khẩu hiện tại: <span className="font-bold">{result.generatedPassword}</span></div>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      await navigator.clipboard.writeText(result.generatedPassword || '');
-                      setCopied(true);
-                      setTimeout(() => setCopied(false), 1800);
-                    }}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 text-white text-xs font-bold hover:bg-slate-700 transition-colors"
-                  >
-                    <Copy size={12} /> {copied ? 'Đã copy' : 'Copy'}
-                  </button>
-                </div>
-              )}
+              <div className="font-semibold">{result.emailSent ? 'Đã gửi link đặt lại mật khẩu cho người dùng.' : 'Đã tạo link nhưng gửi mail chưa thành công.'}</div>
               {result.message && <div className="mt-2 text-xs opacity-80">{result.message}</div>}
             </div>
           )}
@@ -355,7 +312,7 @@ const ResetPasswordModal: React.FC<{
             disabled={submitting}
             className="px-4 py-2 text-sm font-bold bg-orange-500 text-white rounded-xl hover:bg-orange-600 transition-colors disabled:opacity-60"
           >
-            {submitting ? 'Đang lưu...' : 'Đặt lại mật khẩu'}
+            {submitting ? 'Đang tạo link...' : 'Gửi link đặt lại'}
           </button>
         </div>
       </div>
@@ -433,26 +390,7 @@ export default function AdminUserManagement() {
       }
       if (pr.ok) {
         const requests = await pr.json();
-        const enriched = await Promise.all(
-          requests.map(async (request: PasswordResetRequest) => {
-            try {
-              const res = await apiFetch('/api/auth/forgot-password', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email: request.email }),
-              });
-              const data = await res.json().catch(() => ({}));
-              return {
-                ...request,
-                resetLink: data.resetLink,
-                expiresAt: data.expiresAt,
-              };
-            } catch {
-              return request;
-            }
-          })
-        );
-        setResetRequests(enriched);
+        setResetRequests(requests);
       }
     } catch (e: any) { setError(e.message); }
     finally { setLoading(false); }
@@ -488,11 +426,11 @@ export default function AdminUserManagement() {
     await fetchUsers();
   };
 
-  const handleResetPassword = async (u: User, newPassword: string) => {
+  const handleResetPassword = async (u: User) => {
     const res = await apiFetch(`/api/users/${u.id}/reset-password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ newPassword }),
+      body: JSON.stringify({}),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -501,15 +439,14 @@ export default function AdminUserManagement() {
     }
     showToast(
       data.emailSent
-        ? `Đã đặt lại mật khẩu và gửi mail cho ${u.name}`
-        : `Đã đặt lại mật khẩu cho ${u.name}, nhưng gửi mail chưa thành công`,
+        ? `Đã gửi link đặt lại mật khẩu cho ${u.name}`
+        : `Đã tạo link đặt lại mật khẩu cho ${u.name}, nhưng gửi mail chưa thành công`,
       data.emailSent ? 'success' : 'error'
     );
     await fetchUsers();
     return {
       emailSent: data.emailSent,
-      generatedPassword: data.generatedPassword,
-      message: data.emailSent ? 'Người dùng đã được thông báo qua email.' : 'Anh vui lòng kiểm tra lại cấu hình SMTP hoặc tự gửi mật khẩu cho người dùng.',
+      message: data.emailSent ? 'Người dùng đã được thông báo qua email.' : 'Anh vui lòng kiểm tra lại cấu hình SMTP rồi gửi lại link đặt mật khẩu.',
     };
   };
 
@@ -744,7 +681,7 @@ export default function AdminUserManagement() {
         <ResetPasswordModal
           user={resettingUser}
           onCancel={() => setResettingUser(null)}
-          onConfirm={(newPassword) => handleResetPassword(resettingUser, newPassword)}
+          onConfirm={() => handleResetPassword(resettingUser)}
         />
       )}
       {deletingUser && (

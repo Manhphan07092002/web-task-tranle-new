@@ -1,6 +1,8 @@
 import nodemailer from 'nodemailer';
 import { decrypt } from '../utils/cryptoUtils.js';
+import { mailTlsOptions } from '../utils/mailTls.js';
 import { createMailer } from '../mailer.js';
+import { assertMailEndpointsSafe } from '../utils/mailHostSecurity.js';
 
 export function initMailScheduler(db: any) {
   const mailer = createMailer(db);
@@ -11,7 +13,7 @@ export function initMailScheduler(db: any) {
       const config = await mailer.getSystemConfig();
       const smtpHost = config.SMTP_HOST || 'smtp.vnptemail.vn';
       const smtpPort = Number(config.SMTP_PORT || 587);
-      const smtpSecure = String(config.SMTP_SECURE || 'false') === 'true';
+      const smtpSecure = smtpPort === 465 || String(config.SMTP_SECURE || 'false') === 'true';
 
       const now = new Date().toISOString();
       const pendingEmails = await db.all(
@@ -52,12 +54,14 @@ export function initMailScheduler(db: any) {
             }
           } catch (_) { }
 
+          await assertMailEndpointsSafe({ smtpHost: targetSmtpHost, smtpPort: targetSmtpPort });
+
           const transporter = nodemailer.createTransport({
             host: targetSmtpHost,
             port: targetSmtpPort,
             secure: targetSmtpSecure,
             auth: { user: mailEmail, pass: mailPass },
-            tls: { rejectUnauthorized: false }
+            tls: mailTlsOptions()
           } as any);
 
           const fromLabel = user.name ? `"${user.name}" <${mailEmail}>` : mailEmail;
@@ -90,9 +94,9 @@ export function initMailScheduler(db: any) {
           await transporter.sendMail(mailOptions);
 
           await db.run('UPDATE scheduled_emails SET status = ? WHERE id = ?', ['sent', email.id]);
-          console.log(`[MailScheduler] Sent scheduled email ${email.id} to ${email.to}`);
+          console.log(`[MailScheduler] Sent scheduled email ${email.id}.`);
         } catch (err) {
-          console.error(`[MailScheduler] Failed to send email ${email.id}:`, err);
+          console.error(`[MailScheduler] Failed to send scheduled email ${email.id}.`);
           await db.run('UPDATE scheduled_emails SET status = ? WHERE id = ?', ['failed', email.id]);
         }
       }

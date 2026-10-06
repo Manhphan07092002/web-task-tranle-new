@@ -16,7 +16,10 @@
   },
   "dependencies": {
     "cross-env": "^10.1.0",
-    "recharts": "^3.8.1",
-    "xlsx": "^0.18.5"
+    "recharts": "^3.8.1"
+  },
+  "overrides": {
+    "uuid": "^11.1.1",
+    "shell-quote": "^1.8.5"
   }
 }

@@ -224,11 +224,10 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
     // Connect to socket
     const socket = io(window.location.origin, {
       path: '/socket.io',
-      transports: ['websocket', 'polling']
-    });
-
-    socket.on('connect', () => {
-      socket.emit('join', user.id);
+      transports: ['websocket', 'polling'],
+      auth: {
+        token: localStorage.getItem('tranle_token') || ''
+      }
     });
 
     socket.on('new_notification', (data: AppNotification) => {

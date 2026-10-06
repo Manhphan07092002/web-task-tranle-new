@@ -4,7 +4,9 @@ import { z } from 'zod';
 export const validate = (schema: z.ZodSchema) => {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
-      await schema.parseAsync(req.body);
+      // Ensure handlers consume the validated, normalized payload rather than
+      // the original untrusted object (including unknown fields).
+      req.body = await schema.parseAsync(req.body);
       next();
     } catch (error) {
       if (error instanceof z.ZodError) {

@@ -280,7 +280,9 @@ export default function MailSidebar(props: MailSidebarProps) {
                       </button>
                     </div>
                     <p className="text-[11px] text-amber-700 truncate">Đến: {draft.to || '(chưa có người nhận)'}</p>
-                    <p className="text-[10px] text-amber-500 mt-0.5 line-clamp-1" dangerouslySetInnerHTML={{ __html: draft.body?.replace(/<[^>]*>/g, ' ').trim() || '(Nội dung trống)' }} />
+                    <p className="text-[10px] text-amber-500 mt-0.5 line-clamp-1">
+                      {draft.body?.replace(/<[^>]*>/g, ' ').trim() || '(Nội dung trống)'}
+                    </p>
                   </div>
                 </div>
                 <p className="text-[10px] text-gray-400 text-center mt-3">Bấm để tiếp tục soạn thư nháp</p>

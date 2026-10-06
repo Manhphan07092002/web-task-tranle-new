@@ -6,7 +6,7 @@ import { Task, User, TaskStatus, TaskPriority } from '../../types';
 import { AIAssistantHandle } from '../../components/AIAssistant';
 import { Pagination } from '../../components/Pagination';
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
-import * as XLSX from 'xlsx-js-style';
+import { exportXlsx } from '../../utils/exportXlsx';
 
 interface TasksPageProps {
   t: (key: string) => string;
@@ -103,10 +103,7 @@ export default function TasksPage({
       'Tags': t.tags?.join(', ') || ''
     }));
     
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Tasks");
-    XLSX.writeFile(wb, "TranLe_Tasks_Export.xlsx");
+    void exportXlsx(data, 'TranLe_Tasks_Export.xlsx', 'Tasks');
   };
 
   const getPriorityColor = (priority: TaskPriority) => {

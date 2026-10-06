@@ -7,7 +7,7 @@ import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { PlusCircle, Search, FileText, Filter, Download, CheckCircle2, AlertCircle, X, AlertTriangle } from 'lucide-react';
 import { Contract, ContractProduct, ContractType, DocumentChecklist } from '../../services/contractService';
 import { apiFetch } from '../../services/api';
-import * as XLSX from 'xlsx-js-style';
+import { exportXlsx } from '../../utils/exportXlsx';
 import * as productService from '../../services/productService';
 import { PaymentModal } from './PaymentModal';
 import { useReactToPrint } from 'react-to-print';
@@ -549,10 +549,7 @@ const ContractsPage: React.FC = () => {
       'Số hóa đơn': c.invoiceNumber || ''
     }));
 
-    const ws = XLSX.utils.json_to_sheet(dataToExport);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Hop_Dong");
-    XLSX.writeFile(wb, `TranLe_Hop_Dong_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    void exportXlsx(dataToExport, `TranLe_Hop_Dong_${new Date().toISOString().slice(0, 10)}.xlsx`, 'Hop_Dong');
   };
 
   const handleSaveExportStock = async (contractId: string, updatedProducts: ContractProduct[]) => {

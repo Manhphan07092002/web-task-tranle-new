@@ -10,7 +10,7 @@ import { PieChart as RePieChart, Pie, Cell, ResponsiveContainer, Tooltip as ReTo
 import { ReportModal } from './ReportModal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { Report } from '../../types';
-import * as XLSX from 'xlsx-js-style';
+import { exportXlsx } from '../../utils/exportXlsx';
 import { RevenueReportModal } from './RevenueReportModal';
 import { Pagination } from '../../components/Pagination';
 
@@ -388,12 +388,7 @@ export default function ReportsPage() {
       }
     });
 
-    const ws = XLSX.utils.json_to_sheet(rows);
-    // Auto column widths
-    ws['!cols'] = [{ wch: 22 }, { wch: 35 }, { wch: 16 }, { wch: 16 }, { wch: 40 }, { wch: 30 }, { wch: 18 }, { wch: 30 }, { wch: 20 }, { wch: 12 }, { wch: 16 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Báo cáo');
-    XLSX.writeFile(wb, `TranLe_BaoCao_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    void exportXlsx(rows, `TranLe_BaoCao_${new Date().toISOString().slice(0, 10)}.xlsx`, 'Báo cáo', [22, 35, 16, 16, 40, 30, 18, 30, 20, 12, 16]);
   };
 
   const pendingList = canViewAll ? pendingDirectorReports : pendingManagerReports;

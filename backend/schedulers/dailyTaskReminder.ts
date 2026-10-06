@@ -1,3 +1,5 @@
+import { notificationDedupeKey } from '../utils/notificationDedupe.js';
+
 // ===== DAILY TASK REMINDER SCHEDULER (08:00 Mon–Fri VN) =====
 export function scheduleDailyTaskReminder(db: any) {
   const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
@@ -33,8 +35,8 @@ export function scheduleDailyTaskReminder(db: any) {
           const notifId = crypto.randomUUID();
           const dueText = task.dueDate ? ` · Hạn: ${task.dueDate}` : '';
           await db.run(
-            `INSERT INTO notifications (id, userId, type, title, message, relatedId, isRead, createdAt) VALUES (?, ?, 'daily_task_reminder', ?, ?, ?, 0, ?)`,
-            [notifId, userId, `📋 Công việc hôm nay: ${task.title}`, `Nhắc nhở công việc lặp lại hằng ngày của bạn${dueText}. Hãy cập nhật tiến độ nhé!`, task.id, new Date().toISOString()]
+            `INSERT IGNORE INTO notifications (id, userId, type, title, message, relatedId, dedupeKey, isRead, createdAt) VALUES (?, ?, 'daily_task_reminder', ?, ?, ?, ?, 0, ?)`,
+            [notifId, userId, `📋 Công việc hôm nay: ${task.title}`, `Nhắc nhở công việc lặp lại hằng ngày của bạn${dueText}. Hãy cập nhật tiến độ nhé!`, task.id, notificationDedupeKey(userId, 'daily_task_reminder', `${task.id}:${todayIso}`), new Date().toISOString()]
           );
           totalSent++;
         }

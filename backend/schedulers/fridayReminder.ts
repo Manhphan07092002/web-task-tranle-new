@@ -1,3 +1,5 @@
+import { notificationDedupeKey } from '../utils/notificationDedupe.js';
+
 // ===== FRIDAY 16:00 REPORT REMINDER SCHEDULER =====
 export function scheduleFridayReminder(db: any) {
   const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
@@ -31,8 +33,8 @@ export function scheduleFridayReminder(db: any) {
         if (existing) continue;
         const id = crypto.randomUUID();
         await db.run(
-          `INSERT INTO notifications (id, userId, type, title, message, relatedId, isRead, createdAt) VALUES (?, ?, 'report_reminder', ?, ?, NULL, 0, ?)`,
-          [id, u.id, '📋 Nhắc nhở: Nộp báo cáo công việc', 'Đã 16:00 Thứ 6 — Hãy hoàn thành và nộp báo cáo công việc tuần này trước khi kết thúc ngày.', new Date().toISOString()]
+          `INSERT IGNORE INTO notifications (id, userId, type, title, message, relatedId, dedupeKey, isRead, createdAt) VALUES (?, ?, 'report_reminder', ?, ?, NULL, ?, 0, ?)`,
+          [id, u.id, '📋 Nhắc nhở: Nộp báo cáo công việc', 'Đã 16:00 Thứ 6 — Hãy hoàn thành và nộp báo cáo công việc tuần này trước khi kết thúc ngày.', notificationDedupeKey(u.id, 'report_reminder', todayIso), new Date().toISOString()]
         );
         notified++;
       }

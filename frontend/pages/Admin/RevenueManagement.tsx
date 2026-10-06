@@ -9,7 +9,7 @@ import {
 import { User } from '../../types';
 import { RevenueReport } from '../../services/revenueService';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { utils, writeFile } from 'xlsx';
+import { exportXlsx } from '../../utils/exportXlsx';
 
 const fmtMoney = (v: number) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(v);
 
@@ -163,10 +163,7 @@ export default function AdminRevenueManagement() {
       'Ngày tạo': new Date(r.createdAt).toLocaleString('vi-VN')
     }));
 
-    const ws = utils.json_to_sheet(data);
-    const wb = utils.book_new();
-    utils.book_append_sheet(wb, ws, "Doanh Thu");
-    writeFile(wb, `TranLe_Bao_Cao_Doanh_Thu_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    void exportXlsx(data, `TranLe_Bao_Cao_Doanh_Thu_${new Date().toISOString().slice(0, 10)}.xlsx`, 'Doanh Thu');
   };
 
   const chartData = useMemo(() => {

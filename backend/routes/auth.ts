@@ -3,7 +3,10 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import crypto from 'crypto';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { validate } from '../middleware/validate.js';
+import { createRequireAuth } from '../middleware/auth.js';
+import { sanitizeActivityValue } from '../utils/activityPrivacy.js';
 
 const LoginSchema = z.object({
   email: z.string().email('Email không hợp lệ'),
@@ -11,16 +14,26 @@ const LoginSchema = z.object({
 });
 
 const ChangePasswordSchema = z.object({
-  userId: z.string(),
+  userId: z.string().optional(),
   currentPassword: z.string().optional(),
   newPassword: z.string().min(6, 'Mật khẩu mới phải ít nhất 6 ký tự'),
 });
+const ForgotPasswordSchema = z.object({ email: z.string().email() });
+const ResetPasswordSchema = z.object({
+  token: z.string().min(32).max(191),
+  newPassword: z.string().min(6).max(128).refine((value) => value.trim().length >= 6, 'Password must contain at least 6 non-whitespace characters'),
+});
 
+const hashResetToken = (token: string) => crypto.createHash('sha256').update(token).digest('hex');
+const dummyPasswordHash = bcrypt.hash('invalid-login-timing-equalizer', 10);
 
 
 export function authRoutes(db: any) {
   const router = Router();
-  const getSecret = () => (process.env.JWT_SECRET || 'secret') as string;
+  const getSecret = () => {
+    if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET is not configured');
+    return process.env.JWT_SECRET;
+  };
 
   const generateToken = (userPayload: any) => {
     return jwt.sign(userPayload, getSecret(), { expiresIn: '7d' });
@@ -30,80 +43,18 @@ export function authRoutes(db: any) {
     const { email, password } = req.body;
     try {
       const user = await db.get('SELECT * FROM users WHERE lower(email) = lower(?)', [email]);
-      
-      if (!user) {
+      const passwordHash = user?.password || await dummyPasswordHash;
+      const isMatch = await bcrypt.compare(password, passwordHash);
+      const temporarilyLocked = user?.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now();
+
+      if (!user || !user.password || !isMatch || user.isLocked || temporarilyLocked) {
         try {
           await db.run(
             `INSERT INTO activity_logs (id, userId, action, entityId, entityType, metadata, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [crypto.randomUUID(), 'system', 'Đăng nhập thất bại', null, 'user', `Cố gắng đăng nhập với email không tồn tại: ${email}`, new Date().toISOString()]
+            [crypto.randomUUID(), user?.id || 'system', 'Đăng nhập thất bại', user?.id || null, 'user', String(sanitizeActivityValue('Thông tin đăng nhập không hợp lệ')), new Date().toISOString()]
           );
         } catch (e) {}
         return res.status(401).json({ error: 'Invalid credentials' });
-      }
-
-      if (user.isLocked) {
-        return res.status(403).json({ error: 'Tài khoản của bạn đã bị khóa. Vui lòng liên hệ Admin để được hỗ trợ.' });
-      }
-
-      if (user.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now()) {
-        const lockTime = new Date(user.lockedUntil).toLocaleTimeString('vi-VN');
-        return res.status(403).json({ error: `Tài khoản đã bị khóa do đăng nhập sai quá nhiều lần. Vui lòng thử lại sau ${lockTime}.` });
-      }
-
-      if (!user.password || !password) {
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
-
-      const isMatch = await bcrypt.compare(password, user.password);
-      
-      if (!isMatch) {
-        const newFailed = (user.failedLogins || 0) + 1;
-        let lockUntil = null;
-        let isLocked = 0;
-        let lockMessage = '';
-        let errorMessage = 'Invalid credentials';
-        
-        if (newFailed >= 15) {
-          isLocked = 1;
-          lockMessage = 'Khóa tài khoản do nhập sai mật khẩu 15 lần';
-          errorMessage = 'Tài khoản đã bị khóa do nhập sai mật khẩu quá nhiều lần. Vui lòng liên hệ Admin để mở tài khoản.';
-        } else if (newFailed >= 10) {
-          lockUntil = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-          lockMessage = 'Khóa tài khoản 30 phút do nhập sai mật khẩu 10 lần';
-          errorMessage = 'Tài khoản đã bị khóa 30 phút do nhập sai mật khẩu quá nhiều lần.';
-        } else if (newFailed >= 7) {
-          lockUntil = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-          lockMessage = 'Khóa tài khoản 10 phút do nhập sai mật khẩu 7 lần';
-          errorMessage = 'Tài khoản đã bị khóa 10 phút do nhập sai mật khẩu quá nhiều lần.';
-        } else if (newFailed >= 5) {
-          lockUntil = new Date(Date.now() + 1 * 60 * 1000).toISOString();
-          lockMessage = 'Khóa tài khoản 1 phút do nhập sai mật khẩu 5 lần';
-          errorMessage = 'Tài khoản đã bị khóa 1 phút do nhập sai mật khẩu quá nhiều lần.';
-        }
-
-        if (lockUntil || isLocked) {
-          await db.run('UPDATE users SET failedLogins = ?, lockedUntil = ?, isLocked = ? WHERE id = ?', [newFailed, lockUntil, isLocked, user.id]);
-          try {
-            await db.run(
-              `INSERT INTO activity_logs (id, userId, action, entityId, entityType, metadata, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-              [crypto.randomUUID(), user.id, 'Khóa tài khoản', user.id, 'user', lockMessage, new Date().toISOString()]
-            );
-          } catch (e) {}
-          return res.status(403).json({ error: errorMessage });
-        } else {
-          await db.run('UPDATE users SET failedLogins = ? WHERE id = ?', [newFailed, user.id]);
-          try {
-            await db.run(
-              `INSERT INTO activity_logs (id, userId, action, entityId, entityType, metadata, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-              [crypto.randomUUID(), user.id, 'Đăng nhập thất bại', user.id, 'user', `Nhập sai mật khẩu lần ${newFailed}`, new Date().toISOString()]
-            );
-          } catch (e) {}
-          return res.status(401).json({ error: 'Invalid credentials' });
-        }
-      }
-
-      if ((user.failedLogins && user.failedLogins > 0) || user.lockedUntil || user.isLocked) {
-        await db.run('UPDATE users SET failedLogins = 0, lockedUntil = NULL, isLocked = 0 WHERE id = ?', [user.id]);
       }
 
       const role = await db.get('SELECT permissions FROM roles WHERE name = ?', [user.role]);
@@ -113,7 +64,7 @@ export function authRoutes(db: any) {
         department: user.department, avatar: user.avatar, 
         permissions: role?.permissions ? JSON.parse(role.permissions) : []
       };
-      const jwtPayload = { ...userClientData };
+      const jwtPayload = { sub: user.id, tokenVersion: Number(user.tokenVersion || 0) };
       const token = generateToken(jwtPayload);
       
       try {
@@ -129,15 +80,18 @@ export function authRoutes(db: any) {
     } catch (e) { console.error('LOGIN ROUTE EXCEPTION:', e); res.status(500).json({ error: 'Failed' }); }
   });
 
-  router.post('/change-password', validate(ChangePasswordSchema), async (req, res) => {
+  router.post('/change-password', createRequireAuth(db), validate(ChangePasswordSchema), async (req, res) => {
     const { userId, currentPassword, newPassword } = req.body;
     try {
-      const user = await db.get('SELECT id, password FROM users WHERE id = ?', [userId]);
+      const targetUserId = req.user?.id || userId;
+      if (!targetUserId) return res.status(401).json({ error: 'Unauthorized' });
+      const user = await db.get('SELECT id, password FROM users WHERE id = ?', [targetUserId]);
       if (!user || !user.password) return res.status(404).json({ error: 'User not found' });
       const isMatch = await bcrypt.compare(currentPassword || '', user.password);
       if (!isMatch) return res.status(401).json({ error: 'Current password is incorrect' });
       const hashedPassword = await bcrypt.hash(newPassword, 10);
-      await db.run('UPDATE users SET password = ?, failedLogins = 0, lockedUntil = NULL WHERE id = ?', [hashedPassword, userId]);
+      await db.run('UPDATE users SET password = ?, failedLogins = 0, lockedUntil = NULL, tokenVersion = tokenVersion + 1 WHERE id = ?', [hashedPassword, targetUserId]);
+      await db.run('DELETE FROM password_reset_tokens WHERE userId = ? AND usedAt IS NULL', [targetUserId]);
       return res.json({ success: true });
     } catch (e) { console.error('CHANGE PASSWORD ROUTE EXCEPTION:', e); res.status(500).json({ error: 'Failed' }); }
   });
@@ -148,30 +102,81 @@ export function authRoutes(db: any) {
 
 export function forgotPasswordRoutes(db: any, mailer: any) {
   const router = Router();
+  const resetIpLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many password reset attempts. Please try again later.' },
+  });
+  const resetEmailLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => {
+      const email = String((req as any).resetThrottleEmail || 'unknown').trim().toLowerCase();
+      return crypto.createHash('sha256').update(`${ipKeyGenerator(req.ip || 'unknown')}:${email}`).digest('hex');
+    },
+    message: { error: 'Too many password reset attempts. Please try again later.' },
+  });
+  const resolveResetEmail = async (req: any, _res: any, next: any) => {
+    try {
+      const candidate = req.method === 'GET' ? req.params.token : req.body?.token;
+      if (typeof candidate === 'string' && candidate.length >= 32 && candidate.length <= 191) {
+        const tokenRow = await db.get('SELECT email FROM password_reset_tokens WHERE tokenHash = ?', [hashResetToken(candidate)]);
+        req.resetThrottleEmail = tokenRow?.email || 'unknown';
+      } else {
+        req.resetThrottleEmail = 'unknown';
+      }
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+  const forgotIpLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many password reset requests. Please try again later.' },
+  });
+  const forgotEmailLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 3,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => crypto.createHash('sha256')
+      .update(`${ipKeyGenerator(req.ip || 'unknown')}:${String(req.body?.email || '').trim().toLowerCase()}`)
+      .digest('hex'),
+    message: { error: 'Too many password reset requests. Please try again later.' },
+  });
+  const genericResetResponse = { success: true, message: 'If an account matches that email, password reset instructions will be sent.' };
 
-  router.post('/forgot-password', async (req, res) => {
+  router.post('/forgot-password', forgotIpLimiter, forgotEmailLimiter, validate(ForgotPasswordSchema), async (req, res) => {
     const { email } = req.body;
     try {
       const user = await db.get('SELECT id, email, isLocked FROM users WHERE lower(email) = lower(?)', [email]);
-      if (!user) return res.status(404).json({ error: 'Email không tồn tại trong hệ thống' });
+      if (!user) return res.json(genericResetResponse);
 
       if (user.isLocked) {
-        return res.status(403).json({ error: 'Tài khoản của bạn đã bị khóa. Không thể sử dụng tính năng quên mật khẩu. Vui lòng liên hệ Admin.' });
+        return res.json(genericResetResponse);
       }
 
       const recentPending = await db.get("SELECT id, createdAt FROM password_reset_requests WHERE userId = ? AND status = 'pending' ORDER BY createdAt DESC LIMIT 1", [user.id]);
       if (recentPending) {
         const elapsed = Date.now() - new Date(recentPending.createdAt).getTime();
-        if (elapsed < 10 * 60 * 1000) return res.status(429).json({ error: 'Bạn vừa yêu cầu gần đây. Vui lòng đợi vài phút rồi thử lại.' });
+        if (elapsed < 10 * 60 * 1000) return res.json(genericResetResponse);
       }
 
       const token = crypto.randomUUID() + crypto.randomUUID().replace(/-/g, '');
+      const tokenHash = hashResetToken(token);
       const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
       const appBaseUrl = process.env.APP_BASE_URL || 'https://ai.hieuhomecloud.online';
       const resetLink = `${appBaseUrl}/reset-password?token=${encodeURIComponent(token)}`;
 
       await db.run('DELETE FROM password_reset_tokens WHERE userId = ? AND usedAt IS NULL', [user.id]);
-      await db.run('INSERT INTO password_reset_tokens (id, userId, email, token, expiresAt, usedAt) VALUES (?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), user.id, user.email, token, expiresAt, null]);
+      await db.run('INSERT INTO password_reset_tokens (id, userId, email, token, tokenHash, expiresAt, usedAt) VALUES (?, ?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), user.id, user.email, tokenHash, tokenHash, expiresAt, null]);
 
       if (recentPending) {
         await db.run('UPDATE password_reset_requests SET email = ?, emailStatus = ?, emailSentAt = ?, createdAt = ? WHERE id = ?', [user.email, 'pending', null, new Date().toISOString(), recentPending.id]);
@@ -180,43 +185,61 @@ export function forgotPasswordRoutes(db: any, mailer: any) {
       }
 
       let emailSent = false;
-      let message = 'Đã tạo link đặt lại mật khẩu.';
       try {
         emailSent = await mailer.sendResetLinkEmail(user.email, resetLink);
-        message = emailSent ? 'Đã gửi link đặt lại mật khẩu qua email.' : 'Đã tạo link đặt lại mật khẩu nhưng chưa gửi được email.';
       } catch (mailError: any) {
         console.error('forgot-password mail error', mailError);
-        message = mailError?.message || 'Đã tạo link đặt lại mật khẩu nhưng gửi email thất bại.';
       }
 
       await db.run("UPDATE password_reset_requests SET emailStatus = ?, emailSentAt = ? WHERE userId = ? AND status = 'pending'", [emailSent ? 'sent' : 'failed', emailSent ? new Date().toISOString() : null, user.id]);
-      return res.json({ success: true, emailSent, message, resetLink, expiresAt });
+      return res.json(genericResetResponse);
     } catch (e) { console.error('forgot-password error', e); res.status(500).json({ error: 'Failed' }); }
   });
 
-  router.get('/reset-password/:token', async (req, res) => {
+  router.get('/reset-password/:token', resetIpLimiter, resolveResetEmail, resetEmailLimiter, async (req, res) => {
     try {
-      const rt = await db.get('SELECT userId, email, expiresAt, usedAt FROM password_reset_tokens WHERE token = ?', [req.params.token]);
+      const token = String(req.params.token || '');
+      const rt = await db.get('SELECT userId, email, expiresAt, usedAt FROM password_reset_tokens WHERE tokenHash = ?', [hashResetToken(token)]);
       if (!rt) return res.status(404).json({ error: 'Link đặt lại mật khẩu không tồn tại' });
       if (rt.usedAt) return res.status(400).json({ error: 'Link này đã được sử dụng' });
       if (new Date(rt.expiresAt).getTime() < Date.now()) return res.status(400).json({ error: 'Link đặt lại mật khẩu đã hết hạn' });
-      return res.json({ success: true, email: rt.email });
+      return res.json({ success: true, expiresAt: rt.expiresAt });
     } catch (e) { res.status(500).json({ error: 'Failed' }); }
   });
 
-  router.post('/reset-password', async (req, res) => {
+  router.post('/reset-password', resetIpLimiter, validate(ResetPasswordSchema), resolveResetEmail, resetEmailLimiter, async (req, res) => {
     const { token, newPassword } = req.body;
     try {
-      if (!newPassword || String(newPassword).trim().length < 6) return res.status(400).json({ error: 'Mật khẩu mới phải có ít nhất 6 ký tự' });
-      const rt = await db.get('SELECT userId, email, expiresAt, usedAt FROM password_reset_tokens WHERE token = ?', [token]);
+      const tokenHash = hashResetToken(token);
+      const rt = await db.get('SELECT id, userId, email, expiresAt, usedAt FROM password_reset_tokens WHERE tokenHash = ?', [tokenHash]);
       if (!rt) return res.status(404).json({ error: 'Link đặt lại mật khẩu không tồn tại' });
       if (rt.usedAt) return res.status(400).json({ error: 'Link này đã được sử dụng' });
       if (new Date(rt.expiresAt).getTime() < Date.now()) return res.status(400).json({ error: 'Link đặt lại mật khẩu đã hết hạn' });
-      const hashedPassword = await bcrypt.hash(String(newPassword).trim(), 10);
-      await db.run('UPDATE users SET password = ?, failedLogins = 0, lockedUntil = NULL WHERE id = ?', [hashedPassword, rt.userId]);
       const now = new Date().toISOString();
-      await db.run('UPDATE password_reset_tokens SET usedAt = ? WHERE token = ?', [now, token]);
-      await db.run("UPDATE password_reset_requests SET status = 'resolved', emailStatus = 'reset_done', emailSentAt = COALESCE(emailSentAt, ?) WHERE userId = ? AND status = 'pending'", [now, rt.userId]);
+      const hashedPassword = await bcrypt.hash(newPassword.trim(), 10);
+      let transactionStarted = false;
+      try {
+        await db.run('START TRANSACTION');
+        transactionStarted = true;
+        const claimed = await db.run('UPDATE password_reset_tokens SET usedAt = ? WHERE id = ? AND usedAt IS NULL AND expiresAt >= ?', [now, rt.id, now]);
+        if (!claimed?.changes) {
+          await db.run('ROLLBACK');
+          transactionStarted = false;
+          return res.status(400).json({ error: 'Link đặt lại mật khẩu đã hết hạn hoặc đã được sử dụng' });
+        }
+
+        const passwordUpdate = await db.run('UPDATE users SET password = ?, failedLogins = 0, lockedUntil = NULL, tokenVersion = tokenVersion + 1 WHERE id = ?', [hashedPassword, rt.userId]);
+        if (!passwordUpdate?.changes) throw new Error('Password reset user update did not affect a row');
+        await db.run('DELETE FROM password_reset_tokens WHERE userId = ? AND usedAt IS NULL', [rt.userId]);
+        await db.run("UPDATE password_reset_requests SET status = 'resolved', emailStatus = 'reset_done', emailSentAt = COALESCE(emailSentAt, ?) WHERE userId = ? AND status = 'pending'", [now, rt.userId]);
+        await db.run('COMMIT');
+        transactionStarted = false;
+      } catch (error) {
+        if (transactionStarted) {
+          try { await db.run('ROLLBACK'); } catch {}
+        }
+        throw error;
+      }
       return res.json({ success: true });
     } catch (e) { res.status(500).json({ error: 'Failed' }); }
   });

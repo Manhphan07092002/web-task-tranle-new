@@ -1,6 +1,24 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
+import crypto from 'crypto';
+import { z } from 'zod';
 import { GoogleGenAI, Type } from '@google/genai';
 import { TRANLE_KNOWLEDGE } from '../tranle_knowledge.js';
+import { requireAdmin } from '../middleware/auth.js';
+import { decrypt } from '../utils/cryptoUtils.js';
+import { validate } from '../middleware/validate.js';
+
+const AiKeyTestSchema = z.object({
+  provider: z.enum(['gemini', 'groq', 'deepseek', 'openrouter', 'openai']),
+  apiKey: z.string().min(8).max(2048),
+});
+const AiTaskTitleSchema = z.object({ taskTitle: z.string().trim().min(1).max(1000) });
+const AiGoalSchema = z.object({ goal: z.string().trim().min(1).max(8000) });
+const AiChatSchema = z.object({
+  message: z.string().trim().min(1).max(8000),
+  history: z.array(z.object({ role: z.enum(['user', 'model']), text: z.string().max(8000) }).strict()).max(50).optional().default([]),
+  contextString: z.string().max(20_000).optional().default(''),
+});
 
 // ─── Key Rotation State (per-process, shared across requests) ─────────────────
 let _cachedProvider: string | null = null;
@@ -14,6 +32,17 @@ export interface KeyStatus {
   lastChecked: number;
 }
 export const _keyStatuses: Record<string, KeyStatus> = {};
+const keyFingerprint = (apiKey: string) => crypto.createHash('sha256').update(apiKey).digest('hex').slice(0, 12);
+const parseStoredKeys = (value?: string) => {
+  if (!value) return [];
+  const plaintext = decrypt(value) || value;
+  try {
+    const parsed = JSON.parse(plaintext);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
 
 async function getAiConfig(db: any): Promise<{ provider: string; keys: string[] }> {
   const now = Date.now();
@@ -25,7 +54,7 @@ async function getAiConfig(db: any): Promise<{ provider: string; keys: string[] 
     const keysMap: Record<string, string[]> = {};
     for (const p of providers) {
       const row = await db.get('SELECT `value` FROM system_config WHERE `key` = ?', [`${p}_api_keys`]);
-      keysMap[p] = row?.value ? JSON.parse(row.value) : [];
+      keysMap[p] = parseStoredKeys(row?.value);
     }
     const providerRow = await db.get("SELECT `value` FROM system_config WHERE `key` = 'ai_provider'");
     const provider = providerRow?.value || 'gemini';
@@ -74,7 +103,7 @@ async function withRotation<T>(db: any, operation: (apiKey: string, provider: st
     for (let retry = 0; retry <= MAX_RETRIES_PER_KEY; retry++) {
       try {
         const result = await operation(apiKey, provider);
-        _keyStatuses[apiKey] = { status: 'Active', lastChecked: Date.now() };
+        _keyStatuses[keyFingerprint(apiKey)] = { status: 'Active', lastChecked: Date.now() };
         return result;
       } catch (err: any) {
         const msg = String(err?.message || '');
@@ -90,7 +119,7 @@ async function withRotation<T>(db: any, operation: (apiKey: string, provider: st
         } else {
           errStatus = 'Unknown';
         }
-        _keyStatuses[apiKey] = { status: errStatus, lastChecked: Date.now() };
+        _keyStatuses[keyFingerprint(apiKey)] = { status: errStatus, lastChecked: Date.now() };
 
         const isRateLimit = errStatus === 'Rate Limited' || errStatus === 'Quota Exceeded';
           
@@ -168,6 +197,14 @@ const GEMINI_TOOL_DECLARATIONS: any[] = [
 
 export function aiRoutes(db: any) {
   const router = Router();
+  const allowedProviders = new Set(['gemini', 'groq', 'deepseek', 'openrouter', 'openai']);
+  router.use(rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many AI requests. Please try again later.' },
+  }));
 
   // GET /api/ai/status - check if AI is configured
   router.get('/status', async (_req, res) => {
@@ -180,9 +217,11 @@ export function aiRoutes(db: any) {
   });
 
   // POST /api/ai/test-key - test a specific API key
-  router.post('/test-key', async (req, res) => {
+  router.post('/test-key', requireAdmin, validate(AiKeyTestSchema), async (req, res) => {
     const { provider, apiKey } = req.body;
-    if (!provider || !apiKey) return res.status(400).json({ error: 'provider and apiKey are required' });
+    if (typeof provider !== 'string' || !allowedProviders.has(provider) || typeof apiKey !== 'string' || apiKey.length < 8 || apiKey.length > 2048) {
+      return res.status(400).json({ error: 'Valid provider and apiKey are required' });
+    }
     
     try {
       if (provider === 'gemini') {
@@ -206,7 +245,7 @@ export function aiRoutes(db: any) {
            throw error;
         }
       }
-      _keyStatuses[apiKey] = { status: 'Active', lastChecked: Date.now() };
+      _keyStatuses[keyFingerprint(apiKey)] = { status: 'Active', lastChecked: Date.now() };
       res.json({ status: 'Active' });
     } catch (err: any) {
       const msg = String(err?.message || '');
@@ -221,18 +260,19 @@ export function aiRoutes(db: any) {
       } else {
         errStatus = 'Unknown';
       }
-      _keyStatuses[apiKey] = { status: errStatus, lastChecked: Date.now() };
+      _keyStatuses[keyFingerprint(apiKey)] = { status: errStatus, lastChecked: Date.now() };
       res.json({ status: errStatus, error: msg });
     }
   });
 
   // GET /api/ai/keys-status - return current status of all keys
-  router.get('/keys-status', async (_req, res) => {
+  router.get('/keys-status', requireAdmin, async (_req, res) => {
     try {
       const { provider, keys } = await getAiConfig(db);
       const result: Record<string, KeyStatus> = {};
       for (const k of keys) {
-        result[k] = _keyStatuses[k] || { status: 'Unknown', lastChecked: 0 };
+        const fingerprint = keyFingerprint(k);
+        result[fingerprint] = _keyStatuses[fingerprint] || { status: 'Unknown', lastChecked: 0 };
       }
       res.json({ provider, statuses: result });
     } catch {
@@ -241,7 +281,7 @@ export function aiRoutes(db: any) {
   });
 
   // POST /api/ai/generate-subtasks
-  router.post('/generate-subtasks', async (req, res) => {
+  router.post('/generate-subtasks', validate(AiTaskTitleSchema), async (req, res) => {
     const { taskTitle } = req.body;
     if (!taskTitle) return res.status(400).json({ error: 'taskTitle is required' });
     try {
@@ -267,7 +307,7 @@ export function aiRoutes(db: any) {
   });
 
   // POST /api/ai/generate-details
-  router.post('/generate-details', async (req, res) => {
+  router.post('/generate-details', validate(AiTaskTitleSchema), async (req, res) => {
     const { taskTitle } = req.body;
     if (!taskTitle) return res.status(400).json({ error: 'taskTitle is required' });
     try {
@@ -292,7 +332,7 @@ export function aiRoutes(db: any) {
   });
 
   // POST /api/ai/generate-tasks-from-goal
-  router.post('/generate-tasks-from-goal', async (req, res) => {
+  router.post('/generate-tasks-from-goal', validate(AiGoalSchema), async (req, res) => {
     const { goal } = req.body;
     if (!goal) return res.status(400).json({ error: 'goal is required' });
     try {
@@ -321,7 +361,7 @@ export function aiRoutes(db: any) {
   // Chunks: data: {"type":"text","content":"..."}\n\n
   //         data: {"type":"function_call","name":"...","args":{...}}\n\n
   //         data: {"type":"done"}\n\n
-  router.post('/chat-stream', async (req, res) => {
+  router.post('/chat-stream', validate(AiChatSchema), async (req, res) => {
     const { message, history = [], contextString = '' } = req.body;
     if (!message) return res.status(400).json({ error: 'message is required' });
 

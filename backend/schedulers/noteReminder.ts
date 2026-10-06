@@ -1,3 +1,5 @@
+import { notificationDedupeKey } from '../utils/notificationDedupe.js';
+
 // ===== NOTE REMINDER SCHEDULER =====
 export function scheduleNoteReminders(db: any) {
   const checkAndNotifyNotes = async () => {
@@ -15,8 +17,8 @@ export function scheduleNoteReminders(db: any) {
 
         const notifId = crypto.randomUUID();
         await db.run(
-          `INSERT INTO notifications (id, userId, type, title, message, relatedId, isRead, createdAt) VALUES (?, ?, 'note_reminder', ?, ?, ?, 0, ?)`,
-          [notifId, note.userId, `📌 ${note.title || 'Ghi chú'}`, note.content ? note.content.slice(0, 100) + (note.content.length > 100 ? '...' : '') : 'Đã đến giờ nhắc nhở!', note.id, new Date().toISOString()]
+          `INSERT IGNORE INTO notifications (id, userId, type, title, message, relatedId, dedupeKey, isRead, createdAt) VALUES (?, ?, 'note_reminder', ?, ?, ?, ?, 0, ?)`,
+          [notifId, note.userId, `📌 ${note.title || 'Ghi chú'}`, note.content ? note.content.slice(0, 100) + (note.content.length > 100 ? '...' : '') : 'Đã đến giờ nhắc nhở!', note.id, notificationDedupeKey(note.userId, 'note_reminder', note.id), new Date().toISOString()]
         );
       }
     } catch (err) {

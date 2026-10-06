@@ -1,5 +1,8 @@
 import mysql from 'mysql2/promise';
 import bcrypt from 'bcryptjs';
+import { decrypt, encrypt, isLegacyCbcCiphertext, isVersionedCiphertext } from './utils/cryptoUtils.js';
+import { runVersionedMigration, withMigrationLock } from './utils/dbMigrations.js';
+import { DatabaseTransactionGate } from './utils/dbTransactionGate.js';
 
 // ─── SQL normalizer ──────────────────────────────────────────────────────────
 // Converts the SQLite-flavoured SQL used throughout the routes to MySQL,
@@ -91,22 +94,31 @@ function wrapRow(row: Record<string, any>): any {
 // were written against.
 
 class MysqlDb {
+  private readonly transactionGate = new DatabaseTransactionGate();
+
   constructor(private conn: mysql.Connection, private connectionConfig: mysql.ConnectionOptions) {}
 
   private async query(sql: string, params?: any[]): Promise<any> {
-    try {
-      const [rows] = await this.conn.query(normalizeSql(sql), params ?? []);
-      return rows;
-    } catch (err: any) {
-      // Reconnect once on a dropped connection, then retry.
-      if (err && (err.code === 'PROTOCOL_CONNECTION_LOST' || err.fatal)) {
-        console.warn('[MySQL] Connection lost, reconnecting...');
-        this.conn = await mysql.createConnection(this.connectionConfig);
-        const [rows] = await this.conn.query(normalizeSql(sql), params ?? []);
+    const normalizedSql = normalizeSql(sql);
+    return this.transactionGate.run(normalizedSql, async () => {
+      try {
+        const [rows] = await this.conn.query(normalizedSql, params ?? []);
         return rows;
+      } catch (err: any) {
+        // Reconnect once on a dropped connection, then retry.
+        if (err && (err.code === 'PROTOCOL_CONNECTION_LOST' || err.fatal)) {
+          console.warn('[MySQL] Connection lost, reconnecting...');
+          this.conn = await mysql.createConnection(this.connectionConfig);
+          const [rows] = await this.conn.query(normalizedSql, params ?? []);
+          return rows;
+        }
+        throw err;
       }
-      throw err;
-    }
+    });
+  }
+
+  runWithRequestContext<T>(callback: () => T): T {
+    return this.transactionGate.runWithRequestContext(callback);
   }
 
   async get(sql: string, params?: any[]): Promise<any> {
@@ -176,6 +188,7 @@ CREATE TABLE IF NOT EXISTS users (
   password TEXT, role VARCHAR(64) NOT NULL, department VARCHAR(191) NOT NULL, avatar TEXT NOT NULL,
   mailPassword TEXT,
   failedLogins INT NOT NULL DEFAULT 0, lockedUntil TEXT, isLocked TINYINT NOT NULL DEFAULT 0,
+  tokenVersion INT NOT NULL DEFAULT 0,
   phone TEXT, dob TEXT, hometown TEXT, bio TEXT, cccd TEXT, gender TEXT,
   preferences TEXT DEFAULT ('{}')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -238,7 +251,7 @@ CREATE TABLE IF NOT EXISTS password_reset_requests (
 
 CREATE TABLE IF NOT EXISTS password_reset_tokens (
   id VARCHAR(191) PRIMARY KEY, userId VARCHAR(191) NOT NULL, email VARCHAR(255) NOT NULL,
-  token VARCHAR(191) NOT NULL UNIQUE, expiresAt TEXT NOT NULL, usedAt TEXT
+  token VARCHAR(191) NOT NULL UNIQUE, tokenHash VARCHAR(191) UNIQUE, expiresAt TEXT NOT NULL, usedAt TEXT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS system_config (
@@ -248,7 +261,7 @@ CREATE TABLE IF NOT EXISTS system_config (
 CREATE TABLE IF NOT EXISTS notifications (
   id VARCHAR(191) PRIMARY KEY, userId VARCHAR(191) NOT NULL, type VARCHAR(64) NOT NULL,
   title TEXT NOT NULL, message TEXT NOT NULL, relatedId VARCHAR(191),
-  isRead TINYINT NOT NULL DEFAULT 0, createdAt TEXT NOT NULL
+  dedupeKey VARCHAR(64) UNIQUE, isRead TINYINT NOT NULL DEFAULT 0, createdAt TEXT NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS events (
@@ -337,6 +350,13 @@ CREATE TABLE IF NOT EXISTS documents (
   createdAt TEXT NOT NULL, isDeleted TINYINT DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS uploaded_files (
+  filename VARCHAR(255) PRIMARY KEY, ownerId VARCHAR(191) NOT NULL,
+  originalName TEXT NOT NULL, size BIGINT NOT NULL, mimeType VARCHAR(191) NOT NULL,
+  entityType VARCHAR(64), entityId VARCHAR(191),
+  createdAt TEXT NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS clients (
   id VARCHAR(191) PRIMARY KEY, name VARCHAR(191) NOT NULL UNIQUE, region TEXT, createdAt TEXT NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -392,20 +412,93 @@ export async function initDbMysql(): Promise<MysqlDb> {
   let conn = await mysql.createConnection(connectionConfig);
   const db = new MysqlDb(conn, connectionConfig);
 
-  // Create schema (idempotent CREATE TABLE IF NOT EXISTS).
-  await db.exec(DDL);
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      version INT PRIMARY KEY,
-      name VARCHAR(191) NOT NULL,
-      appliedAt TEXT NOT NULL
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-  `);
+  // Serialize schema creation, additive migrations, and bootstrap seeds across
+  // application instances. MySQL DDL is not transactional; each migration is
+  // idempotent and records its version only after all of its steps complete.
+  await withMigrationLock(db, async () => {
+    await db.exec(DDL);
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS _migrations (
+        version INT PRIMARY KEY,
+        name VARCHAR(191) NOT NULL,
+        appliedAt TEXT NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
 
-  // ─── Seeds (only when empty) ──────────────────────────────────────────────
-  await seedIfEmpty(db);
+    const ensureColumn = async (table: string, column: string, definition: string) => {
+      const existing = await db.get(
+        'SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+        [table, column]
+      );
+      if (!existing || Number(existing.count) === 0) {
+        await db.run(`ALTER TABLE \`${table}\` ADD COLUMN ${definition}`);
+      }
+    };
+
+    await runVersionedMigration(db, 1, 'security_columns_and_reset_token_hashes', async () => {
+      await ensureColumn('users', 'tokenVersion', '`tokenVersion` INT NOT NULL DEFAULT 0');
+      await ensureColumn('password_reset_tokens', 'tokenHash', '`tokenHash` VARCHAR(191) UNIQUE');
+      await ensureColumn('uploaded_files', 'entityType', '`entityType` VARCHAR(64) NULL');
+      await ensureColumn('uploaded_files', 'entityId', '`entityId` VARCHAR(191) NULL');
+      await db.run(`
+        UPDATE password_reset_tokens
+        SET tokenHash = LOWER(SHA2(token, 256)), token = LOWER(SHA2(token, 256))
+        WHERE tokenHash IS NULL OR tokenHash = '' OR tokenHash <> token
+      `);
+    });
+
+    await runVersionedMigration(db, 2, 'notification_deduplication', async () => {
+      await ensureColumn('notifications', 'dedupeKey', '`dedupeKey` VARCHAR(64) NULL UNIQUE');
+    });
+
+    await seedIfEmpty(db);
+    await migrateMailCredentials(db);
+  });
 
   return db;
+}
+
+export async function migrateMailCredentials(db: MysqlDb) {
+  if (!process.env.MAIL_ENCRYPTION_KEY?.trim()) {
+    // Development installs without configured mail credentials should still boot.
+    console.warn('[SECURITY] Skipping mail credential encryption migration: MAIL_ENCRYPTION_KEY is not configured.');
+    return;
+  }
+
+  let migrated = 0;
+  let skipped = 0;
+  const users = await db.all('SELECT id, mailPassword FROM users WHERE mailPassword IS NOT NULL AND mailPassword <> ? AND mailPassword NOT LIKE ?', ['', 'v2:%']);
+  for (const user of users) {
+    const legacyValue = String(user.mailPassword);
+    let plaintext = legacyValue;
+    if (isVersionedCiphertext(legacyValue)) continue;
+    if (isLegacyCbcCiphertext(legacyValue)) {
+      const decrypted = decrypt(legacyValue);
+      if (decrypted === null) { skipped++; continue; }
+      plaintext = decrypted;
+    }
+    const result = await db.run('UPDATE users SET mailPassword = ? WHERE id = ? AND mailPassword = ?', [encrypt(plaintext), user.id, legacyValue]);
+    if (result.changes) migrated++;
+  }
+
+  const smtp = await db.get('SELECT `value` FROM system_config WHERE `key` = ?', ['SMTP_PASS']);
+  if (smtp?.value) {
+    const legacyValue = String(smtp.value);
+    if (!isVersionedCiphertext(legacyValue)) {
+      let plaintext = legacyValue;
+      if (isLegacyCbcCiphertext(legacyValue)) {
+        const decrypted = decrypt(legacyValue);
+        if (decrypted === null) skipped++;
+        else plaintext = decrypted;
+      }
+      if (!isLegacyCbcCiphertext(legacyValue) || plaintext !== legacyValue) {
+        const result = await db.run('UPDATE system_config SET `value` = ? WHERE `key` = ? AND `value` = ?', [encrypt(plaintext), 'SMTP_PASS', legacyValue]);
+        if (result.changes) migrated++;
+      }
+    }
+  }
+
+  if (migrated || skipped) console.info(`[SECURITY] Mail credential encryption migration: ${migrated} migrated, ${skipped} skipped.`);
 }
 
 async function seedIfEmpty(db: MysqlDb) {
@@ -448,7 +541,7 @@ async function seedIfEmpty(db: MysqlDb) {
 
   for (const [key, value] of COMPANY_CONFIGS) {
     await db.run(
-      'INSERT INTO system_config (`key`, `value`) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+      'INSERT IGNORE INTO system_config (`key`, `value`) VALUES (?, ?)',
       [key, value]
     );
   }
@@ -504,7 +597,7 @@ async function seedIfEmpty(db: MysqlDb) {
 
   for (const r of INITIAL_ROLES) {
     await db.run(
-      'INSERT INTO roles (id, name, description, color, permissions, isSystem) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE description = VALUES(description), color = VALUES(color), permissions = VALUES(permissions)',
+      'INSERT IGNORE INTO roles (id, name, description, color, permissions, isSystem) VALUES (?, ?, ?, ?, ?, ?)',
       [r.id, r.name, r.description, r.color, r.permissions, r.isSystem]
     );
   }
@@ -530,23 +623,26 @@ async function seedIfEmpty(db: MysqlDb) {
 
   for (const d of TRANLE_DEPTS) {
     await db.run(
-      'INSERT INTO departments (id, name, description, color) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description), color = VALUES(color)',
+      'INSERT IGNORE INTO departments (id, name, description, color) VALUES (?, ?, ?, ?)',
       [d.id, d.name, d.description, d.color]
     );
   }
 
   // ── 4. Users ───────────────────────────────────────────────────────────────
   const userCount = await db.get('SELECT COUNT(*) as count FROM users');
-  if (userCount && userCount.count === 0) {
-    const adminPwd = process.env.ADMIN_DEFAULT_PASSWORD || 'TranLe@dmin2026!';
+  if (userCount && Number(userCount.count) === 0) {
+    const adminPwd = process.env.ADMIN_DEFAULT_PASSWORD || (process.env.NODE_ENV === 'production' ? '' : 'TranLe@dmin2026!');
+    if (!adminPwd) throw new Error('ADMIN_DEFAULT_PASSWORD is required before seeding initial accounts in production.');
     const INITIAL_USERS = [
       { id: 'u1', name: 'Admin Tran Le', email: 'admin@tranlecorp.com.vn', password: await bcrypt.hash(adminPwd, 10), role: 'Admin', department: 'Ban Lãnh Đạo', avatar: 'https://i.pravatar.cc/150?u=u1', phone: '0939792428', dob: '1990-01-01', hometown: 'Đà Nẵng', bio: 'Quản trị viên hệ thống Tran Le Electricity.' },
       { id: 'u2', name: 'Nguyễn Văn Đạt', email: 'vandat@tranlecorp.com.vn', password: await bcrypt.hash(adminPwd, 10), role: 'Manager', department: 'Khối Tổng Thầu EPC & Thi Công', avatar: 'https://i.pravatar.cc/150?u=u2', phone: '0987654321', dob: '1985-06-15', hometown: 'Đà Nẵng', bio: 'Chỉ huy trưởng thi công & Quản lý dự án EPC Điện mặt trời.' },
       { id: 'u3', name: 'Phan Xuân Mạnh', email: 'xuanmanh@tranlecorp.com.vn', password: await bcrypt.hash(adminPwd, 10), role: 'Employee', department: 'Khối Tổng Thầu EPC & Thi Công', avatar: 'https://i.pravatar.cc/150?u=u3', phone: '0123456789', dob: '2002-09-07', hometown: 'Đà Nẵng', bio: 'Kỹ sư giải pháp năng lượng tái tạo & O&M Solar.' },
       { id: 'u4', name: 'Nguyễn Văn Duy', email: 'vanduy@tranlecorp.com.vn', password: await bcrypt.hash(adminPwd, 10), role: 'Director', department: 'Ban Lãnh Đạo', avatar: 'https://i.pravatar.cc/150?u=u4', phone: '0939792428', dob: '1980-02-20', hometown: 'Đà Nẵng', bio: 'Ban Giám đốc Công ty Cổ phần Tư vấn xây dựng Điện Trần Lê.' },
     ];
-    console.log(`🔑 Seed users created. Default password: ${adminPwd.slice(0, 3)}${'*'.repeat(Math.max(adminPwd.length - 3, 0))}`);
-    for (const u of INITIAL_USERS) {
+    console.log('[SECURITY] Initial accounts seeded. Configure unique credentials immediately after first login.');
+    // Production must not create demo employee accounts that share the bootstrap password.
+    const usersToSeed = process.env.NODE_ENV === 'production' ? INITIAL_USERS.slice(0, 1) : INITIAL_USERS;
+    for (const u of usersToSeed) {
       await db.run(
         'INSERT INTO users (id, name, email, password, role, department, avatar, phone, dob, hometown, bio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [u.id, u.name, u.email, u.password, u.role, u.department, u.avatar, u.phone, u.dob, u.hometown, u.bio]
@@ -554,9 +650,14 @@ async function seedIfEmpty(db: MysqlDb) {
     }
   }
 
+  // Catalog, projects, clients, contracts, tasks, notes, and events below are
+  // demo/bootstrap content. Production starts with configuration, system
+  // roles/departments, and a single operator-controlled admin account only.
+  if (process.env.NODE_ENV === 'production' && process.env.SEED_DEMO_DATA !== 'true') return;
+
   // ── 5. Products (Catalog from Ho_so_tong_hop_Tran_Le_Electricity.md) ───────
   const prodCount = await db.get('SELECT COUNT(*) as count FROM products');
-  if (prodCount && prodCount.count === 0) {
+  if (prodCount && Number(prodCount.count) === 0) {
     const INITIAL_PRODUCTS = [
       // Tấm pin Solar
       { id: 'prod-pin-01', name: 'Tấm pin AIKO 650Wp N-Type ABC Dual-Glass Stellar 1N+', category: 'Tấm pin', unit: 'Tấm', origin: 'AIKO', defaultPrice: 2850000, importPrice: 2250000, salePrice: 2850000, importCode: 'NK-PIN-0001', importQuantity: 1000, remainingQuantity: 850, invoiceDate: '2026-01-15' },
@@ -588,7 +689,7 @@ async function seedIfEmpty(db: MysqlDb) {
 
   // ── 6. Projects (Section 7 from Ho_so_tong_hop_Tran_Le_Electricity.md) ──────
   const projCount = await db.get('SELECT COUNT(*) as count FROM projects');
-  if (projCount && projCount.count === 0) {
+  if (projCount && Number(projCount.count) === 0) {
     const INITIAL_PROJECTS = [
       {
         id: 'proj-01',
@@ -736,7 +837,7 @@ async function seedIfEmpty(db: MysqlDb) {
 
   // ── 7. Clients (Partners & Project Owners) ──────────────────────────────────
   const clientCount = await db.get('SELECT COUNT(*) as count FROM clients');
-  if (clientCount && clientCount.count === 0) {
+  if (clientCount && Number(clientCount.count) === 0) {
     const INITIAL_CLIENTS = [
       { id: 'client-cocotex', name: 'Công ty TNHH Cocotex', region: 'TP. Hồ Chí Minh' },
       { id: 'client-namly', name: 'Công ty Cổ phần Nam Lý', region: 'Ninh Bình' },
@@ -792,7 +893,7 @@ async function seedIfEmpty(db: MysqlDb) {
 
   // ── 8. Contracts (EPC, O&M, Equipment Distribution) ─────────────────────────
   const contractCount = await db.get('SELECT COUNT(*) as count FROM contracts');
-  if (contractCount && contractCount.count === 0) {
+  if (contractCount && Number(contractCount.count) === 0) {
     const INITIAL_CONTRACTS = [
       {
         id: 'ctr-01',
@@ -867,7 +968,7 @@ async function seedIfEmpty(db: MysqlDb) {
 
   // ── 9. Tasks (Solar Operations & Technical Projects) ────────────────────────
   const taskCount = await db.get('SELECT COUNT(*) as count FROM tasks');
-  if (taskCount && taskCount.count === 0) {
+  if (taskCount && Number(taskCount.count) === 0) {
     const INITIAL_TASKS = [
       {
         id: 't1',
@@ -963,7 +1064,7 @@ async function seedIfEmpty(db: MysqlDb) {
 
   // ── 10. Notes ───────────────────────────────────────────────────────────────
   const noteCount = await db.get('SELECT COUNT(*) as count FROM notes');
-  if (noteCount && noteCount.count === 0) {
+  if (noteCount && Number(noteCount.count) === 0) {
     const INITIAL_NOTES = [
       {
         id: 'n1',
@@ -992,7 +1093,7 @@ async function seedIfEmpty(db: MysqlDb) {
 
   // ── 11. Events (Vietnamese National Holidays) ────────────────────────────────
   const eventCount = await db.get('SELECT COUNT(*) as count FROM events');
-  if (eventCount && eventCount.count === 0) {
+  if (eventCount && Number(eventCount.count) === 0) {
     const year = new Date().getFullYear();
     const holidays = [
       { id: 'evt-01', title: 'Tết Dương Lịch', date: `${year}-01-01`, type: 'holiday', color: '#ef4444', description: 'Ngày đầu năm mới dương lịch', isRecurringYearly: 1 },

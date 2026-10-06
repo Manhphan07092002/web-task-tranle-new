@@ -1,5 +1,6 @@
 import { getIO } from '../socket.js';
 import { randomUUID } from 'crypto';
+import { notificationDedupeKey } from './notificationDedupe.js';
 
 export const sendNotification = async (
   db: any,
@@ -12,12 +13,14 @@ export const sendNotification = async (
   try {
     const id = randomUUID();
     const createdAt = new Date().toISOString();
+    const dedupeKey = notificationDedupeKey(userId, type, relatedId);
     
     // 1. Insert into database
-    await db.run(
-      'INSERT INTO notifications (id, userId, type, title, message, relatedId, isRead, createdAt) VALUES (?, ?, ?, ?, ?, ?, 0, ?)',
-      [id, userId, type, title, message, relatedId || null, createdAt]
+    const result = await db.run(
+      'INSERT IGNORE INTO notifications (id, userId, type, title, message, relatedId, dedupeKey, isRead, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)',
+      [id, userId, type, title, message, relatedId || null, dedupeKey, createdAt]
     );
+    if (result && result.changes === 0) return;
 
     // 2. Emit to socket
     const io = getIO();
@@ -73,21 +76,21 @@ export const sendNotification = async (
                     </div>
                   </div>`
                 });
-                console.log(`[Notify] Sent email to ${user.email} for type: ${type}`);
+                console.log(`[Notify] Sent email notification for type: ${type}`);
               }
-            } catch (emailErr) {
-              console.error('[Notify] Async email send failed:', emailErr);
+            } catch {
+              console.error('[Notify] Async email send failed.');
             }
-          }).catch(err => {
-            console.error('[Notify] Failed to load mailer:', err);
+          }).catch(() => {
+            console.error('[Notify] Failed to load mailer.');
           });
         }
       }
-    } catch (emailErr) {
-      console.error('[Notify] Failed to send email notification:', emailErr);
+    } catch {
+      console.error('[Notify] Failed to send email notification.');
     }
 
-  } catch (error) {
-    console.error('Failed to send notification:', error);
+  } catch {
+    console.error('Failed to send notification.');
   }
 };

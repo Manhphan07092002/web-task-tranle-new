@@ -7,7 +7,6 @@ import { Button, Input } from '../../components/UI';
 export default function ResetPasswordPage() {
   const [searchParams] = useSearchParams();
   const token = useMemo(() => searchParams.get('token') || '', [searchParams]);
-  const [email, setEmail] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [checking, setChecking] = useState(true);
@@ -32,7 +31,6 @@ export default function ResetPasswordPage() {
           setError(data.error || 'Link đặt lại mật khẩu không hợp lệ.');
           setIsValid(false);
         } else {
-          setEmail(data.email || '');
           setExpiresAt(data.expiresAt || '');
           setIsValid(true);
         }
@@ -127,7 +125,6 @@ export default function ResetPasswordPage() {
 
               {isValid && !success && (
                 <>
-                  <Input label="Email" value={email} readOnly />
                   {secondsLeft !== null && (
                     <div className="p-3 rounded-2xl bg-amber-50 border border-amber-100 text-amber-700 text-sm flex items-center gap-2">
                       <Clock3 size={16} />

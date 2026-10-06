@@ -3,16 +3,76 @@ import { ImapFlow } from 'imapflow';
 import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
 import multer from 'multer';
+import rateLimit from 'express-rate-limit';
+import { z } from 'zod';
 // @ts-ignore
 import MailComposer from 'nodemailer/lib/mail-composer';
 import tls from 'tls';
 import { encrypt, decrypt } from '../utils/cryptoUtils.js';
-import { requireAuth } from '../middleware/auth.js';
+import { createRequireAuth } from '../middleware/auth.js';
 import { createMailer } from '../mailer.js';
+import { assertMailEndpointsSafe, configuredMailHostAllowlist } from '../utils/mailHostSecurity.js';
+import { mailTlsOptions } from '../utils/mailTls.js';
+import { validate } from '../middleware/validate.js';
+
+const MailConnectSchema = z.object({
+  email: z.string().trim().email().max(320),
+  password: z.string().min(1).max(4096),
+  provider: z.enum(['poste', 'vnpt', 'custom']).optional(),
+  customImapHost: z.string().max(253).optional(),
+  customImapPort: z.coerce.number().int().min(1).max(65535).optional(),
+  customSmtpHost: z.string().max(253).optional(),
+  customSmtpPort: z.coerce.number().int().min(1).max(65535).optional(),
+});
+const MailComposeSchema = z.object({
+  to: z.string().trim().min(1).max(4000),
+  subject: z.string().trim().min(1).max(998),
+  body: z.string().max(5 * 1024 * 1024),
+  cc: z.string().max(4000).optional(),
+  bcc: z.string().max(4000).optional(),
+  track: z.enum(['true', 'false']).optional(),
+});
+const MailScheduleSchema = MailComposeSchema.extend({
+  scheduledAt: z.string().datetime({ offset: true }),
+});
+const MailFolderSchema = z.string().trim().min(1).max(255).refine((folder) => !/[\r\n\0]/.test(folder));
+const MailFlagSchema = z.object({ folder: MailFolderSchema.optional().default('INBOX'), starred: z.boolean() });
+const MailReadSchema = z.object({ folder: MailFolderSchema.optional().default('INBOX'), isRead: z.boolean() });
+const MailBulkSchema = z.object({
+  uids: z.array(z.coerce.number().int().min(1).max(Number.MAX_SAFE_INTEGER)).max(5000).optional(),
+  action: z.enum(['delete', 'restore']),
+  folder: MailFolderSchema.optional().default('INBOX'),
+  allInFolder: z.boolean().optional().default(false),
+}).refine((body) => body.allInFolder || Boolean(body.uids?.length), 'uids are required unless allInFolder is true');
+
+export function isSafeMailHeaders(to: unknown, subject: unknown, cc: unknown, bcc: unknown, body: unknown): boolean {
+  const hasInjection = (value: unknown): boolean => {
+    if (typeof value === 'string') return /[\r\n]/.test(value);
+    if (Array.isArray(value)) return value.some(hasInjection);
+    if (value && typeof value === 'object') return Object.values(value).some(hasInjection);
+    return false;
+  };
+  const validAddressHeader = (value: unknown) => value == null || (
+    typeof value === 'string' && value.length <= 4000
+  ) || (
+    Array.isArray(value) && value.length <= 100 && value.every((item) => typeof item === 'string' && item.length <= 320)
+  );
+  return validAddressHeader(to) && Boolean(to) && validAddressHeader(cc) && validAddressHeader(bcc)
+    && typeof subject === 'string' && subject.trim().length > 0 && subject.length <= 998
+    && (body === undefined || body === null || (typeof body === 'string' && body.length <= 5 * 1024 * 1024))
+    && ![to, subject, cc, bcc].some(hasInjection);
+}
 
 export function mailRoutes(db: any) {
   const router = Router();
-
+  const requireAuth = createRequireAuth(db);
+  const tlsOptions = mailTlsOptions();
+  const mailConnectLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 8,
+    message: { error: 'Too many mail connection attempts from this IP' },
+  });
+  const allowedCustomMailHosts = configuredMailHostAllowlist();
   const getDynamicConfig = async () => {
     const mailer = createMailer(db);
     return await mailer.getSystemConfig();
@@ -42,11 +102,11 @@ export function mailRoutes(db: any) {
   });
 
   // 1. Connect and Save Credentials
-  router.post('/connect', requireAuth, async (req: any, res: any) => {
+  router.post('/connect', requireAuth, mailConnectLimiter, validate(MailConnectSchema), async (req: any, res: any) => {
     const { email, password, provider, customImapHost, customImapPort, customSmtpHost, customSmtpPort } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-    console.log(`[IMAP Connect] Vừa nhận yêu cầu đăng nhập từ tài khoản: "${email}" (provider: ${provider})`);
+    console.info(`[IMAP Connect] Login attempt (provider: ${provider})`);
 
     try {
       const config = await getDynamicConfig();
@@ -65,10 +125,23 @@ export function mailRoutes(db: any) {
         targetImapPort = Number(customImapPort) || Number(config.IMAP_PORT);
         targetSmtpHost = customSmtpHost || config.SMTP_HOST;
         targetSmtpPort = Number(customSmtpPort) || Number(config.SMTP_PORT);
+        if (process.env.NODE_ENV === 'production') {
+          for (const host of new Set([String(targetImapHost), String(targetSmtpHost)])) {
+            const normalizedHost = host.trim().toLowerCase().replace(/\.$/, '');
+            if (!allowedCustomMailHosts.has(normalizedHost)) {
+              return res.status(400).json({ error: 'Custom mail hosts must be explicitly configured in MAIL_ALLOWED_CUSTOM_HOSTS in production' });
+            }
+          }
+        }
       }
 
+      await assertMailEndpointsSafe({
+        imapHost: String(targetImapHost), imapPort: targetImapPort,
+        smtpHost: String(targetSmtpHost), smtpPort: targetSmtpPort,
+      }, allowedCustomMailHosts);
+
       const authResult = await new Promise<{ success: boolean, reason?: string }>((resolve, reject) => {
-        const socket = tls.connect(targetImapPort, targetImapHost, { rejectUnauthorized: false });
+        const socket = tls.connect(targetImapPort, targetImapHost, tlsOptions);
 
         // Timeout after 15s
         const timer = setTimeout(() => {
@@ -82,8 +155,6 @@ export function mailRoutes(db: any) {
 
         socket.on('data', (data: any) => {
           buffer += data.toString();
-          console.log('[IMAP RAW]', data.toString().trim());
-
           // Wait for greeting
           if (!greetingReceived && buffer.includes('* OK')) {
             greetingReceived = true;
@@ -100,7 +171,7 @@ export function mailRoutes(db: any) {
                 // Try just the username part
                 loginAttempt = 2;
                 const usernameOnly = email.split('@')[0];
-                console.log(`[IMAP Connect] Full email failed. Trying username only: ${usernameOnly}`);
+                console.info('[IMAP Connect] Retrying with username-only login');
                 socket.write(`A2 LOGIN "${usernameOnly}" "${password}"\r\n`);
               }
             } else if (buffer.includes('A2 NO') || buffer.includes('A2 BAD')) {
@@ -173,6 +244,7 @@ export function mailRoutes(db: any) {
     const config = await getDynamicConfig();
     const finalImapHost = targetImapHost || config.IMAP_HOST;
     const finalImapPort = Number(targetImapPort || config.IMAP_PORT);
+    await assertMailEndpointsSafe({ imapHost: finalImapHost, imapPort: finalImapPort });
 
     let client = new ImapFlow({
       host: finalImapHost,
@@ -180,9 +252,7 @@ export function mailRoutes(db: any) {
       secure: true,
       auth: { user: email, pass: password },
       logger: false as any,
-      tls: {
-        rejectUnauthorized: false
-      }
+      tls: tlsOptions
     });
 
     try {
@@ -191,14 +261,14 @@ export function mailRoutes(db: any) {
       if (err.message?.includes('AUTHENTICATE failed')) {
         // Retry with just the username
         const usernameOnly = email.split('@')[0];
-        console.log(`[ImapFlow] Full email failed. Retrying with username: ${usernameOnly}`);
+        console.info('[ImapFlow] Retrying with username-only login');
         client = new ImapFlow({
           host: finalImapHost,
           port: finalImapPort,
           secure: true,
           auth: { user: usernameOnly, pass: password },
           logger: false as any,
-          tls: { rejectUnauthorized: false }
+          tls: tlsOptions
         });
         await client.connect();
       } else {
@@ -242,13 +312,14 @@ export function mailRoutes(db: any) {
     const config = await getDynamicConfig();
     const finalSmtpHost = targetSmtpHost || config.SMTP_HOST || 'smtp.vnptemail.vn';
     const finalSmtpPort = Number(targetSmtpPort || config.SMTP_PORT || 587);
+    await assertMailEndpointsSafe({ smtpHost: finalSmtpHost, smtpPort: finalSmtpPort });
 
     const makeTransporter = (user: string) => nodemailer.createTransport({
       host: finalSmtpHost,
       port: finalSmtpPort,
       secure: finalSmtpPort === 465 || config.SMTP_SECURE === 'true',
       auth: { user, pass: password },
-      tls: { rejectUnauthorized: false },
+      tls: tlsOptions,
       connectionTimeout: 60000,
       greetingTimeout: 60000,
       socketTimeout: 60000,
@@ -597,7 +668,7 @@ export function mailRoutes(db: any) {
   });
 
   // 4b. Star / Unstar email
-  router.patch('/message/:uid/star', requireAuth, async (req: any, res: any) => {
+  router.patch('/message/:uid/star', requireAuth, validate(MailFlagSchema), async (req: any, res: any) => {
     const { folder = 'INBOX', starred } = req.body;
     try {
       const client = await getImapClient(req.user.id, req.user.email);
@@ -620,7 +691,7 @@ export function mailRoutes(db: any) {
   });
 
   // 4b2. Mark read / unread
-  router.patch('/message/:uid/read', requireAuth, async (req: any, res: any) => {
+  router.patch('/message/:uid/read', requireAuth, validate(MailReadSchema), async (req: any, res: any) => {
     const { folder = 'INBOX', isRead } = req.body;
     try {
       const client = await getImapClient(req.user.id, req.user.email);
@@ -674,7 +745,7 @@ export function mailRoutes(db: any) {
   });
 
   // 4d. Bulk Actions (Delete / Restore)
-  router.post('/bulk', requireAuth, async (req: any, res: any) => {
+  router.post('/bulk', requireAuth, validate(MailBulkSchema), async (req: any, res: any) => {
     const { uids, action, folder = 'INBOX', allInFolder = false } = req.body;
     if (!allInFolder && (!uids || !Array.isArray(uids) || uids.length === 0)) {
       return res.status(400).json({ error: 'uids array is required' });
@@ -761,12 +832,15 @@ export function mailRoutes(db: any) {
   });
 
   // Setup multer for file uploads in memory
-  const upload = multer({ storage: multer.memoryStorage() });
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024, files: 10, fields: 30 },
+  });
 
   // 6. Send Email + Save to Sent folder
-  router.post('/send', requireAuth, upload.array('attachments', 10), async (req: any, res: any) => {
+  router.post('/send', requireAuth, upload.array('attachments', 10), validate(MailComposeSchema), async (req: any, res: any) => {
     const { to, subject, body, cc, bcc } = req.body;
-    if (!to || !subject) return res.status(400).json({ error: 'To and Subject are required' });
+    if (!isSafeMailHeaders(to, subject, cc, bcc, body)) return res.status(400).json({ error: 'Invalid recipient, subject, body, or email header value' });
 
     try {
       // Fetch full user from DB (name for display) + VNPT email from mailPassword
@@ -792,17 +866,16 @@ export function mailRoutes(db: any) {
       // Also pass mailEmail to IMAP appender later
       const senderEmail = mailEmail;
 
-      console.log(`[SMTP] Sending email from: ${fromLabel} → to: ${to}`);
+      console.info('[SMTP] Sending email');
 
       // Map multer files to nodemailer attachments
       let totalSize = 0;
-      console.log(`[SMTP] Received files: ${req.files ? (req.files as any[]).length : 0}`);
+      console.info(`[SMTP] Received ${(req.files as any[] | undefined)?.length || 0} attachment(s)`);
       const mailAttachments = req.files ? (req.files as any[]).map(f => {
         totalSize += f.size;
         const decodedName = Buffer.from(f.originalname, 'latin1').toString('utf8');
-        console.log(`[SMTP] Attachment: ${decodedName} (${f.size} bytes)`);
         return {
-          filename: decodedName,
+          filename: decodedName.replace(/[\r\n]/g, '').slice(0, 255),
           content: f.buffer,
           contentType: f.mimetype
         };
@@ -848,10 +921,7 @@ export function mailRoutes(db: any) {
           await db.run('UPDATE mail_tracking SET messageId = ? WHERE id = ?', [info.messageId, trackingId]);
         }
 
-        console.log(`[SMTP] Response: ${info.response}`);
-        console.log(`[SMTP] Accepted: ${JSON.stringify(info.accepted)}`);
-        console.log(`[SMTP] Rejected: ${JSON.stringify(info.rejected)}`);
-        console.log(`[SMTP] MessageId: ${info.messageId}`);
+        console.info('[SMTP] Message sent');
 
         if (info.rejected && info.rejected.length > 0) {
           console.warn(`[SMTP] Partially rejected by server: ${info.rejected.join(', ')}`);
@@ -885,20 +955,20 @@ export function mailRoutes(db: any) {
         } catch (imapErr: any) {
           console.error('[IMAP] Background append failed:', imapErr.message);
         }
-      }).catch((err: any) => {
-        console.error(`[SMTP] Background send failed:`, err.message);
+      }).catch(() => {
+        console.error('[SMTP] Background send failed.');
       });
 
-    } catch (error: any) {
-      console.error('Send email error:', error);
-      res.status(500).json({ error: error.message || 'Failed to send email' });
+    } catch {
+      console.error('[SMTP] Send email failed.');
+      res.status(502).json({ error: 'Failed to send email' });
     }
   });
 
   // 7. Schedule Email
-  router.post('/schedule', requireAuth, upload.array('attachments', 10), async (req: any, res: any) => {
+  router.post('/schedule', requireAuth, upload.array('attachments', 10), validate(MailScheduleSchema), async (req: any, res: any) => {
     const { to, subject, body, cc, bcc, scheduledAt } = req.body;
-    if (!to || !subject || !scheduledAt) return res.status(400).json({ error: 'To, Subject and ScheduledAt are required' });
+    if (!isSafeMailHeaders(to, subject, cc, bcc, body) || !scheduledAt || Number.isNaN(Date.parse(scheduledAt))) return res.status(400).json({ error: 'Invalid recipient, subject, body, or schedule date' });
 
     try {
       const dbUser = await db.get('SELECT id, mailPassword FROM users WHERE id = ?', [req.user.id]);
@@ -916,16 +986,18 @@ export function mailRoutes(db: any) {
 
       const config = await getDynamicConfig();
       // 1. Configure Nodemailer
+      const scheduledSmtpPort = Number(config.SMTP_PORT || 587);
+      await assertMailEndpointsSafe({ smtpHost: config.SMTP_HOST || 'smtp.vnptemail.vn', smtpPort: scheduledSmtpPort });
       const transporter = nodemailer.createTransport({
         host: config.SMTP_HOST || 'smtp.vnptemail.vn',
-        port: Number(config.SMTP_PORT || 587),
-        secure: config.SMTP_SECURE === 'true',
+        port: scheduledSmtpPort,
+        secure: scheduledSmtpPort === 465 || config.SMTP_SECURE === 'true',
         auth: { user: senderEmail, pass: password },
-        tls: { rejectUnauthorized: false }
+        tls: tlsOptions
       });
 
       const mailAttachments = req.files ? (req.files as any[]).map(f => ({
-        filename: Buffer.from(f.originalname, 'latin1').toString('utf8'),
+        filename: Buffer.from(f.originalname, 'latin1').toString('utf8').replace(/[\r\n]/g, '').slice(0, 255),
         content: f.buffer.toString('base64'),
         contentType: f.mimetype
       })) : [];
@@ -937,9 +1009,9 @@ export function mailRoutes(db: any) {
       );
 
       res.json({ success: true, message: 'Đã lên lịch gửi email.' });
-    } catch (error: any) {
-      console.error('Schedule email error:', error);
-      res.status(500).json({ error: error.message || 'Failed to schedule email' });
+    } catch {
+      console.error('[SMTP] Schedule email failed.');
+      res.status(502).json({ error: 'Failed to schedule email' });
     }
   });
 

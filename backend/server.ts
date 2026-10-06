@@ -6,6 +6,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
+import helmet from 'helmet';
+import { createSecurityHeaderOptions } from './utils/securityHeaders.js';
 
 import { initDbMysql } from './db_mysql.js';
 import { createMailer } from './mailer.js';
@@ -34,7 +36,7 @@ import { documentRoutes } from './routes/documents.js';
 import { aiRoutes, invalidateAiKeyCache } from './routes/ai.js';
 
 import { initSocket } from './socket.js';
-import { requireAuth, requireAdmin } from './middleware/auth.js';
+import { createRequireAuth, requireAdmin } from './middleware/auth.js';
 
 import { scheduleFridayReminder } from './schedulers/fridayReminder.js';
 import { scheduleNoteReminders } from './schedulers/noteReminder.js';
@@ -51,24 +53,64 @@ async function startServer() {
   // Trust the first proxy to correctly extract client IP for rate limiting
   app.set('trust proxy', 1);
 
-  if (!process.env.JWT_SECRET) {
-    if (process.env.NODE_ENV === 'production') {
-      console.error('❌ LỖI BẢO MẬT: Biến môi trường JWT_SECRET chưa được thiết lập trong production!');
+  if (process.env.NODE_ENV === 'production') {
+    const requiredSecrets = ['JWT_SECRET', 'MAIL_ENCRYPTION_KEY', 'APP_BASE_URL', 'ALLOWED_ORIGIN', 'ADMIN_DEFAULT_PASSWORD'];
+    const missingSecrets = requiredSecrets.filter((name) => {
+      const value = process.env[name]?.trim() || '';
+      return !value || /change[-_ ]?me|your_|example|placeholder|replace_with/i.test(value);
+    });
+    if (missingSecrets.length > 0) {
+      console.error(`[SECURITY] Required production configuration is missing or uses a placeholder: ${missingSecrets.join(', ')}`);
       process.exit(1);
-    } else {
+    }
+    if ((process.env.JWT_SECRET?.length || 0) < 32 || (process.env.MAIL_ENCRYPTION_KEY?.length || 0) < 32) {
+      console.error('[SECURITY] JWT_SECRET and MAIL_ENCRYPTION_KEY must be at least 32 characters in production.');
+      process.exit(1);
+    }
+    if ((process.env.ADMIN_DEFAULT_PASSWORD?.length || 0) < 16) {
+      console.error('[SECURITY] ADMIN_DEFAULT_PASSWORD must be at least 16 characters in production.');
+      process.exit(1);
+    }
+    try {
+      const appUrl = new URL(process.env.APP_BASE_URL!);
+      if (appUrl.protocol !== 'https:') throw new Error('APP_BASE_URL must use HTTPS');
+      for (const origin of process.env.ALLOWED_ORIGIN!.split(',').map((value) => value.trim()).filter(Boolean)) {
+        const parsedOrigin = new URL(origin);
+        if (parsedOrigin.origin !== origin || parsedOrigin.protocol !== 'https:') throw new Error('ALLOWED_ORIGIN entries must be HTTPS origins without paths');
+      }
+    } catch (error: any) {
+      console.error(`[SECURITY] Invalid production URL configuration: ${error.message}`);
+      process.exit(1);
+    }
+  } else if (!process.env.JWT_SECRET) {
       process.env.JWT_SECRET = crypto.randomBytes(32).toString('hex');
       console.warn('⚠️ CẢNH BÁO DEV: JWT_SECRET chưa thiết lập. Đã tự sinh ngẫu nhiên tạm thời cho phiên làm việc hiện tại.');
-    }
   }
 
   const httpServer = http.createServer(app);
   const PORT = process.env.PORT || 3500;
 
-  initSocket(httpServer);
+  const allowedOrigins = (process.env.ALLOWED_ORIGIN || '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+  if (process.env.NODE_ENV === 'production' && allowedOrigins.length === 0) {
+    console.error('❌ LỖI BẢO MẬT: ALLOWED_ORIGIN chưa được thiết lập trong production!');
+    process.exit(1);
+  }
+  const websocketOrigins = allowedOrigins.map((origin) => origin.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:'));
+  const corsOptions = {
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+      if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error('CORS origin denied'));
+    },
+    credentials: true,
+  };
 
-  app.use(cors({ origin: process.env.ALLOWED_ORIGIN || '*', credentials: true }));
-  app.use(express.json({ limit: '50mb' }));
-  app.use(express.urlencoded({ limit: '50mb', extended: true }));
+  app.use(helmet(createSecurityHeaderOptions(process.env.NODE_ENV === 'production', allowedOrigins)));
+  app.use(cors(corsOptions));
+  app.use(express.json({ limit: '5mb' }));
+  app.use(express.urlencoded({ limit: '64kb', extended: false, parameterLimit: 100 }));
 
   const globalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -80,12 +122,19 @@ async function startServer() {
     max: 10,
     message: { error: 'Too many login attempts from this IP' },
   });
-
+  const uploadLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+    message: { error: 'Too many uploads from this IP' },
+  });
   app.use('/api', globalLimiter);
   app.use('/api/auth/login', loginLimiter);
 
   // Database: MySQL (duy nhất)
   const db = await initDbMysql();
+  app.use((_req, _res, next) => db.runWithRequestContext(next));
+  const requireAuth = createRequireAuth(db);
+  initSocket(httpServer, db);
 
   const mailer = createMailer(db);
 
@@ -123,11 +172,7 @@ async function startServer() {
   initMailScheduler(db);
   scheduleRevenueAutoSubmit(db);
 
-  app.use('/api/upload', requireAuth, uploadRoutes());
-
-  // Serve uploaded files
-  const uploadsPath = path.join(__dirname, '../uploads');
-  app.use('/uploads', express.static(uploadsPath));
+  app.use('/api/upload', uploadLimiter, uploadRoutes(db));
 
   const frontendPath = path.join(__dirname, '../frontend/dist');
   app.use(express.static(frontendPath));
@@ -145,11 +190,3 @@ async function startServer() {
 }
 
 startServer();
-
-
-
-
-
-
-
-

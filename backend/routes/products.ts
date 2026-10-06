@@ -1,4 +1,21 @@
 import { Router } from 'express';
+import { z } from 'zod';
+import { validate } from '../middleware/validate.js';
+
+const ProductBodySchema = z.object({
+  name: z.string().trim().min(1).max(500),
+  unit: z.string().max(100).optional(),
+  origin: z.string().max(300).optional(),
+  defaultPrice: z.coerce.number().finite().min(0).max(1_000_000_000_000).optional(),
+  category: z.string().max(191).optional(),
+  importQuantity: z.coerce.number().finite().min(0).max(1_000_000_000).optional(),
+  remainingQuantity: z.coerce.number().finite().min(0).max(1_000_000_000).optional(),
+  importPrice: z.coerce.number().finite().min(0).max(1_000_000_000_000).optional(),
+  salePrice: z.coerce.number().finite().min(0).max(1_000_000_000_000).optional(),
+  importCode: z.string().max(191).optional(),
+  invoiceDate: z.string().max(40).nullable().optional(),
+});
+const ProductCreateSchema = z.union([ProductBodySchema, z.array(ProductBodySchema).min(1).max(100)]);
 
 export const productRoutes = (db: any) => {
   const router = Router();
@@ -92,7 +109,7 @@ export const productRoutes = (db: any) => {
   });
 
   // Thêm sản phẩm mới (hỗ trợ cả đơn lẻ và hàng loạt)
-  router.post('/', requireWarehousePerm, async (req, res) => {
+  router.post('/', requireWarehousePerm, validate(ProductCreateSchema), async (req, res) => {
     const isArray = Array.isArray(req.body);
     const payloads = isArray ? req.body : [req.body];
 
@@ -171,7 +188,7 @@ export const productRoutes = (db: any) => {
   });
 
   // Sửa sản phẩm
-  router.put('/:id', requireWarehousePerm, async (req, res) => {
+  router.put('/:id', requireWarehousePerm, validate(ProductBodySchema), async (req, res) => {
     try {
       const { id } = req.params;
       const { name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate } = req.body;

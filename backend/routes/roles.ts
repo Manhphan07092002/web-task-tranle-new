@@ -1,4 +1,15 @@
 import { Router } from 'express';
+import { z } from 'zod';
+import { requirePermission } from '../middleware/auth.js';
+import { validate } from '../middleware/validate.js';
+
+const RoleBodySchema = z.object({
+  id: z.string().trim().min(1).max(191).optional(),
+  name: z.string().trim().min(1).max(100),
+  description: z.string().max(1000).optional(),
+  color: z.string().max(50).optional(),
+  permissions: z.array(z.string().trim().min(1).max(100)).max(200).optional(),
+});
 
 export function roleRoutes(db: any) {
   const router = Router();
@@ -14,7 +25,7 @@ export function roleRoutes(db: any) {
     } catch (e) { res.status(500).json({ error: 'Failed to fetch roles' }); }
   });
 
-  router.post('/', async (req, res) => {
+  router.post('/', requirePermission('admin_panel'), validate(RoleBodySchema), async (req, res) => {
     const { id, name, description, color, permissions } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
     try {
@@ -27,7 +38,7 @@ export function roleRoutes(db: any) {
     }
   });
 
-  router.put('/:id', async (req, res) => {
+  router.put('/:id', requirePermission('admin_panel'), validate(RoleBodySchema.omit({ id: true })), async (req, res) => {
     const { name, description, color, permissions } = req.body;
     try {
       const existing = await db.get('SELECT * FROM roles WHERE id = ?', [req.params.id]);
@@ -37,6 +48,12 @@ export function roleRoutes(db: any) {
       } else {
         await db.run('UPDATE roles SET name = ?, description = ?, color = ?, permissions = ? WHERE id = ?', [name ?? existing.name, description ?? existing.description, color ?? existing.color, JSON.stringify(permissions ?? JSON.parse(existing.permissions || '[]')), req.params.id]);
       }
+      const updatedRoleName = existing.isSystem ? existing.name : (name ?? existing.name);
+      if (updatedRoleName !== existing.name) {
+        await db.run('UPDATE users SET role = ?, tokenVersion = tokenVersion + 1 WHERE role = ?', [updatedRoleName, existing.name]);
+      } else {
+        await db.run('UPDATE users SET tokenVersion = tokenVersion + 1 WHERE role = ?', [existing.name]);
+      }
       res.json({ success: true });
     } catch (e: any) {
       if (e.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Tên vai trò đã tồn tại' });
@@ -44,7 +61,7 @@ export function roleRoutes(db: any) {
     }
   });
 
-  router.delete('/:id', async (req, res) => {
+  router.delete('/:id', requirePermission('admin_panel'), async (req, res) => {
     try {
       const role = await db.get('SELECT * FROM roles WHERE id = ?', [req.params.id]);
       if (!role) return res.status(404).json({ error: 'Not found' });

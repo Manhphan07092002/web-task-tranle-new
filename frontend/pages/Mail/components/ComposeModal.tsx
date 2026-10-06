@@ -7,6 +7,7 @@ import { useAuth } from '../../../contexts/AuthContext';
 import Flatpickr from 'react-flatpickr';
 import { toLocalDatetimeString } from '../../../utils/dateUtils';
 import { avatarColor } from '../utils';
+import DOMPurify from 'dompurify';
 
 interface ComposeData {
   to: string;
@@ -33,7 +34,7 @@ export default function ComposeModal({ initialData, onClose, onDiscard, onSendSu
   const [showCc, setShowCc] = useState(!!initialData.cc);
   const [showBcc, setShowBcc] = useState(!!initialData.bcc);
   const [composeSubject, setComposeSubject] = useState(initialData.subject);
-  const [composeBody, setComposeBody] = useState(initialData.body);
+  const [composeBody, setComposeBody] = useState(() => DOMPurify.sanitize(initialData.body));
   const [composeAttachments, setComposeAttachments] = useState<File[]>([]);
   
   const [isSending, setIsSending] = useState(false);
@@ -51,7 +52,7 @@ export default function ComposeModal({ initialData, onClose, onDiscard, onSendSu
   // Focus body if empty or has just signature
   useEffect(() => {
     if (bodyRef.current && bodyRef.current.innerHTML !== composeBody) {
-      bodyRef.current.innerHTML = composeBody;
+      bodyRef.current.innerHTML = DOMPurify.sanitize(composeBody);
     }
   }, [composeBody]);
 
@@ -368,7 +369,7 @@ export default function ComposeModal({ initialData, onClose, onDiscard, onSendSu
           ref={bodyRef}
           contentEditable
           suppressContentEditableWarning
-          onInput={e => setComposeBody((e.target as HTMLDivElement).innerHTML)}
+          onInput={e => setComposeBody(DOMPurify.sanitize((e.target as HTMLDivElement).innerHTML))}
           data-placeholder="Viết nội dung email..."
           className="flex-1 overflow-y-auto px-5 py-4 text-sm text-gray-700 leading-relaxed focus:outline-none empty:before:content-[attr(data-placeholder)] empty:before:text-gray-300"
         />

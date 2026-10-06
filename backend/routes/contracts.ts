@@ -1,15 +1,89 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
+import { z } from 'zod';
+import { validate } from '../middleware/validate.js';
 import { sendNotification } from '../utils/notify.js';
+
+const ContractProductSchema = z.object({
+  name: z.string().trim().min(1).max(300),
+  unit: z.string().max(100).optional(),
+  quantity: z.coerce.number().finite().min(0).max(1_000_000_000),
+  origin: z.string().max(300).optional(),
+  unitPrice: z.coerce.number().finite().min(0).max(1_000_000_000_000),
+  total: z.coerce.number().finite().min(0).max(1_000_000_000_000).optional(),
+  vatRate: z.coerce.number().finite().min(0).max(100).optional(),
+  exportedQuantity: z.coerce.number().finite().min(0).optional(),
+  invoicedQuantity: z.coerce.number().finite().min(0).optional(),
+  sourceProductId: z.string().max(191).optional(),
+  sourceProductName: z.string().max(300).optional(),
+  isBuyingPriceFallback: z.boolean().optional(),
+  importCode: z.string().max(191).optional(),
+});
+const ContractPaymentSchema = z.object({
+  id: z.string().trim().min(1).max(191),
+  paymentDate: z.string().max(40),
+  amount: z.coerce.number().finite().min(0).max(1_000_000_000_000),
+  method: z.enum(['cash', 'transfer', 'other']),
+  note: z.string().max(2000).optional(),
+});
+const ContractBodySchema = z.object({
+  contractNumber: z.string().trim().min(1).max(191),
+  clientName: z.string().trim().min(1).max(500),
+  contractName: z.string().trim().min(1).max(500),
+  products: z.array(ContractProductSchema).max(500).optional(),
+  preTaxValue: z.coerce.number().finite().min(0).max(1_000_000_000_000).optional(),
+  vatRate: z.coerce.number().finite().min(0).max(100).optional(),
+  postTaxValue: z.coerce.number().finite().min(0).max(1_000_000_000_000).optional(),
+  invoiceDate: z.string().max(40).nullable().optional(),
+  invoiceNumber: z.string().max(191).nullable().optional(),
+  department: z.string().max(191).optional(),
+  status: z.enum(['draft', 'pending', 'in_progress', 'completed', 'cancelled']).optional(),
+  attachments: z.array(z.string().regex(/^\/api\/upload\/files\/[a-f0-9]{24}\.(?:jpg|png|gif|webp|pdf|doc|docx|xls|xlsx)$/i)).max(20).optional(),
+  paidAmount: z.coerce.number().finite().min(0).max(1_000_000_000_000).optional(),
+  projectId: z.string().max(191).nullable().optional(),
+  contractType: z.enum(['input', 'output']).optional(),
+  supplierName: z.string().max(500).nullable().optional(),
+  documentChecklist: z.record(z.string().max(64), z.boolean()).optional(),
+  linkedInputContractIds: z.array(z.string().trim().min(1).max(191)).max(100).optional(),
+  signedDate: z.string().max(40).nullable().optional(),
+  startDate: z.string().max(40).nullable().optional(),
+  endDate: z.string().max(40).nullable().optional(),
+  warrantyMonths: z.coerce.number().int().min(0).max(1200).optional(),
+  payments: z.array(ContractPaymentSchema).max(500).optional(),
+  docSentDate: z.string().max(40).nullable().optional(),
+  docReceivedDate: z.string().max(40).nullable().optional(),
+  docAccountantDate: z.string().max(40).nullable().optional(),
+  docReceiver: z.string().max(300).nullable().optional(),
+  docAccountantUserId: z.string().max(191).nullable().optional(),
+  docAccountantStatus: z.enum(['pending', 'confirmed', 'rejected']).optional(),
+});
+const EmptyActionSchema = z.object({});
+const ContractFeedbackSchema = z.object({ feedback: z.string().trim().min(1).max(5000) });
+import { sanitizeActivityValue } from '../utils/activityPrivacy.js';
 
 export function contractRoutes(db: any) {
   const router = Router();
+  const toProtectedUploadUrl = (url: string) => url.replace(
+    /^\/uploads\/reports\/([a-f0-9]{24}\.(?:jpg|png|gif|webp|pdf|doc|docx|xls|xlsx))$/i,
+    '/api/upload/files/$1',
+  );
+
+  async function associateUploadedFiles(urls: string[], contractId: string, ownerId: string) {
+    for (const url of urls) {
+      const match = /^\/api\/upload\/files\/([a-f0-9]{24}\.(?:jpg|png|gif|webp|pdf|doc|docx|xls|xlsx))$/.exec(url);
+      if (!match) continue;
+      await db.run(
+        'UPDATE uploaded_files SET entityType = ?, entityId = ? WHERE filename = ? AND ownerId = ? AND (entityType IS NULL OR (entityType = ? AND entityId = ?))',
+        ['contracts', contractId, match[1], ownerId, 'contracts', contractId],
+      );
+    }
+  }
 
   async function logActivity(userId: string, action: string, entityId: string, metadata: any) {
     const id = randomUUID();
     await db.run(
       'INSERT INTO activity_logs (id, userId, action, entityId, entityType, metadata, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [id, userId, action, entityId, 'contract', JSON.stringify(metadata), new Date().toISOString()]
+      [id, userId, action, entityId, 'contract', JSON.stringify(sanitizeActivityValue(metadata)), new Date().toISOString()]
     );
   }
 
@@ -340,7 +414,7 @@ export function contractRoutes(db: any) {
       const mapped = rows.map((r: any) => ({
         ...r,
         products: r.products ? JSON.parse(r.products) : [],
-        attachments: r.attachments ? JSON.parse(r.attachments) : [],
+        attachments: r.attachments ? JSON.parse(r.attachments).map((url: string) => typeof url === 'string' ? toProtectedUploadUrl(url) : url) : [],
         documentChecklist: r.documentChecklist ? JSON.parse(r.documentChecklist) : {},
         payments: r.payments ? JSON.parse(r.payments) : []
       }));
@@ -371,7 +445,7 @@ export function contractRoutes(db: any) {
       const mapped = rows.map((r: any) => ({
         ...r,
         products: r.products ? JSON.parse(r.products) : [],
-        attachments: r.attachments ? JSON.parse(r.attachments) : [],
+        attachments: r.attachments ? JSON.parse(r.attachments).map((url: string) => typeof url === 'string' ? toProtectedUploadUrl(url) : url) : [],
         payments: r.payments ? JSON.parse(r.payments) : []
       }));
       res.json(mapped);
@@ -379,16 +453,30 @@ export function contractRoutes(db: any) {
   });
 
   // CREATE
-  router.post('/', async (req, res) => {
+  router.post('/', validate(ContractBodySchema), async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-    const { id, contractNumber, clientName, contractName, products, preTaxValue, vatRate, postTaxValue, invoiceDate, invoiceNumber, department, createdBy, status, attachments, paidAmount, projectId, contractType, supplierName, documentChecklist, signedDate, startDate, endDate, warrantyMonths, payments, docSentDate, docReceivedDate, docAccountantDate, docReceiver, docAccountantUserId, docAccountantStatus } = req.body;
+    const { contractNumber, clientName, contractName, products, preTaxValue, vatRate, postTaxValue, invoiceDate, invoiceNumber, department: requestedDepartment, status, attachments, paidAmount, projectId, contractType, supplierName, documentChecklist, signedDate, startDate, endDate, warrantyMonths, payments, docSentDate, docReceivedDate, docAccountantDate, docReceiver, docAccountantUserId, docAccountantStatus } = req.body;
 
     const perms = user.permissions || [];
     const isSystemAdmin = perms.includes('admin_panel') || perms.includes('director_feedback') || user.role === 'Admin' || user.role === 'Director';
-    const isDeptManager = (user.role && (user.role === 'Manager' || user.role.startsWith('Trưởng') || user.role.includes('Trưởng'))) && user.department === department;
+    const isDeptManager = (user.role && (user.role === 'Manager' || user.role.startsWith('Trưởng') || user.role.includes('Trưởng'))) && user.department === requestedDepartment;
     const isManagerOrAdmin = isSystemAdmin || isDeptManager;
+    const department = isManagerOrAdmin && typeof requestedDepartment === 'string' && requestedDepartment.trim() ? requestedDepartment.trim() : user.department;
+    const effectiveStatus = isManagerOrAdmin ? (status || 'draft') : (status === 'pending' ? 'pending' : 'draft');
+    const effectiveAccountantId = isManagerOrAdmin ? (docAccountantUserId || null) : null;
+
+    if (!department) return res.status(400).json({ error: 'Phòng ban không hợp lệ' });
+    if (status && !['draft', 'pending', 'in_progress', 'completed', 'cancelled'].includes(status)) {
+      return res.status(400).json({ error: 'Trạng thái hợp đồng không hợp lệ' });
+    }
+    if (status === 'completed' || status === 'cancelled') {
+      return res.status(400).json({ error: 'Không thể tạo hợp đồng ở trạng thái kết thúc; hãy dùng luồng phê duyệt/bàn giao' });
+    }
+    if (!isManagerOrAdmin && (docAccountantUserId || docAccountantStatus || docReceiver || docSentDate || docReceivedDate || docAccountantDate)) {
+      return res.status(403).json({ error: 'Chỉ quản lý phòng ban hoặc quản trị viên được phân công và cập nhật bàn giao hồ sơ' });
+    }
 
     if (!isManagerOrAdmin && status && status !== 'draft' && status !== 'pending') {
       return res.status(400).json({ error: 'Nhân viên chỉ có quyền tạo hợp đồng ở trạng thái Bản nháp hoặc Chờ duyệt!' });
@@ -431,7 +519,11 @@ export function contractRoutes(db: any) {
       }
 
       const now = new Date().toISOString();
-      const contractId = id || randomUUID();
+      const contractId = randomUUID();
+      if (effectiveAccountantId) {
+        const accountant = await db.get('SELECT id, isLocked FROM users WHERE id = ?', [effectiveAccountantId]);
+        if (!accountant || accountant.isLocked) return res.status(400).json({ error: 'Người nhận bàn giao không tồn tại hoặc đang bị khóa' });
+      }
 
       // Query active documents for this contract from the documents table
       const docs = await db.all(
@@ -439,10 +531,22 @@ export function contractRoutes(db: any) {
         [contractId, 'contracts']
       );
       const attachmentsList = docs.map((d: any) => d.url);
-      const bodyAttachments = Array.isArray(attachments) ? attachments : [];
+      if (attachments !== undefined && (!Array.isArray(attachments) || attachments.length > 20 || attachments.some((url: unknown) => typeof url !== 'string' || !/^\/api\/upload\/files\/[a-f0-9]{24}\.(jpg|png|gif|webp|pdf|doc|docx|xls|xlsx)$/.test(url)))) {
+        return res.status(400).json({ error: 'Danh sách tệp đính kèm không hợp lệ' });
+      }
+      const bodyAttachments: string[] = Array.isArray(attachments) ? attachments : [];
+      if (bodyAttachments.length > 0) {
+        const filenames = bodyAttachments.map((url) => decodeURIComponent(url.split('/').pop() || ''));
+        const placeholders = filenames.map(() => '?').join(',');
+        const ownedFiles = await db.all(`SELECT filename FROM uploaded_files WHERE ownerId = ? AND filename IN (${placeholders})`, [user.id, ...filenames]);
+        const allowedFiles = new Set(ownedFiles.map((file: any) => file.filename));
+        if (!isSystemAdmin && filenames.some((filename) => !allowedFiles.has(filename))) {
+          return res.status(403).json({ error: 'Chỉ được đính kèm tệp do chính bạn tải lên' });
+        }
+      }
       const combinedAttachments = Array.from(new Set([...attachmentsList, ...bodyAttachments]));
 
-      const accountantStatus = docAccountantUserId ? (docAccountantStatus || 'pending') : null;
+      const accountantStatus = effectiveAccountantId ? (docAccountantStatus || 'pending') : null;
 
       // Begin transaction
       await db.run('BEGIN TRANSACTION');
@@ -450,14 +554,15 @@ export function contractRoutes(db: any) {
       await db.run(
         `INSERT INTO contracts (id, contractNumber, clientName, contractName, products, preTaxValue, vatRate, postTaxValue, invoiceDate, invoiceNumber, department, createdBy, createdAt, status, attachments, paidAmount, projectId, contractType, supplierName, documentChecklist, signedDate, startDate, endDate, warrantyMonths, payments, docSentDate, docReceivedDate, docAccountantDate, docReceiver, docAccountantUserId, docAccountantStatus)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [contractId, contractNumber.trim(), clientName.trim(), contractName.trim(), products ? JSON.stringify(products) : null, preTaxValue ?? 0, vatRate ?? 0, postTaxValue ?? 0, invoiceDate ?? null, invoiceNumber ?? null, department, createdBy, now, status || 'draft', JSON.stringify(combinedAttachments), paidAmount ?? 0, projectId || null, contractType || 'output', supplierName || null, documentChecklist ? JSON.stringify(documentChecklist) : null, signedDate ?? null, startDate ?? null, endDate ?? null, Number(warrantyMonths) || 0, payments ? JSON.stringify(payments) : null, docSentDate ?? null, docReceivedDate ?? null, docAccountantDate ?? null, docReceiver ?? null, docAccountantUserId ?? null, accountantStatus]
+        [contractId, contractNumber.trim(), clientName.trim(), contractName.trim(), products ? JSON.stringify(products) : null, preTaxValue ?? 0, vatRate ?? 0, postTaxValue ?? 0, invoiceDate ?? null, invoiceNumber ?? null, department, user.id, now, effectiveStatus, JSON.stringify(combinedAttachments), isManagerOrAdmin ? (paidAmount ?? 0) : 0, projectId || null, contractType || 'output', supplierName || null, documentChecklist ? JSON.stringify(documentChecklist) : null, signedDate ?? null, startDate ?? null, endDate ?? null, Number(warrantyMonths) || 0, payments ? JSON.stringify(payments) : null, isManagerOrAdmin ? (docSentDate ?? null) : null, isManagerOrAdmin ? (docReceivedDate ?? null) : null, isManagerOrAdmin ? (docAccountantDate ?? null) : null, isManagerOrAdmin ? (docReceiver ?? null) : null, effectiveAccountantId, accountantStatus]
       );
+      await associateUploadedFiles(bodyAttachments, contractId, user.id);
 
       // Send notification to accountant if assigned during creation
-      if (docAccountantUserId) {
+      if (effectiveAccountantId) {
         await sendNotification(
           db,
-          docAccountantUserId,
+          effectiveAccountantId,
           'contract_handover',
           'Bàn giao hồ sơ hợp đồng',
           `Hợp đồng "${contractName.trim()}" (Số HĐ: ${contractNumber.trim()}) được bàn giao cho bạn để kiểm tra và nhận hồ sơ.`,
@@ -466,7 +571,7 @@ export function contractRoutes(db: any) {
       }
 
       // Trưởng phòng notification if status is 'pending'
-      if (status === 'pending') {
+      if (effectiveStatus === 'pending') {
         const creatorName = req.user?.name || 'Nhân viên';
         const managers = await db.all("SELECT id FROM users WHERE (role = 'Manager' OR role LIKE 'Trưởng%' OR role LIKE 'trưởng%') AND department = ?", [department]);
         for (const manager of managers) {
@@ -486,11 +591,9 @@ export function contractRoutes(db: any) {
         const taskId = randomUUID();
         await db.run(
           'INSERT INTO tasks (id, title, description, startDate, priority, status, createdBy, department, contractId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [taskId, `Thực hiện HĐ: ${contractNumber.trim()}`, `Hợp đồng: ${contractName.trim()}\nKhách hàng: ${clientName.trim()}`, now.split('T')[0], 'Medium', 'Todo', createdBy, department, contractId]
+          [taskId, `Thực hiện HĐ: ${contractNumber.trim()}`, `Hợp đồng: ${contractName.trim()}\nKhách hàng: ${clientName.trim()}`, now.split('T')[0], 'Medium', 'Todo', user.id, department, contractId]
         );
-        if (createdBy) {
-          await db.run('INSERT INTO task_assignees (taskId, userId) VALUES (?, ?)', [taskId, createdBy]);
-        }
+        await db.run('INSERT INTO task_assignees (taskId, userId) VALUES (?, ?)', [taskId, user.id]);
       }
 
       // Nếu là hợp đồng bán, tự động cập nhật salePrice của sản phẩm trong kho
@@ -546,7 +649,7 @@ export function contractRoutes(db: any) {
           try {
             await db.run(
               'INSERT INTO contract_links (id, outputContractId, inputContractId, linkType, createdBy, createdAt) VALUES (?, ?, ?, ?, ?, ?)',
-              [linkId, contractId, inputId, 'procurement', createdBy || null, now]
+              [linkId, contractId, inputId, 'procurement', user.id, now]
             );
           } catch (err: any) {
             if (!err.message?.includes('UNIQUE')) console.error(err);
@@ -573,11 +676,11 @@ export function contractRoutes(db: any) {
   });
 
   // UPDATE
-  router.put('/:id', async (req, res) => {
+  router.put('/:id', validate(ContractBodySchema), async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-    const contractId = req.params.id;
+    const contractId = String(req.params.id);
     const { contractNumber, clientName, contractName, products, preTaxValue, vatRate, postTaxValue, invoiceDate, invoiceNumber, department, status, attachments, paidAmount, projectId, contractType, supplierName, documentChecklist, linkedInputContractIds, signedDate, startDate, endDate, warrantyMonths, payments, docSentDate, docReceivedDate, docAccountantDate, docReceiver, docAccountantUserId, docAccountantStatus } = req.body;
 
     // 1. Input Validation
@@ -609,7 +712,7 @@ export function contractRoutes(db: any) {
     try {
       // Get existing contract to check existence, creator, and status
       const existingContract = await db.get(
-        'SELECT createdBy, status, department, approvalFeedback, docAccountantUserId, docAccountantStatus, contractName, contractNumber FROM contracts WHERE id = ? AND (isDeleted IS NULL OR isDeleted = 0)',
+        'SELECT createdBy, status, department, approvalFeedback, docAccountantUserId, docAccountantStatus, docSentDate, docReceivedDate, docAccountantDate, docReceiver, paidAmount, contractName, contractNumber FROM contracts WHERE id = ? AND (isDeleted IS NULL OR isDeleted = 0)',
         [contractId]
       );
       if (!existingContract) {
@@ -630,6 +733,24 @@ export function contractRoutes(db: any) {
 
       if (!isOwner && !isManagerOrAdmin) {
         return res.status(403).json({ error: 'Bạn không có quyền chỉnh sửa hợp đồng này' });
+      }
+
+      const requestedAccountantId = docAccountantUserId === undefined ? existingContract.docAccountantUserId : (docAccountantUserId || null);
+      if (!isManagerOrAdmin) {
+        const workflowChanged = requestedAccountantId !== existingContract.docAccountantUserId
+          || (docAccountantStatus !== undefined && docAccountantStatus !== existingContract.docAccountantStatus)
+          || (docSentDate !== undefined && docSentDate !== existingContract.docSentDate)
+          || (docReceivedDate !== undefined && docReceivedDate !== existingContract.docReceivedDate)
+          || (docAccountantDate !== undefined && docAccountantDate !== existingContract.docAccountantDate)
+          || (docReceiver !== undefined && docReceiver !== existingContract.docReceiver)
+          || (paidAmount !== undefined && Number(paidAmount) !== Number(existingContract.paidAmount || 0));
+        if (workflowChanged) {
+          return res.status(403).json({ error: 'Chỉ quản lý phòng ban hoặc quản trị viên được thay đổi phân công, bàn giao hồ sơ và số tiền đã thanh toán' });
+        }
+      }
+      if (requestedAccountantId && requestedAccountantId !== existingContract.docAccountantUserId) {
+        const accountant = await db.get('SELECT id, isLocked FROM users WHERE id = ?', [requestedAccountantId]);
+        if (!accountant || accountant.isLocked) return res.status(400).json({ error: 'Người nhận bàn giao không tồn tại hoặc đang bị khóa' });
       }
 
       // Chặn nhân viên sửa khi HĐ đang chờ duyệt
@@ -659,14 +780,26 @@ export function contractRoutes(db: any) {
         [contractId, 'contracts']
       );
       const attachmentsList = docs.map((d: any) => d.url);
+      if (attachments !== undefined && (!Array.isArray(attachments) || attachments.length > 20 || attachments.some((url: unknown) => typeof url !== 'string' || !/^\/api\/upload\/files\/[a-f0-9]{24}\.(jpg|png|gif|webp|pdf|doc|docx|xls|xlsx)$/.test(url)))) {
+        return res.status(400).json({ error: 'Invalid contract attachments' });
+      }
       const bodyAttachments = Array.isArray(attachments) ? attachments : [];
+      if (bodyAttachments.length > 0) {
+        const filenames = bodyAttachments.map((url) => url.split('/').pop() || '');
+        const placeholders = filenames.map(() => '?').join(',');
+        const ownedFiles = await db.all(`SELECT filename FROM uploaded_files WHERE ownerId = ? AND filename IN (${placeholders})`, [user.id, ...filenames]);
+        const allowedFiles = new Set(ownedFiles.map((file: any) => file.filename));
+        if (!isSystemAdmin && filenames.some((filename) => !allowedFiles.has(filename))) {
+          return res.status(403).json({ error: 'You can only attach files you uploaded' });
+        }
+      }
       const combinedAttachments = Array.from(new Set([...attachmentsList, ...bodyAttachments]));
 
       // Determine accountant status updates
       const oldAccountantId = existingContract.docAccountantUserId;
       let accountantStatus = docAccountantStatus || existingContract.docAccountantStatus || 'pending';
-      if (docAccountantUserId !== oldAccountantId) {
-        accountantStatus = docAccountantUserId ? 'pending' : null;
+      if (requestedAccountantId !== oldAccountantId) {
+        accountantStatus = requestedAccountantId ? 'pending' : null;
       }
 
       // Determine approval feedback updates (clear when submitting for approval)
@@ -680,8 +813,9 @@ export function contractRoutes(db: any) {
 
       await db.run(
         `UPDATE contracts SET contractNumber=?, clientName=?, contractName=?, products=?, preTaxValue=?, vatRate=?, postTaxValue=?, invoiceDate=?, invoiceNumber=?, status=?, attachments=?, paidAmount=?, projectId=?, contractType=?, supplierName=?, documentChecklist=?, signedDate=?, startDate=?, endDate=?, warrantyMonths=?, payments=?, docSentDate=?, docReceivedDate=?, docAccountantDate=?, docReceiver=?, docAccountantUserId=?, docAccountantStatus=?, approvalFeedback=?, updatedAt=? WHERE id=?`,
-        [contractNumber.trim(), clientName.trim(), contractName.trim(), products ? JSON.stringify(products) : null, preTaxValue ?? 0, vatRate ?? 0, postTaxValue ?? 0, invoiceDate ?? null, invoiceNumber ?? null, status || 'draft', JSON.stringify(combinedAttachments), paidAmount ?? 0, projectId || null, contractType || 'output', supplierName || null, documentChecklist ? JSON.stringify(documentChecklist) : null, signedDate ?? null, startDate ?? null, endDate ?? null, Number(warrantyMonths) || 0, payments ? JSON.stringify(payments) : null, docSentDate ?? null, docReceivedDate ?? null, docAccountantDate ?? null, docReceiver ?? null, docAccountantUserId || null, accountantStatus, finalFeedback, now, contractId]
+        [contractNumber.trim(), clientName.trim(), contractName.trim(), products ? JSON.stringify(products) : null, preTaxValue ?? 0, vatRate ?? 0, postTaxValue ?? 0, invoiceDate ?? null, invoiceNumber ?? null, status || 'draft', JSON.stringify(combinedAttachments), isManagerOrAdmin ? (paidAmount ?? 0) : (existingContract.paidAmount ?? 0), projectId || null, contractType || 'output', supplierName || null, documentChecklist ? JSON.stringify(documentChecklist) : null, signedDate ?? null, startDate ?? null, endDate ?? null, Number(warrantyMonths) || 0, payments ? JSON.stringify(payments) : null, isManagerOrAdmin ? (docSentDate ?? null) : (existingContract.docSentDate ?? null), isManagerOrAdmin ? (docReceivedDate ?? null) : (existingContract.docReceivedDate ?? null), isManagerOrAdmin ? (docAccountantDate ?? null) : (existingContract.docAccountantDate ?? null), isManagerOrAdmin ? (docReceiver ?? null) : (existingContract.docReceiver ?? null), requestedAccountantId, accountantStatus, finalFeedback, now, contractId]
       );
+      await associateUploadedFiles(bodyAttachments, contractId, user.id);
 
       // Send notification to manager if status changed to pending
       if (status === 'pending' && existingContract.status !== 'pending') {
@@ -798,11 +932,11 @@ export function contractRoutes(db: any) {
   });
 
   // CONFIRM RECEIPT (For accountant only)
-  router.put('/:id/confirm-receipt', async (req, res) => {
+  router.put('/:id/confirm-receipt', validate(EmptyActionSchema), async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-    const contractId = req.params.id;
+    const contractId = String(req.params.id);
 
     try {
       const existing = await db.get(
@@ -908,7 +1042,7 @@ export function contractRoutes(db: any) {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-    const contractId = req.params.id;
+    const contractId = String(req.params.id);
 
     try {
       // Get existing contract to check existence and creator
@@ -961,11 +1095,11 @@ export function contractRoutes(db: any) {
   });
 
   // APPROVE contract (TP / Admin only)
-  router.put('/:id/approve', async (req, res) => {
+  router.put('/:id/approve', validate(EmptyActionSchema), async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-    const contractId = req.params.id;
+    const contractId = String(req.params.id);
 
     try {
       const contract = await db.get(
@@ -1011,11 +1145,11 @@ export function contractRoutes(db: any) {
   });
 
   // REJECT contract (TP / Admin only)
-  router.put('/:id/reject', async (req, res) => {
+  router.put('/:id/reject', validate(ContractFeedbackSchema), async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-    const contractId = req.params.id;
+    const contractId = String(req.params.id);
     const { feedback } = req.body;
     if (!feedback?.trim()) {
       return res.status(400).json({ error: 'Vui lòng nhập lý do từ chối' });
@@ -1065,11 +1199,11 @@ export function contractRoutes(db: any) {
   });
 
   // CANCEL PENDING contract (TP of department / Admin only)
-  router.put('/:id/cancel-pending', async (req, res) => {
+  router.put('/:id/cancel-pending', validate(ContractFeedbackSchema), async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-    const contractId = req.params.id;
+    const contractId = String(req.params.id);
     const { feedback } = req.body;
     if (!feedback?.trim()) {
       return res.status(400).json({ error: 'Vui lòng nhập lý do hủy' });

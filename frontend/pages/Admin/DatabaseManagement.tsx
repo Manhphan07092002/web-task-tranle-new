@@ -75,9 +75,23 @@ export default function AdminDatabaseManagement() {
 
   const deleteRow = async (table: string, id: string) => {
     if (!confirm(`Xóa record ${id} khỏi bảng ${table}?`)) return;
-    await apiFetch(`/api/admin/database/table/${table}/row/${id}`, { method: 'DELETE' });
-    await fetchRows(table);
-    await fetchTables();
+    try {
+      const confirmation = await apiFetch('/api/admin/database/confirm', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete-row', table, id }),
+      });
+      const confirmationData = await confirmation.json().catch(() => ({}));
+      if (!confirmation.ok || !confirmationData.token) throw new Error(confirmationData.error || 'Không thể xác nhận thao tác xóa');
+      const result = await apiFetch(`/api/admin/database/table/${table}/row/${id}`, {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmToken: confirmationData.token }),
+      });
+      if (!result.ok) throw new Error('Không thể xóa record');
+      await fetchRows(table);
+      await fetchTables();
+    } catch (e: any) {
+      setRowError(e?.message || 'Không thể xóa record');
+    }
   };
 
   const exportDb = async () => {
@@ -130,6 +144,13 @@ export default function AdminDatabaseManagement() {
     try {
       const formData = new FormData();
       formData.append('file', importFile);
+      const confirmation = await apiFetch('/api/admin/database/confirm', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'import' }),
+      });
+      const confirmationData = await confirmation.json().catch(() => ({}));
+      if (!confirmation.ok || !confirmationData.token) throw new Error(confirmationData.error || 'Không thể xác nhận thao tác import');
+      formData.append('confirmToken', confirmationData.token);
       const res = await apiFetch('/api/admin/database/import', { method: 'POST', body: formData });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Import thất bại');

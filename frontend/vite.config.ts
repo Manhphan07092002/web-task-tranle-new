@@ -38,7 +38,7 @@ export default defineConfig(({ mode }) => {
             'vendor-query': ['@tanstack/react-query'],
             'vendor-ui': ['lucide-react', 'motion', '@hello-pangea/dnd'],
             'vendor-charts': ['recharts'],
-            'vendor-excel': ['xlsx', 'xlsx-js-style'],
+            'vendor-excel': ['exceljs'],
           },
         },
       },

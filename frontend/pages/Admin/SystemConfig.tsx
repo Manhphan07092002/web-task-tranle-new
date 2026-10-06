@@ -47,7 +47,7 @@ export default function AdminSystemConfig() {
   });
   const [currentTime, setCurrentTime] = useState(new Date());
 
-  const [aiKeysMap, setAiKeysMap] = useState<Record<string, string[]>>({});
+  const [aiKeysMap, setAiKeysMap] = useState<Record<string, any[]>>({});
   const [aiProvider, setAiProvider] = useState<string>('gemini');
   const [aiKeysLoading, setAiKeysLoading] = useState(false);
   const [aiKeysSaving, setAiKeysSaving] = useState(false);
@@ -147,9 +147,12 @@ export default function AdminSystemConfig() {
     setAiKeysSaving(true);
     setAiMessage(null);
     try {
-      const cleanMap: Record<string, string[]> = {};
+      const cleanMap: Record<string, any[]> = {};
       for (const p in aiKeysMap) {
-        cleanMap[p] = (aiKeysMap[p] || []).map(k => k.trim()).filter(k => k.length > 0);
+        cleanMap[p] = (aiKeysMap[p] || []).filter(k => {
+          if (typeof k === 'string') return k.trim().length > 0;
+          return Boolean(k?.fingerprint);
+        });
       }
       
       const res = await apiFetch('/api/admin/system-config/ai-keys', {
@@ -365,15 +368,16 @@ export default function AdminSystemConfig() {
                   <div className="relative flex-1 flex items-center">
                     <input
                       type="text"
-                      value={key}
+                      value={typeof key === 'string' ? key : key.masked}
                       onChange={(e) => handleChangeAiKey(index, e.target.value)}
                       placeholder="AIzaSy..."
                       className="w-full px-4 py-2 pr-24 border border-gray-200 rounded-xl focus:ring-2 focus:ring-brand-400 outline-none font-mono text-sm"
                     />
-                    {key.trim() && (
+                    {(typeof key === 'string' ? key.trim() : key.fingerprint) && (
                       <div className="absolute right-2">
                         {(() => {
-                          const status = keyStatuses[key]?.status || 'Unknown';
+                          const statusKey = typeof key === 'string' ? key : key.fingerprint;
+                          const status = keyStatuses[statusKey]?.status || 'Unknown';
                           if (status === 'Active') return <span className="px-2 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 text-[11px] font-bold">Hoạt động</span>;
                           if (status === 'Rate Limited') return <span className="px-2 py-1 rounded-lg bg-orange-50 border border-orange-200 text-orange-700 text-[11px] font-bold">Quá tải</span>;
                           if (status === 'Quota Exceeded') return <span className="px-2 py-1 rounded-lg bg-red-50 border border-red-200 text-red-700 text-[11px] font-bold">Hết Quota</span>;
@@ -386,7 +390,7 @@ export default function AdminSystemConfig() {
                   <div className="flex gap-1">
                     <button
                       onClick={() => handleTestKey(key)}
-                      disabled={testingKey === key || !key.trim()}
+                      disabled={typeof key !== 'string' || testingKey === key || !key.trim()}
                       className="px-3 py-2 text-sm font-medium text-brand-600 bg-brand-50 hover:bg-brand-100 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl transition-colors whitespace-nowrap"
                       title="Kiểm tra Key"
                     >

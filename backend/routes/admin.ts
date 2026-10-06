@@ -4,14 +4,148 @@ import path from 'path';
 import { Router } from 'express';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
+import crypto from 'crypto';
+import { z } from 'zod';
+import { validate } from '../middleware/validate.js';
 import { invalidateAiKeyCache } from './ai.js';
+import { encrypt, decrypt } from '../utils/cryptoUtils.js';
+import { assertMailEndpointsSafe, assertPublicMailHost, configuredMailHostAllowlist } from '../utils/mailHostSecurity.js';
+import { sanitizeActivityLog, sanitizeActivityValue } from '../utils/activityPrivacy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const ADMIN_TABLES = new Set([
+  'activity_logs', 'clients', 'contract_links', 'contracts', 'departments', 'documents',
+  'events', 'mail_quotas', 'mail_tracking', 'meeting_participants', 'meetings', 'notes',
+  'notifications', 'password_reset_requests', 'password_reset_tokens', 'products',
+  'project_milestones', 'project_reports', 'projects', 'reports', 'revenue_reports', 'roles',
+  'scheduled_emails', 'signals', 'system_config', 'uploaded_files', 'task_assignees', 'task_comments',
+  'task_subtasks', 'task_tags', 'tasks', 'users'
+]);
+const sensitiveColumn = /password|secret|token|api.?key|private.?key|credential/i;
+const redactDatabaseRow = (table: string, row: Record<string, unknown>) => Object.fromEntries(
+  Object.entries(row).map(([key, value]) => {
+    if (sensitiveColumn.test(key)) return [key, '[REDACTED]'];
+    if (table === 'system_config' && /smtp_pass|poste_api_pass|api_keys|secret/i.test(String(row.key || key))) {
+      return [key, '[REDACTED]'];
+    }
+    return [key, value];
+  })
+);
+
+const MailPortSchema = z.union([z.number().int(), z.string().regex(/^\d{1,5}$/)]).optional();
+const SmtpConfigSchema = z.object({
+  IMAP_HOST: z.string().max(253).optional(), IMAP_PORT: MailPortSchema,
+  SMTP_HOST: z.string().max(253).optional(), SMTP_PORT: MailPortSchema,
+  SMTP_SECURE: z.union([z.boolean(), z.enum(['true', 'false'])]).optional(),
+  SMTP_USER: z.string().max(320).optional(), SMTP_PASS: z.string().max(4096).optional(),
+  SMTP_FROM: z.string().max(320).optional(),
+});
+const AiKeyConfigSchema = z.object({
+  provider: z.enum(['gemini', 'groq', 'deepseek', 'openrouter', 'openai']).optional(),
+  keysMap: z.record(z.string().max(32), z.array(z.union([
+    z.string().max(2048), z.object({ fingerprint: z.string().regex(/^[a-f0-9]{12}$/) }).strict(),
+  ])).max(25)).optional(),
+}).superRefine((body, context) => {
+  for (const provider of Object.keys(body.keysMap || {})) {
+    if (!['gemini', 'groq', 'deepseek', 'openrouter', 'openai'].includes(provider)) {
+      context.addIssue({ code: 'custom', path: ['keysMap', provider], message: 'Unsupported provider' });
+    }
+  }
+});
+const PosteConfigSchema = z.object({
+  POSTE_API_URL: z.string().url().max(2048).optional(),
+  POSTE_API_USER: z.string().max(320).optional(),
+  POSTE_API_PASS: z.string().max(4096).optional(),
+}).superRefine((body, context) => {
+  if (!body.POSTE_API_URL) return;
+  try {
+    const url = new URL(body.POSTE_API_URL);
+    if (url.username || url.password || (process.env.NODE_ENV === 'production' && url.protocol !== 'https:')) {
+      context.addIssue({ code: 'custom', path: ['POSTE_API_URL'], message: 'Must be a credential-free HTTPS URL in production' });
+    }
+  } catch {
+    context.addIssue({ code: 'custom', path: ['POSTE_API_URL'], message: 'Invalid URL' });
+  }
+});
+const ConfirmActionSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('import') }),
+  z.object({
+    action: z.literal('delete-row'),
+    table: z.string().min(1).max(64).refine((name) => ADMIN_TABLES.has(name)),
+    id: z.string().min(1).max(191),
+  }),
+]);
+const ConfirmTokenSchema = z.object({ confirmToken: z.string().max(64).optional() });
+const MailboxCreateSchema = z.object({
+  name: z.string().trim().max(300).optional(),
+  email: z.string().trim().email().max(320),
+  passwordPlaintext: z.string().min(12).max(4096),
+  quota: z.coerce.number().int().min(0).max(1_000_000).optional(),
+});
+const MailboxUpdateSchema = z.object({
+  name: z.string().trim().max(300).optional(),
+  passwordPlaintext: z.string().min(12).max(4096).optional(),
+  disabled: z.boolean().optional(),
+  quota: z.coerce.number().int().min(0).max(1_000_000).optional(),
+}).refine((body) => Object.keys(body).length > 0, 'At least one field is required');
+const MailAliasSchema = z.object({
+  name: z.string().trim().max(300).optional(),
+  email: z.string().trim().email().max(320),
+  goto: z.string().trim().min(1).max(2000).refine((value) => value.split(',').every((item) => z.string().email().safeParse(item.trim()).success)),
+});
+const MailAliasUpdateSchema = z.object({
+  goto: MailAliasSchema.shape.goto,
+});
+const MailDomainSchema = z.object({ name: z.string().trim().min(1).max(253).regex(/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i) });
+const SmtpTestSchema = z.object({ testEmail: z.string().email().max(320).optional() });
+
 export function adminRoutes(db: any, mailer: any) {
   const router = Router();
-  const upload = multer({ dest: path.join(__dirname, '../../tmp') });
+  const allowedAiProviders = new Set(['gemini', 'groq', 'deepseek', 'openrouter', 'openai']);
+  const upload = multer({ dest: path.join(__dirname, '../../tmp'), limits: { fileSize: 20 * 1024 * 1024, files: 1 } });
+  const destructiveTokens = new Map<string, { userId: string; action: string; resource: string; expiresAt: number }>();
+  const maskSecret = (value: string) => value.length <= 8 ? '********' : `${value.slice(0, 4)}...${value.slice(-4)}`;
+  const keyFingerprint = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 12);
+  const parseStoredKeys = (value?: string) => {
+    if (!value) return [];
+    const plaintext = decrypt(value) || value;
+    try {
+      const parsed = JSON.parse(plaintext);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+  const isAllowedTable = (name: string) => ADMIN_TABLES.has(name);
+  const auditDatabaseAction = async (userId: string, action: string, entityId: string, metadata: object) => {
+    await db.run(
+      'INSERT INTO activity_logs (id, userId, action, entityId, entityType, metadata, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [crypto.randomUUID(), userId, action, entityId, 'database', JSON.stringify(sanitizeActivityValue(metadata)), new Date().toISOString()]
+    );
+  };
+  const consumeDestructiveToken = (token: unknown, userId: string, action: string, resource: string) => {
+    if (typeof token !== 'string') return false;
+    const pending = destructiveTokens.get(token);
+    destructiveTokens.delete(token);
+    return Boolean(pending && pending.userId === userId && pending.action === action
+      && pending.resource === resource && pending.expiresAt >= Date.now());
+  };
+
+  router.post('/database/confirm', validate(ConfirmActionSchema), async (req, res) => {
+    const { action, table, id } = req.body || {};
+    if (action !== 'import' && action !== 'delete-row') return res.status(400).json({ error: 'Invalid confirmation action' });
+    if (action === 'delete-row' && (typeof table !== 'string' || !isAllowedTable(table) || typeof id !== 'string' || !id || id.length > 191)) {
+      return res.status(400).json({ error: 'Invalid database row target' });
+    }
+    for (const [token, pending] of destructiveTokens) if (pending.expiresAt < Date.now()) destructiveTokens.delete(token);
+    if (destructiveTokens.size >= 1000) return res.status(429).json({ error: 'Too many pending confirmations' });
+    const token = crypto.randomBytes(32).toString('hex');
+    const resource = action === 'import' ? '*' : `${table}:${id}`;
+    destructiveTokens.set(token, { userId: req.user!.id, action, resource, expiresAt: Date.now() + 5 * 60 * 1000 });
+    res.json({ token, expiresInSeconds: 300 });
+  });
 
   // --- Password Reset Requests ---
   router.get('/password-reset-requests', async (req, res) => {
@@ -37,7 +171,7 @@ export function adminRoutes(db: any, mailer: any) {
     try {
       const tables = await db.all(`SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name ASC`);
       const data = [] as { name: string; count: number | null }[];
-      for (const table of tables) {
+      for (const table of tables.filter((table: any) => isAllowedTable(table.name))) {
         try {
           const row = await db.get(`SELECT COUNT(*) as count FROM ${table.name}`);
           data.push({ name: table.name, count: row?.count ?? 0 });
@@ -50,24 +184,40 @@ export function adminRoutes(db: any, mailer: any) {
   router.get('/database/table/:table', async (req, res) => {
     try {
       const { table } = req.params;
+      if (!isAllowedTable(table)) return res.status(400).json({ error: 'Unsupported table' });
       if (!/^[a-zA-Z0-9_]+$/.test(table)) return res.status(400).json({ error: 'Tên bảng không hợp lệ' });
 
       const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 100);
       const offset = Math.max(Number(req.query.offset || 0), 0);
       const totalRow = await db.get(`SELECT COUNT(*) as count FROM ${table}`);
       const rows = await db.all(`SELECT * FROM ${table} LIMIT ? OFFSET ?`, [limit, offset]);
-      res.json({ table, total: totalRow?.count ?? 0, rows });
+      res.json({ table, total: totalRow?.count ?? 0, rows: rows.map((row: Record<string, unknown>) => redactDatabaseRow(table, row)) });
     } catch (e) { res.status(500).json({ error: 'Failed' }); }
   });
 
-  router.delete('/database/table/:table/row/:id', async (req, res) => {
+  router.delete('/database/table/:table/row/:id', validate(ConfirmTokenSchema), async (req, res) => {
     try {
-      const { table } = req.params;
+      const table = String(req.params.table);
+      const rowId = String(req.params.id);
+      if (!isAllowedTable(table)) return res.status(400).json({ error: 'Unsupported table' });
       if (!/^[a-zA-Z0-9_]+$/.test(table)) return res.status(400).json({ error: 'Tên bảng không hợp lệ' });
 
-      await db.run(`DELETE FROM ${table} WHERE id = ?`, [req.params.id]);
+      if (!consumeDestructiveToken(req.body?.confirmToken, req.user!.id, 'delete-row', `${table}:${rowId}`)) {
+        return res.status(403).json({ error: 'A valid one-time confirmation token is required' });
+      }
+      await db.run('START TRANSACTION');
+      const result = await db.run(`DELETE FROM \`${table}\` WHERE id = ?`, [rowId]);
+      if (!result.changes) {
+        await db.run('ROLLBACK');
+        return res.status(404).json({ error: 'Row not found' });
+      }
+      await auditDatabaseAction(req.user!.id, 'database.row_deleted', rowId, { table });
+      await db.run('COMMIT');
       res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed' }); }
+    } catch (e) {
+      try { await db.run('ROLLBACK'); } catch {}
+      res.status(500).json({ error: 'Failed' });
+    }
   });
 
   // Helper: read/write db_history JSON file
@@ -86,8 +236,9 @@ export function adminRoutes(db: any, mailer: any) {
       // MySQL: xuất dữ liệu dạng JSON (không hỗ trợ file export như SQLite)
       const tables = await db.all(`SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name ASC`);
       const exportData: Record<string, any[]> = {};
-      for (const t of tables) {
-        exportData[t.name] = await db.all(`SELECT * FROM \`${t.name}\``);
+      for (const t of tables.filter((table: any) => isAllowedTable(table.name))) {
+        const rows = await db.all(`SELECT * FROM \`${t.name}\``);
+        exportData[t.name] = rows.map((row: Record<string, unknown>) => redactDatabaseRow(t.name, row));
       }
 
       appendHistory({
@@ -105,14 +256,33 @@ export function adminRoutes(db: any, mailer: any) {
     } catch (e) { res.status(500).json({ error: 'Failed' }); }
   });
 
-  router.post('/database/import', upload.single('file'), async (req: any, res) => {
+  router.post('/database/import', upload.single('file'), validate(ConfirmTokenSchema), async (req: any, res) => {
+    let transactionStarted = false;
     try {
+      if (!consumeDestructiveToken(req.body?.confirmToken, req.user!.id, 'import', '*')) {
+        return res.status(403).json({ error: 'A valid one-time confirmation token is required' });
+      }
       if (!req.file) return res.status(400).json({ error: 'Thiếu file import' });
       const originalName = req.file ? Buffer.from((req.file as any).originalname, 'latin1').toString('utf8') : 'unknown.json';
 
       // Read uploaded JSON
       const rawData = fs.readFileSync(req.file.path, 'utf8');
       const importData = JSON.parse(rawData);
+      if (!importData || typeof importData !== 'object' || Array.isArray(importData)) {
+        return res.status(400).json({ error: 'Import must be a table-to-rows JSON object' });
+      }
+      const tableNames = Object.keys(importData);
+      if (!tableNames.length || tableNames.some(tableName => !isAllowedTable(tableName))) {
+        return res.status(400).json({ error: 'Import contains unsupported tables' });
+      }
+      let totalRows = 0;
+      for (const [tableName, rows] of Object.entries(importData)) {
+        if (!Array.isArray(rows) || rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row))) {
+          return res.status(400).json({ error: `Invalid rows for table ${tableName}` });
+        }
+        totalRows += rows.length;
+        if (totalRows > 50000) return res.status(413).json({ error: 'Import exceeds the 50000-row limit' });
+      }
 
       appendHistory({
         id: Math.random().toString(36).slice(2) + Date.now().toString(36),
@@ -124,24 +294,40 @@ export function adminRoutes(db: any, mailer: any) {
       });
 
       // Import data table by table
+      await db.run('START TRANSACTION');
+      transactionStarted = true;
       for (const [tableName, rows] of Object.entries(importData)) {
         if (!Array.isArray(rows) || rows.length === 0) continue;
-        if (!/^[a-zA-Z0-9_]+$/.test(tableName)) continue;
+        const columns = await db.all(`SHOW COLUMNS FROM \`${tableName}\``);
+        const allowedColumns = new Set(columns.map((column: any) => column.Field));
         // Clear existing data
         await db.run(`DELETE FROM \`${tableName}\``);
         // Insert rows
         for (const row of rows) {
-          const cols = Object.keys(row);
+          const cols = Object.keys(row as object).filter(column => allowedColumns.has(column));
+          if (!cols.length) continue;
           const placeholders = cols.map(() => '?').join(', ');
-          const values = cols.map(c => row[c]);
+          const values = cols.map(c => (row as Record<string, unknown>)[c]);
           await db.run(`INSERT INTO \`${tableName}\` (${cols.map(c => '\`' + c + '\`').join(', ')}) VALUES (${placeholders})`, values);
         }
       }
 
+      await auditDatabaseAction(req.user!.id, 'database.import', crypto.randomUUID(), {
+        filename: originalName,
+        tables: Object.entries(importData).map(([tableName, rows]) => ({ table: tableName, rowCount: (rows as any[]).length })),
+      });
+      await db.run('COMMIT');
+      transactionStarted = false;
       await fs.promises.unlink(req.file.path).catch(() => { });
       res.json({ success: true, message: 'Import thành công.' });
     } catch (e: any) {
-      res.status(500).json({ error: 'Import thất bại: ' + e.message });
+      if (transactionStarted) {
+        try { await db.run('ROLLBACK'); } catch {}
+      }
+      console.error('[Admin DB] Import failed:', e?.message);
+      res.status(500).json({ error: 'Import failed; no changes were committed.' });
+    } finally {
+      if (req.file?.path) await fs.promises.unlink(req.file.path).catch(() => {});
     }
   });
 
@@ -165,15 +351,34 @@ export function adminRoutes(db: any, mailer: any) {
     } catch (e) { res.status(500).json({ error: 'Failed' }); }
   });
 
-  router.post('/system-config/smtp', async (req, res) => {
+  router.post('/system-config/smtp', validate(SmtpConfigSchema), async (req, res) => {
     try {
       const { IMAP_HOST, IMAP_PORT, SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS, SMTP_FROM } = req.body;
+      const validText = (value: unknown, max: number) => value === undefined || (typeof value === 'string' && value.length <= max && !/[\r\n]/.test(value));
+      if (!validText(IMAP_HOST, 253) || !validText(SMTP_HOST, 253) || !validText(SMTP_USER, 320)
+        || !validText(SMTP_FROM, 320) || !validText(IMAP_PORT, 8) || !validText(SMTP_PORT, 8)
+        || (SMTP_SECURE !== undefined && !['true', 'false', true, false].includes(SMTP_SECURE))) {
+        return res.status(400).json({ error: 'Invalid mail server configuration' });
+      }
+      try {
+        await assertMailEndpointsSafe({
+          imapHost: IMAP_HOST || '', imapPort: IMAP_PORT || 993,
+          smtpHost: SMTP_HOST || '', smtpPort: SMTP_PORT || 587,
+        });
+      } catch {
+        return res.status(400).json({ error: 'Mail hosts must be valid, public, and use a supported mail port' });
+      }
       const entries: [string, string][] = [
         ['IMAP_HOST', IMAP_HOST || ''], ['IMAP_PORT', String(IMAP_PORT || '993')],
         ['SMTP_HOST', SMTP_HOST || ''], ['SMTP_PORT', String(SMTP_PORT || '587')],
         ['SMTP_SECURE', String(SMTP_SECURE || 'false')], ['SMTP_USER', SMTP_USER || ''], ['SMTP_FROM', SMTP_FROM || ''],
       ];
-      if (SMTP_PASS && SMTP_PASS !== '********') entries.push(['SMTP_PASS', SMTP_PASS]);
+      if (SMTP_PASS && SMTP_PASS !== '********') {
+        if (typeof SMTP_PASS !== 'string' || SMTP_PASS.length > 4096 || /[\r\n]/.test(SMTP_PASS)) {
+          return res.status(400).json({ error: 'Invalid SMTP password value' });
+        }
+        entries.push(['SMTP_PASS', encrypt(SMTP_PASS)!]);
+      }
       for (const [key, value] of entries) {
         await db.run('INSERT INTO system_config (`key`, `value`) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', [key, value]);
       }
@@ -181,25 +386,32 @@ export function adminRoutes(db: any, mailer: any) {
     } catch (e) { res.status(500).json({ error: 'Failed' }); }
   });
 
-  router.post('/system-config/smtp/test', async (req, res) => {
+  router.post('/system-config/smtp/test', validate(SmtpTestSchema), async (req, res) => {
     try {
       const { testEmail } = req.body;
+      if (testEmail !== undefined && (typeof testEmail !== 'string' || testEmail.length > 320 || /[\r\n\s]/.test(testEmail) || !/^[^@]+@[^@]+\.[^@]+$/.test(testEmail))) {
+        return res.status(400).json({ error: 'Invalid test email address' });
+      }
       const { transporter, smtp } = await mailer.createTransporter();
       if (!transporter) return res.status(400).json({ error: 'SMTP chưa được cấu hình đầy đủ' });
       await transporter.sendMail({ from: smtp.SMTP_FROM, to: testEmail || smtp.SMTP_USER, subject: 'Tran Le Tasks - Test cấu hình SMTP', text: 'Chúc mừng, cấu hình SMTP của bạn đã hoạt động.', html: '<div style="font-family:Arial,sans-serif"><h3>Tran Le Electricity</h3><p>Chúc mừng, cấu hình SMTP của bạn đã hoạt động.</p></div>' });
       res.json({ success: true });
-    } catch (e: any) { console.error(e); res.status(500).json({ error: e.message || 'Lỗi gửi mail' }); }
+    } catch { console.warn('[MAIL] SMTP test failed'); res.status(502).json({ error: 'SMTP test failed' }); }
   });
 
   // --- AI Config ---
   router.get('/system-config/ai-keys', async (_req, res) => {
     try {
       const providers = ['gemini', 'groq', 'deepseek', 'openrouter', 'openai'];
-      const keysMap: Record<string, string[]> = {};
+      const keysMap: Record<string, { fingerprint: string; masked: string }[]> = {};
       
       for (const p of providers) {
         const config = await db.get(`SELECT \`value\` FROM system_config WHERE \`key\` = ?`, [`${p}_api_keys`]);
-        keysMap[p] = config && config.value ? JSON.parse(config.value) : [];
+        const keys = parseStoredKeys(config?.value);
+        keysMap[p] = keys.map((key: string) => ({
+          fingerprint: keyFingerprint(key),
+          masked: maskSecret(key),
+        }));
       }
 
       const providerConfig = await db.get(`SELECT \`value\` FROM system_config WHERE \`key\` = 'ai_provider'`);
@@ -209,15 +421,38 @@ export function adminRoutes(db: any, mailer: any) {
     } catch (e) { res.status(500).json({ error: 'Failed' }); }
   });
 
-  router.post('/system-config/ai-keys', async (req, res) => {
+  router.post('/system-config/ai-keys', validate(AiKeyConfigSchema), async (req, res) => {
     try {
       const { keysMap, provider } = req.body;
-      
-      if (keysMap && typeof keysMap === 'object') {
+      if (provider !== undefined && (typeof provider !== 'string' || !allowedAiProviders.has(provider))) {
+        return res.status(400).json({ error: 'Invalid AI provider' });
+      }
+
+      if (keysMap !== undefined && (!keysMap || typeof keysMap !== 'object' || Array.isArray(keysMap))) {
+        return res.status(400).json({ error: 'Invalid AI keys configuration' });
+      }
+
+      if (keysMap) {
          for (const [p, keys] of Object.entries(keysMap)) {
-           if (Array.isArray(keys)) {
-             await db.run('INSERT INTO system_config (`key`, `value`) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', [`${p}_api_keys`, JSON.stringify(keys)]);
+           if (!allowedAiProviders.has(p) || !Array.isArray(keys) || keys.length > 25) {
+             return res.status(400).json({ error: 'Invalid AI keys configuration' });
            }
+           const existing = await db.get('SELECT `value` FROM system_config WHERE `key` = ?', [`${p}_api_keys`]);
+           const existingKeys: string[] = parseStoredKeys(existing?.value);
+           const resolvedKeys: string[] = [];
+           for (const key of keys as any[]) {
+             if (typeof key === 'string') {
+               if (key.trim() && (key.length < 8 || key.length > 2048)) return res.status(400).json({ error: 'Invalid AI key value' });
+               if (key.trim()) resolvedKeys.push(key.trim());
+             } else if (key && typeof key === 'object' && typeof key.fingerprint === 'string' && /^[a-f0-9]{12}$/.test(key.fingerprint)) {
+               const existingKey = existingKeys.find((candidate) => keyFingerprint(candidate) === key.fingerprint);
+               if (!existingKey) return res.status(400).json({ error: 'Unknown AI key fingerprint' });
+               resolvedKeys.push(existingKey);
+             } else {
+               return res.status(400).json({ error: 'Invalid AI key value' });
+             }
+           }
+           await db.run('INSERT INTO system_config (`key`, `value`) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', [`${p}_api_keys`, encrypt(JSON.stringify(resolvedKeys))]);
          }
       }
       
@@ -243,7 +478,7 @@ export function adminRoutes(db: any, mailer: any) {
     } catch (e) { res.status(500).json({ error: 'Failed' }); }
   });
 
-  router.post('/system-config/poste-api', async (req, res) => {
+  router.post('/system-config/poste-api', validate(PosteConfigSchema), async (req, res) => {
     try {
       const { POSTE_API_URL, POSTE_API_USER, POSTE_API_PASS } = req.body;
       const entries: [string, string][] = [
@@ -263,8 +498,15 @@ export function adminRoutes(db: any, mailer: any) {
     const userConfig = await db.get(`SELECT \`value\` FROM system_config WHERE \`key\` = 'POSTE_API_USER'`);
     const passConfig = await db.get(`SELECT \`value\` FROM system_config WHERE \`key\` = 'POSTE_API_PASS'`);
     if (!urlConfig?.value || !userConfig?.value || !passConfig?.value) return null;
+    const posteUrl = new URL(String(urlConfig.value));
+    if (posteUrl.username || posteUrl.password || (process.env.NODE_ENV === 'production' && posteUrl.protocol !== 'https:')) {
+      throw new Error('Poste.io endpoint must be a credential-free HTTPS URL in production');
+    }
+    if (process.env.NODE_ENV === 'production' || process.env.MAIL_ENFORCE_PUBLIC_HOSTS === 'true') {
+      await assertPublicMailHost(posteUrl.hostname, configuredMailHostAllowlist());
+    }
     return {
-      url: urlConfig.value.replace(/\/$/, ''),
+      url: posteUrl.toString().replace(/\/$/, ''),
       headers: {
         'Authorization': 'Basic ' + Buffer.from(`${userConfig.value}:${passConfig.value}`).toString('base64'),
         'Content-Type': 'application/json'
@@ -303,7 +545,7 @@ export function adminRoutes(db: any, mailer: any) {
     }
   });
 
-  router.post('/mail-server/boxes', async (req, res) => {
+  router.post('/mail-server/boxes', validate(MailboxCreateSchema), async (req, res) => {
     try {
       const auth = await getPosteAuth();
       if (!auth) return res.status(400).json({ error: 'Poste.io API chưa được cấu hình' });
@@ -324,18 +566,19 @@ export function adminRoutes(db: any, mailer: any) {
     } catch (e: any) { res.status(500).json({ error: e.message || 'Lỗi tạo hộp thư' }); }
   });
 
-  router.patch('/mail-server/boxes/:email', async (req, res) => {
+  router.patch('/mail-server/boxes/:email', validate(MailboxUpdateSchema), async (req, res) => {
     try {
       const auth = await getPosteAuth();
       if (!auth) return res.status(400).json({ error: 'Poste.io API chưa được cấu hình' });
+      const mailboxEmail = String(req.params.email);
       const { passwordPlaintext, disabled, name, quota } = req.body;
       const updates: any = {};
-      if (name) updates.name = `${name} <${req.params.email}>`;
+      if (name) updates.name = `${name} <${mailboxEmail}>`;
       if (passwordPlaintext) updates.passwordPlaintext = passwordPlaintext;
       if (disabled !== undefined) updates.disabled = disabled;
 
       if (Object.keys(updates).length > 0) {
-        const response = await fetch(`${auth.url}/boxes/${encodeURIComponent(req.params.email)}`, {
+        const response = await fetch(`${auth.url}/boxes/${encodeURIComponent(mailboxEmail)}`, {
           method: 'PATCH',
           headers: auth.headers,
           body: JSON.stringify(updates)
@@ -343,7 +586,7 @@ export function adminRoutes(db: any, mailer: any) {
         if (!response.ok) throw new Error(await response.text());
       }
       if (quota !== undefined) {
-         try { await db.run('INSERT INTO mail_quotas (email, quota) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET quota=excluded.quota', [req.params.email, Number(quota) || 0]); } catch (e) { console.error('PATCH quota error:', e); }
+         try { await db.run('INSERT INTO mail_quotas (email, quota) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET quota=excluded.quota', [mailboxEmail, Number(quota) || 0]); } catch (e) { console.error('PATCH quota error:', e); }
       }
       res.json({ success: true });
     } catch (e: any) { res.status(500).json({ error: e.message || 'Lỗi cập nhật hộp thư' }); }
@@ -383,7 +626,7 @@ export function adminRoutes(db: any, mailer: any) {
     }
   });
 
-  router.post('/mail-server/aliases', async (req, res) => {
+  router.post('/mail-server/aliases', validate(MailAliasSchema), async (req, res) => {
     try {
       const auth = await getPosteAuth();
       if (!auth) return res.status(400).json({ error: 'Poste.io API chưa được cấu hình' });
@@ -405,11 +648,11 @@ export function adminRoutes(db: any, mailer: any) {
     } catch (e: any) { res.status(500).json({ error: e.message || 'Lỗi tạo alias' }); }
   });
 
-  router.patch('/mail-server/aliases/:email', async (req, res) => {
+  router.patch('/mail-server/aliases/:email', validate(MailAliasUpdateSchema), async (req, res) => {
     try {
       const auth = await getPosteAuth();
       if (!auth) return res.status(400).json({ error: 'Poste.io API chưa được cấu hình' });
-      const emailToEdit = req.params.email;
+      const emailToEdit = String(req.params.email);
       const { goto } = req.body;
       const redirectTo = goto.split(',').map((s: string) => s.trim()).filter(Boolean);
       
@@ -458,7 +701,7 @@ export function adminRoutes(db: any, mailer: any) {
     } catch (e: any) { res.status(500).json({ error: e.message || 'Lỗi lấy danh sách Domain' }); }
   });
 
-  router.post('/mail-server/domains', async (req, res) => {
+  router.post('/mail-server/domains', validate(MailDomainSchema), async (req, res) => {
     try {
       const auth = await getPosteAuth();
       if (!auth) return res.status(400).json({ error: 'Poste.io API chưa được cấu hình' });
@@ -529,9 +772,9 @@ export function adminRoutes(db: any, mailer: any) {
   // --- Detailed Logs & Emails ---
   router.get('/activity-logs', async (req, res) => {
     try {
-      const limit = parseInt(req.query.limit as string) || 50;
+      const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 50, 1), 100);
       const logs = await db.all('SELECT * FROM activity_logs ORDER BY createdAt DESC LIMIT ?', [limit]);
-      res.json(logs);
+      res.json(logs.map(sanitizeActivityLog));
     } catch (e) { res.status(500).json({ error: 'Failed to fetch logs' }); }
   });
 

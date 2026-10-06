@@ -8,7 +8,7 @@ import { useData } from '../contexts/DataContext';
 import { Button, Input, Modal, Avatar } from './UI';
 import { ConfirmDialog } from './ConfirmDialog';
 import { 
-  getDocuments, createDocument, updateDocument, deleteDocument, uploadFiles, Document 
+  getDocuments, createDocument, updateDocument, deleteDocument, uploadFiles, downloadDocumentFile, Document
 } from '../services/documentService';
 
 interface InlineDocumentManagerProps {
@@ -116,7 +116,7 @@ export const InlineDocumentManager: React.FC<InlineDocumentManagerProps> = ({
       setError(null);
 
       // 1. Upload files to disk using upload API
-      const uploadRes = await uploadFiles(uploadQueue);
+      const uploadRes = await uploadFiles(uploadQueue, category, linkedId);
       
       // 2. Save metadata to DB
       for (const f of uploadRes.files) {
@@ -242,16 +242,14 @@ export const InlineDocumentManager: React.FC<InlineDocumentManagerProps> = ({
                     </div>
 
                     <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
-                      <a 
-                        href={doc.url} 
-                        download={doc.name}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => downloadDocumentFile(doc.url, doc.name).catch((e) => setError(e.message))}
                         className="p-1.5 text-gray-400 hover:text-gray-700 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-slate-700 rounded-lg transition-colors"
                         title="Tải về"
                       >
                         <Download size={14} />
-                      </a>
+                      </button>
                       
                       {!readOnly && isOwnerOrManager && (
                         <>

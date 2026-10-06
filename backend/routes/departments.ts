@@ -1,4 +1,17 @@
 import { Router } from 'express';
+import { z } from 'zod';
+import { requireAdmin } from '../middleware/auth.js';
+import { validate } from '../middleware/validate.js';
+
+const DepartmentSchema = z.object({
+  id: z.string().trim().min(1).max(191).optional(),
+  name: z.string().trim().min(1).max(191),
+  description: z.string().max(5000).optional(),
+  color: z.string().max(32).optional(),
+  managerId: z.string().trim().max(191).nullable().optional(),
+});
+const DepartmentUpdateSchema = DepartmentSchema.omit({ id: true }).partial()
+  .refine((value) => Object.keys(value).length > 0, 'At least one field is required');
 
 export function departmentRoutes(db: any) {
   const router = Router();
@@ -16,7 +29,7 @@ export function departmentRoutes(db: any) {
     } catch (e) { res.status(500).json({ error: 'Failed to fetch departments' }); }
   });
 
-  router.post('/', async (req, res) => {
+  router.post('/', requireAdmin, validate(DepartmentSchema), async (req, res) => {
     const { id, name, description, color, managerId } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Tên phòng ban không được trống' });
     try {
@@ -29,7 +42,7 @@ export function departmentRoutes(db: any) {
     }
   });
 
-  router.put('/:id', async (req, res) => {
+  router.put('/:id', requireAdmin, validate(DepartmentUpdateSchema), async (req, res) => {
     const { name, description, color, managerId } = req.body;
     try {
       const existing = await db.get('SELECT * FROM departments WHERE id = ?', [req.params.id]);
@@ -48,7 +61,7 @@ export function departmentRoutes(db: any) {
     }
   });
 
-  router.delete('/:id', async (req, res) => {
+  router.delete('/:id', requireAdmin, async (req, res) => {
     try {
       const dept = await db.get('SELECT * FROM departments WHERE id = ?', [req.params.id]);
       if (!dept) return res.status(404).json({ error: 'Not found' });

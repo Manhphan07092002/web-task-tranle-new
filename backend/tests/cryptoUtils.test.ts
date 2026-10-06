@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { encrypt, decrypt } from '../utils/cryptoUtils.js';
 
+const initialMailEncryptionKey = process.env.MAIL_ENCRYPTION_KEY;
+beforeEach(() => { process.env.MAIL_ENCRYPTION_KEY = 'crypto-utils-test-key'; });
+afterEach(() => {
+  if (initialMailEncryptionKey === undefined) delete process.env.MAIL_ENCRYPTION_KEY;
+  else process.env.MAIL_ENCRYPTION_KEY = initialMailEncryptionKey;
+});
+
 describe('encrypt / decrypt', () => {
   it('round-trip: decrypt(encrypt(text)) === text', () => {
     const original = 'my-secret-password';
@@ -17,9 +24,9 @@ describe('encrypt / decrypt', () => {
     expect(decrypt(encrypt(original)!)).toBe(original);
   });
 
-  it('encrypt trả về định dạng iv:ciphertext', () => {
+  it('encrypt trả về định dạng versioned AES-GCM', () => {
     const result = encrypt('test');
-    expect(result).toMatch(/^[0-9a-f]+:[0-9a-f]+$/);
+    expect(result).toMatch(/^v2:[0-9a-f]+:[0-9a-f]+:[0-9a-f]+$/);
   });
 
   it('encrypt tạo IV ngẫu nhiên — cùng input cho kết quả khác nhau', () => {
@@ -57,9 +64,8 @@ describe('encrypt bảo mật', () => {
   it('hai plaintext khác nhau cho ciphertext khác nhau', () => {
     const a = encrypt('password1')!;
     const b = encrypt('password2')!;
-    // Lấy phần ciphertext (sau IV)
-    const cipherA = a.split(':')[1];
-    const cipherB = b.split(':')[1];
+    const cipherA = a.split(':')[3];
+    const cipherB = b.split(':')[3];
     expect(cipherA).not.toBe(cipherB);
   });
 });

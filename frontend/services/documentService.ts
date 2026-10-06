@@ -70,11 +70,15 @@ export const deleteDocument = async (id: string): Promise<void> => {
 };
 
 // Hàm tải lên tệp tin sử dụng API upload hiện có của server
-export const uploadFiles = async (files: File[]): Promise<{ files: { name: string; url: string; size: number; type: string }[] }> => {
+export const uploadFiles = async (files: File[], entityType?: 'contracts' | 'projects' | 'reports', entityId?: string): Promise<{ files: { name: string; url: string; size: number; type: string }[] }> => {
   const formData = new FormData();
   files.forEach((file) => {
     formData.append('files', file);
   });
+  if (entityType && entityId) {
+    formData.append('entityType', entityType);
+    formData.append('entityId', entityId);
+  }
 
   const res = await apiFetch('/api/upload', {
     method: 'POST',
@@ -87,4 +91,20 @@ export const uploadFiles = async (files: File[]): Promise<{ files: { name: strin
   }
 
   return res.json();
+};
+
+export const downloadDocumentFile = async (url: string, filename: string): Promise<void> => {
+  const res = await apiFetch(url);
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.error || 'Không thể tải tệp');
+  }
+  const blobUrl = URL.createObjectURL(await res.blob());
+  const link = document.createElement('a');
+  link.href = blobUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(blobUrl);
 };
