@@ -25,14 +25,15 @@ Domain production: `task.tranlecorp.com.vn` / `tasks.tranlecorp.com.vn` (hoặc 
 - `recharts` 3 (biểu đồ), `motion` 12 (animation), `lucide-react` (icons)
 - `@hello-pangea/dnd` (Kanban drag & drop)
 - `dompurify` (chống XSS), `flatpickr` (date picker), `react-to-print`
-- `xlsx` + `xlsx-js-style` (export Excel)
+- `exceljs` (export Excel qua `frontend/utils/exportXlsx.ts`)
 - `@mediapipe/*` (camera / background blur cho phòng họp)
-- `@google/genai` 1.29 (AI client — LƯU Ý: xem mục 19)
+- Không cài AI SDK ở frontend; request AI đi qua backend API.
 
 **Backend** (`backend/`):
 - Node.js + Express 5
 - TypeScript ~5.8, chạy runtime bằng `tsx` (KHÔNG build ra JS trước khi chạy dev/start)
 - Database: MySQL 8 (`mysql2`) duy nhất (`backend/db_mysql.ts`)
+- `helmet` 8 (HTTP security headers và CSP)
 - `jsonwebtoken` (JWT auth), `bcryptjs` (hash password)
 - `socket.io` 4 (WebSocket server)
 - `nodemailer` (SMTP), `imapflow` + `mailparser` (IMAP)
@@ -70,7 +71,8 @@ web_tranle_new/
 │   ├── routes/               # 22 module route
 │   ├── schedulers/           # 5 cron job
 │   ├── utils/                # cryptoUtils.ts, notify.ts
-│   └── tests/                # vitest (include: tests/**/*.test.ts) — gần như trống
+│   ├── tests/                # Vitest: auth, RBAC/ownership, AI, mail, upload, reset, infra
+│   └── utils/                # crypto, migrations, transaction gate, security helpers
 ├── uploads/                  # File upload lưu ở đây
 └── scripts/
 ```
@@ -111,14 +113,14 @@ docker-compose up -d --build   # Docker (app + mysql + mailserver)
 
 ## 6. Backend architecture
 
-- **Entry:** `server.ts` — tạo Express app, `trust proxy = 1`, CORS, body limit 50mb, rate limit (global 5000/15min, login 10/15min), mount 22 route, init socket + 5 scheduler, serve `/uploads` static + SPA fallback từ `frontend/dist`.
+- **Entry:** `server.ts` — tạo Express app, `trust proxy = 1`, Helmet/CSP, CORS allowlist, JSON limit 5 MB, URL-encoded limit 64 KB/100 parameters; rate limit global 5000/15 phút, login 10/15 phút, upload 30/15 phút; mount API, init Socket.IO + schedulers, serve SPA từ `frontend/dist`. File upload đi qua API có xác thực, không mount thư mục upload thành static public.
 - **Route pattern:** mỗi file export một factory `xxxRoutes(db)` trả về `express.Router()`. Mount trong `server.ts` với middleware `requireAuth` (và `requireAdmin` cho `/api/admin`).
 - **DB injection:** đối tượng `db` được tạo trong `server.ts` thông qua `initDbMysql()` (`db_mysql.ts`) và truyền vào mọi route factory.
 - **Auth-free routes:** chỉ `/api/auth/*` (login, register, forgot/reset password) và `/health` không cần token.
 
 ## 7. Database architecture
 
-- **Database:** MySQL 8 (`mysql2`), kết nối qua `DATABASE_URL=mysql://user:pass@host:port/dbname`. Adapter `backend/db_mysql.ts` khớp interface `db` (`get`/`all`/`run`/`exec`/`close`). Dùng MỘT connection sống lâu (không pool) để giữ đúng ngữ nghĩa transaction đa lệnh (`BEGIN TRANSACTION`... của routes).
+- **Database:** MySQL 8 (`mysql2`), kết nối qua `DATABASE_URL=mysql://user:pass@host:port/dbname`. Adapter `backend/db_mysql.ts` khớp interface `db` (`get`/`all`/`run`/`exec`/`close`). Dùng một connection sống lâu; `DatabaseTransactionGate` tuần tự hóa truy vấn và dùng `AsyncLocalStorage` để transaction của một request không bị truy vấn request khác xen vào. Khi thêm transaction, bảo đảm mọi query nằm trong cùng request context và luôn xử lý rollback.
 - **Khác biệt dialect với MySQL** được gom trong `normalizeSql()` của `db_mysql.ts` (KHÔNG sửa route): `BEGIN TRANSACTION`→`START TRANSACTION`, `INSERT OR IGNORE`→`INSERT IGNORE`, `ON CONFLICT...DO UPDATE`→`ON DUPLICATE KEY UPDATE`, `"to"/"from"/"key"/"value"`→backtick, `sqlite_master`→`information_schema`.
 - **DDL MySQL** kiểu: `TEXT PK/UNIQUE`→`VARCHAR`, `REAL`→`DOUBLE`, boolean-`INTEGER`→`TINYINT`, date/JSON giữ dạng chuỗi. Charset `utf8mb4_unicode_ci`.
 - **27 bảng** — danh sách chi tiết trong [phan_tich.MD](phan_tich.MD) mục 4.
@@ -126,12 +128,12 @@ docker-compose up -d --build   # Docker (app + mysql + mailserver)
 
 ## 8. Authentication
 
-- **Cơ chế:** JWT (`jsonwebtoken`), hết hạn `7d`. Payload gồm `id, name, email, role, department, avatar, permissions`.
-- **Login:** `POST /api/auth/login` → `bcrypt.compare` → `jwt.sign(payload, JWT_SECRET)`.
+- **Cơ chế:** JWT (`jsonwebtoken`), hết hạn `7d`. Token chứa `sub` và `tokenVersion`; middleware đọc trạng thái user/quyền hiện tại từ DB.
+- **Login:** `POST /api/auth/login` → bcrypt compare (có dummy hash để giảm timing enumeration) → JWT. Email không tồn tại, password sai hoặc account bị khóa trả cùng lỗi `401 Invalid credentials`.
 - **Client:** lưu token + user trong `localStorage` (`tranle_token`, `tranle_user`), gắn header `Authorization: Bearer <token>` mọi request.
 - **Middleware:** `requireAuth` (verify token → `req.user`) trong `backend/middleware/auth.ts`.
-- **Bảo vệ tài khoản:** account locking sau nhiều lần login sai (`failedLogins`, `lockedUntil`, `isLocked`).
-- **Reset password:** qua email link, có token hết hạn (bảng `password_reset_tokens`).
+- **Bảo vệ tài khoản:** không tự khóa theo số lần đăng nhập sai để tránh lockout DoS; giới hạn theo IP. Khóa thủ công của Admin (`isLocked`) vẫn được tôn trọng. Các cột legacy `failedLogins`/`lockedUntil` còn trong schema.
+- **Reset password:** phản hồi yêu cầu chung để tránh dò email; reset token lưu dạng hash, có rate limit, thời hạn và transaction cập nhật một lần.
 
 ## 9. Authorization / RBAC
 
@@ -139,7 +141,7 @@ docker-compose up -d --build   # Docker (app + mysql + mailserver)
 - **4 role seed:** Admin (16 perms), Director (7), Manager (9), Employee (4). Ma trận quyền đầy đủ: [phan_tich.MD](phan_tich.MD) mục 5.
 - **Permission list** nằm trong JWT payload (`permissions[]`), frontend đọc để ẩn/hiện UI.
 - **Logic task (frontend App.tsx):** Admin/Director xem tất cả, Manager xem phòng ban, Employee xem task được giao/tự tạo. Sửa: chỉ `createdBy` hoặc assignee. Xoá: chỉ `createdBy` hoặc Admin.
-- ⚠️ **QUAN TRỌNG:** authorization ở tầng route backend hiện KHÔNG đồng đều — nhiều route chỉ có `requireAuth` mà chưa kiểm tra resource-level ownership/permission (ví dụ `routes/tasks.ts` không verify người gọi có quyền sửa/xoá task đó không). Khi thêm/sửa endpoint, PHẢI kiểm tra quyền ở backend, không chỉ dựa vào frontend.
+- Các luồng ownership cho task, note, contract, document/upload và resource liên quan đã được gia cố, có regression tests trong `backend/tests/ownership.test.ts`. Phạm vi kiểm tra không mặc nhiên bao phủ mọi endpoint: trước khi thêm/sửa route phải xác minh quyền ở backend theo resource, department và action; không dựa riêng vào frontend.
 
 
 ## 10. Coding conventions
@@ -166,7 +168,7 @@ docker-compose up -d --build   # Docker (app + mysql + mailserver)
 
 ## 13. Validation conventions
 
-- Backend: `zod` qua `middleware/validate.ts` — `validate(schema)` parse `req.body`, trả 400 kèm `details`. LƯU Ý: nhiều route hiện CHƯA gắn `validate` (ví dụ `routes/tasks.ts` nhận `req.body` trực tiếp). Endpoint mới nên định nghĩa zod schema + gắn `validate`.
+- Backend: `zod` qua `middleware/validate.ts` — `validate(schema)` parse `req.body`, trả 400 kèm `details`. Một số route cũ có thể chưa gắn validation; kiểm tra từng route trước khi thay đổi. `routes/tasks.ts` hiện validate create/update bằng schema. Endpoint mới nên định nghĩa schema + gắn `validate`.
 - Frontend: validation form hiển thị trong UI (chưa có thư viện form chuẩn hoá — xác minh theo từng page).
 
 ## 14. UI/UX conventions
@@ -201,7 +203,7 @@ docker-compose up -d --build   # Docker (app + mysql + mailserver)
 
 - Framework: `vitest` (backend). Config `backend/vitest.config.ts` — chỉ chạy `tests/**/*.test.ts`, environment `node`, pool `forks`.
 - HTTP test: `supertest`.
-- Hiện `backend/tests/` gần như trống — coverage rất thấp. Khi thêm feature/bug fix: viết test cho logic auth, permission, tính toán (contract/revenue).
+- Backend có regression tests cho auth, RBAC/ownership, reset password, AI, mail, upload, Socket.IO, input validation và infrastructure. Tại lần xác minh 06/10/2026: 15 suites / 102 tests PASS; thêm test tương ứng cho từng thay đổi bảo mật.
 - Frontend: chưa có test runner cấu hình. (Chưa xác định.)
 - Có file `test_api.js` ở root để test thủ công API.
 
@@ -214,27 +216,25 @@ docker-compose up -d --build   # Docker (app + mysql + mailserver)
 
 ## 19. Nguyên tắc bảo mật
 
-- **KHÔNG hardcode secret** trong source/Docker/README/log. Hiện có các vấn đề đã biết cần lưu ý (không tự sửa nếu ngoài scope, chỉ cảnh báo):
-  - JWT secret hardcode trong `docker-compose.yml` và fallback tĩnh trong `server.ts:57`.
-  - `MAIL_ENCRYPTION_KEY` hardcode trong `docker-compose.yml`.
-  - MySQL database credentials trong `docker-compose.yml`.
-  - Mật khẩu admin mặc định trong seed (`db_mysql.ts`), qua env `ADMIN_DEFAULT_PASSWORD`.
-  - `@google/genai` ở frontend → nguy cơ lộ API key qua browser; nên gọi AI qua backend `/api/ai/*`.
-- Mọi endpoint mới PHẢI kiểm tra authorization ở backend (không chỉ frontend). Chú ý IDOR — verify người dùng có quyền trên resource `:id`.
-- Giữ parameterized query (chống SQL injection). Sanitize HTML (`dompurify`) chống XSS.
-- Validate file upload (type/size) — hiện `multer` chưa whitelist chặt.
-- Nếu phát hiện secret trong repo: che bằng `****`, báo vị trí file, đề xuất chuyển sang env var, KHÔNG in secret đầy đủ, KHÔNG commit.
+- Production fail-fast nếu thiếu/để placeholder các cấu hình bắt buộc; secret và DB credentials phải cấp qua environment/secret manager. Không đưa API key vào biến `VITE_*`.
+- Khi tạo endpoint, luôn kiểm tra authorization tại backend và quyền trên resource cụ thể (IDOR); giữ parameterized query.
+- HTML email/user-controlled content phải sanitize bằng DOMPurify trước khi gán vào DOM; không tạo sink `innerHTML` mới nếu có thể render text.
+- Upload dùng giới hạn dung lượng/số file, allowlist extension + kiểm tra magic bytes, xác thực user và quyền truy cập entity; không phục vụ file từ thư mục upload như static public.
+- Export database phải che password, token, secret, API key và giá trị cấu hình nhạy cảm.
+- Thêm dependency thì chạy `npm audit --workspaces`, kiểm tra tính tương thích và cập nhật lockfile bằng npm.
+- Sau thay đổi bảo mật chạy backend tests, frontend build và audit. Kết quả commit `8515ee3` (06/10/2026): 102 tests PASS, frontend build PASS, audit 0 vulnerabilities. Đây là snapshot, cần kiểm tra lại khi dependency hoặc code thay đổi.
+- Nếu phát hiện secret trong repo: che bằng `****`, báo vị trí file, đề xuất chuyển sang env var; KHÔNG in secret đầy đủ, KHÔNG commit.
 
 ## 20. Những quyết định kiến trúc quan trọng
 
 - **Monorepo npm workspaces** — FE + BE cùng repo, cài chung từ root.
 - **Backend chạy bằng `tsx`** (không build ra JS) cho cả dev và production start — deploy = chạy TS trực tiếp.
 - **Database: MySQL 8 (`mysql2`) duy nhất** — kết nối qua `DATABASE_URL`. Khi sửa schema, cập nhật trực tiếp tại `db_mysql.ts`.
-- **Backend serve luôn frontend** — production, Express serve `frontend/dist` (SPA fallback) + `/uploads`. Không có web server riêng cho FE ở production (Nginx đứng trước reverse-proxy).
+- **Backend serve luôn frontend** — production, Express serve `frontend/dist` (SPA fallback). Uploads truy cập qua `/api/upload` với auth/ownership checks, không expose thư mục uploads bằng static middleware. Không có web server riêng cho FE ở production (Nginx đứng trước reverse-proxy).
 - **Port:** backend 3500, frontend dev 5173 (proxy `/api` + `/socket.io` → 3500).
 - **react-query** là nguồn server state duy nhất phía FE — mutation phải `invalidateQueries` để đồng bộ.
 - **Realtime qua Socket.io** cho notification/meeting.
 
 ---
 
-> Tài liệu này xác minh từ source code ngày 2026-08-31. Cập nhật khi kiến trúc/tech stack thay đổi. Chi tiết bảng DB, route, migration: xem [phan_tich.MD](phan_tich.MD).
+> Tài liệu này được rà soát theo source code ngày 2026-10-07. Cập nhật khi kiến trúc/tech stack thay đổi. Chi tiết bảng DB, route, migration và remediation: xem [phan_tich.MD](phan_tich.MD).

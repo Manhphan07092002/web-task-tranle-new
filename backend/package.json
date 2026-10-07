@@ -19,6 +19,7 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.1",
     "file-type": "^21.3.4",
+    "helmet": "^8.3.0",
     "imapflow": "^2.2.6",
     "jsonwebtoken": "^9.0.3",
     "mailparser": "^3.9.36",

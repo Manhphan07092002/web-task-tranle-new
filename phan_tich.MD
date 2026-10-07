@@ -1,6 +1,6 @@
 # 🔍 Phân Tích Toàn Diện Dự Án Tran Le Tasks
 
-> **Ngày phân tích:** 31/08/2026 (cập nhật lần 4 — Chuyển đổi toàn diện Tran Le Electricity & MySQL 8)  
+> **Ngày phân tích:** 07/10/2026 (cập nhật lần 5 — rà soát và remediation bảo mật)
 > **Mục đích:** Lưu trữ kiến thức về cấu trúc, kiến trúc, điểm mạnh, vấn đề và hướng cải thiện của dự án — phục vụ tra cứu nhanh, không cần phân tích lại.  
 > **Tham khảo thêm:** [CLAUDE.md](CLAUDE.md) — hướng dẫn coding conventions dành cho AI.
 
@@ -251,7 +251,7 @@ backend/server.ts ──▶ initDbMysql() ──▶ MySQL 8 (via DATABASE_URL)
 | `mail_tracking` | id, userId, messageId, subject, to, opens, lastOpen | Theo dõi mail |
 | `mail_quotas` | email (VARCHAR PK), quota | Quota mail |
 | `password_reset_requests` | id, userId, email, status, emailStatus, emailSentAt | Yêu cầu reset |
-| `password_reset_tokens` | id, userId, email, token (VARCHAR UNIQUE), expiresAt, usedAt | Token reset |
+| `password_reset_tokens` | id, userId, email, token, tokenHash, expiresAt, usedAt | `token` và `tokenHash` đều chứa hash; không lưu token reset thô |
 | `system_config` | key (VARCHAR PK), value | Cấu hình hệ thống |
 | `db_history` | id, action, filename, performedBy, note, createdAt | Lịch sử DB |
 | `documents` | id, name, url, size, type, category, linkedId, createdBy, isDeleted (TINYINT) | Tài liệu |
@@ -355,13 +355,13 @@ GET/PUT              /api/admin/system-config
 | `vite` | ^6.2.0 | Build tool & dev server |
 | `tailwindcss` + `@tailwindcss/vite` | ^4.2.2 | Utility-first CSS |
 | `@tanstack/react-query` | ^5.64.1 | Server state management |
-| `socket.io-client` | ^4.8.3 | WebSocket client |
+| `socket.io-client` | ^4.8.4 | WebSocket client |
 | `recharts` | ^3.4.1 | Charts & biểu đồ |
 | `motion` | ^12.38.0 | Animations |
 | `lucide-react` | ^0.553.0 | Icon library |
 | `@hello-pangea/dnd` | ^18.0.1 | Drag & Drop (Kanban) |
-| `xlsx` + `xlsx-js-style` | ^0.18.5 / ^1.2.0 | Export Excel |
-| `dompurify` | ^3.4.1 | XSS sanitization |
+| `exceljs` | ^4.4.0 | Export Excel (thay các gói SheetJS có advisory) |
+| `dompurify` | ^3.4.16 | Sanitize HTML khi soạn/hiển thị email |
 | `flatpickr` + `react-flatpickr` | ^4.6.13 | Date picker |
 | `react-to-print` | ^3.3.0 | Print reports |
 | `@mediapipe/*` | — | Camera/segmentation (meetings) |
@@ -372,16 +372,18 @@ GET/PUT              /api/admin/system-config
 | Library | Version | Vai trò |
 |---|---|---|
 | `express` | ^5.2.1 | HTTP framework |
+| `helmet` | ^8.3.0 | Security headers / CSP |
 | **`mysql2`** | **^3.11.5** | **MySQL 8 driver duy nhất** |
 | `jsonwebtoken` | ^9.0.3 | JWT authentication |
 | `bcryptjs` | ^2.4.3 | Password hashing |
-| `socket.io` | ^4.8.3 | WebSocket server |
-| `nodemailer` | ^8.0.7 | SMTP email sending |
-| `imapflow` | ^1.3.2 | IMAP email reading |
-| `mailparser` | ^3.9.8 | Email parsing |
-| `multer` | ^2.1.1 | File upload |
+| `socket.io` | ^4.8.4 | WebSocket server |
+| `nodemailer` | ^10.0.15 | SMTP email sending |
+| `imapflow` | ^2.2.6 | IMAP email reading |
+| `mailparser` | ^3.9.36 | Email parsing |
+| `multer` | ^2.4.0 | File upload |
+| `file-type` | ^21.3.4 | Kiểm tra chữ ký nội dung file upload |
 | `zod` | ^4.3.6 | Input validation |
-| `express-rate-limit` | ^8.4.1 | Rate limiting |
+| `express-rate-limit` | ^8.7.1 | Rate limiting |
 | `@google/genai` | ^1.48.0 | Gemini AI (backend) |
 | `tsx` | ^4.21.0 | TypeScript execution (KHÔNG build) |
 | `vitest` | ^4.1.5 | Testing framework |
@@ -422,8 +424,7 @@ MAIL_ENCRYPTION_KEY=<32 bytes>
 SMTP_HOST / SMTP_PORT / SMTP_SECURE / SMTP_USER / SMTP_PASS / SMTP_FROM
 ADMIN_DEFAULT_PASSWORD=
 
-# Frontend (build-time)
-VITE_GEMINI_API_KEY=
+# Frontend (build-time; không đặt API key/secret ở biến VITE_*)
 VITE_API_URL=http://127.0.0.1:3500
 VITE_PORT=5173
 ```
@@ -475,3 +476,24 @@ cd backend && npm test
 ---
 
 > **Lưu ý:** Dự án hiện tại đã thuần **100% MySQL 8**. Mọi thao tác truy vấn và cấu hình database chỉ cần tập trung vào `backend/db_mysql.ts` và `DATABASE_URL`.
+
+---
+
+## 11. Changelog Remediation Bảo Mật (06/10/2026)
+
+Các mục dưới đây đã được triển khai trong commit `8515ee3` trên `main`:
+
+| Hạng mục | Cập nhật đã triển khai |
+|---|---|
+| Transaction MySQL | Tuần tự hóa truy vấn trên connection dùng chung; transaction gắn với request context, ngăn request khác xen truy vấn trong transaction; có test commit/rollback/failure. |
+| Authentication | Phản hồi đăng nhập sai/không tồn tại/tài khoản bị khóa thống nhất; dùng bcrypt equalizer cho email không tồn tại; bỏ tự khóa tài khoản do số lần đăng nhập sai. Giới hạn đăng nhập theo IP và khóa thủ công của Admin vẫn còn. |
+| Reset password | Phản hồi forgot-password không tiết lộ email tồn tại; reset token được hash, có giới hạn tốc độ và cập nhật password/token trong transaction. |
+| XSS email | HTML trong compose được sanitize trước khi đưa vào DOM/state; nội dung email đọc cũng dùng DOMPurify. |
+| Database export | Che các cột password, token, secret/API key và giá trị cấu hình bí mật trong API xem bảng và export JSON. |
+| Request limits | JSON tối đa 5 MB; URL-encoded tối đa 64 KB, tối đa 100 parameters. Upload multipart có giới hạn kích thước/số file và kiểm tra nội dung file. |
+| Dependency advisories | Cập nhật các dependency runtime; thay `xlsx`/`xlsx-js-style` bằng ExcelJS; áp overrides cho `uuid` và `shell-quote`. |
+| Security controls khác | Production kiểm tra secret/origin bắt buộc; Helmet/CSP và CORS allowlist; authorization/ownership, validation, socket/mail/upload được gia cố và có test hồi quy. |
+
+**Xác minh tại thời điểm cập nhật:** `npm run test --workspace=backend` — 15 suites / 102 tests PASS; `npm run build --workspace=frontend` PASS; `npm audit --workspaces` — 0 vulnerabilities; `git diff --check` PASS. Build có cảnh báo kích thước một số JS chunks, không ảnh hưởng kết quả build.
+
+Đây là kết quả kiểm tra trên code tại commit nêu trên, không thay thế việc rà soát lại khi thêm endpoint, dependency hoặc thay đổi cấu hình/deployment.
