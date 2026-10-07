@@ -36,8 +36,6 @@ const RoleBadge: React.FC<{ roleName: string; roles: RoleInfo[] }> = ({ roleName
   );
 };
 
-const DEPARTMENTS_FALLBACK = ['Board', 'Product', 'Marketing', 'Sales', 'IT', 'HR', 'Finance'];
-
 const getInitials = (name?: string) => {
   const parts = (name || '').trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return 'U';
@@ -72,7 +70,7 @@ const UserFormModal: React.FC<{
     email: user?.email || '',
     password: '',
     role: (user?.role || defaultRole) as string,
-    department: user?.department || 'Product',
+    department: user?.department || '',
     avatar: user?.avatar || '',
   });
   const [saving, setSaving] = useState(false);
@@ -229,6 +227,10 @@ const UserFormModal: React.FC<{
                   <Briefcase className="absolute left-3 top-2.5 text-gray-400" size={16} />
                   <select value={form.department} onChange={e => handle('department', e.target.value)}
                     className="w-full pl-9 pr-8 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-300 outline-none bg-white text-sm appearance-none">
+              <option value="">-- Chưa chọn phòng ban --</option>
+              {user?.department && !departments.includes(user.department) && (
+                <option value={user.department}>{user.department}</option>
+              )}
               {departments.map(d => <option key={d} value={d}>{d}</option>)}
                   </select>
                   <ChevronDown className="absolute right-2.5 top-3 text-gray-400 pointer-events-none" size={14} />
@@ -672,7 +674,7 @@ export default function AdminUserManagement() {
         <UserFormModal
           user={editingUser}
           roles={roles}
-          departments={departments.length > 0 ? departments : DEPARTMENTS_FALLBACK}
+          departments={departments}
           onClose={() => setEditingUser(undefined)}
           onSave={handleSave}
         />

@@ -26,30 +26,28 @@ const StatusIcon: React.FC<{ status: string }> = ({ status }) => {
   return <Circle size={12} className="text-gray-400" />;
 };
 
-const DEPARTMENTS = ['Board', 'Product', 'Marketing', 'Sales', 'IT', 'HR', 'Finance'];
-
 type TaskForm = {
   title: string; description: string; department: string;
   priority: string; status: string; startDate: string; dueDate: string; createdBy: string;
 };
 
 const EMPTY_FORM: TaskForm = {
-  title: '', description: '', department: 'Product',
+  title: '', description: '', department: '',
   priority: 'Medium', status: 'Todo',
   startDate: new Date().toISOString().split('T')[0],
   dueDate: '', createdBy: ''
 };
 
 const TaskFormModal: React.FC<{
-  task: Task | null; users: User[]; onClose: () => void; onSave: (t: Task) => Promise<void>;
-}> = ({ task, users, onClose, onSave }) => {
+  task: Task | null; users: User[]; departments: string[]; onClose: () => void; onSave: (t: Task) => Promise<void>;
+}> = ({ task, users, departments, onClose, onSave }) => {
   const isEdit = !!task;
   const [form, setForm] = useState<TaskForm>(task ? {
     title: task.title, description: task.description || '',
-    department: task.department || 'Product', priority: task.priority,
+    department: task.department || departments[0] || '', priority: task.priority,
     status: task.status, startDate: task.startDate || '',
     dueDate: task.dueDate || '', createdBy: task.createdBy || ''
-  } : { ...EMPTY_FORM, createdBy: users[0]?.id || '' });
+  } : { ...EMPTY_FORM, department: departments[0] || '', createdBy: users[0]?.id || '' });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
@@ -123,7 +121,11 @@ const TaskFormModal: React.FC<{
               <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Phòng ban</label>
               <select value={form.department} onChange={e => set('department', e.target.value)}
                 className="w-full px-3 py-2.5 border border-gray-200 rounded-xl bg-white text-sm focus:ring-2 focus:ring-purple-300 outline-none">
-                {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+                <option value="">-- Chưa chọn phòng ban --</option>
+                {task?.department && !departments.includes(task.department) && (
+                  <option value={task.department}>{task.department}</option>
+                )}
+                {departments.map(d => <option key={d} value={d}>{d}</option>)}
               </select>
             </div>
           </div>
@@ -170,6 +172,7 @@ const TaskFormModal: React.FC<{
 export default function AdminTaskManagement() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [users, setUsers] = useState<User[]>([]);
+  const [departments, setDepartments] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -187,8 +190,14 @@ export default function AdminTaskManagement() {
   const fetchAll = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [tr, ur] = await Promise.all([apiFetch('/api/tasks'), apiFetch('/api/users')]);
+      const [tr, ur, dr] = await Promise.all([
+        apiFetch('/api/tasks'), apiFetch('/api/users'), apiFetch('/api/departments')
+      ]);
       setTasks(await tr.json()); setUsers(await ur.json());
+      if (dr.ok) {
+        const rows = await dr.json();
+        setDepartments(rows.map((d: { name: string }) => d.name).filter(Boolean));
+      }
     } catch { setError('Không thể tải dữ liệu'); }
     finally { setLoading(false); }
   }, []);
@@ -220,8 +229,6 @@ export default function AdminTaskManagement() {
 
   const getUserName = (id: string) => users.find(u => u.id === id)?.name || id;
   const getUserAvatar = (id: string) => users.find(u => u.id === id)?.avatar;
-  const departments = [...new Set(tasks.map(t => t.department).filter(Boolean))].sort();
-
   const filtered = tasks.filter(t => {
     if (search && !t.title.toLowerCase().includes(search.toLowerCase()) && !t.department?.toLowerCase().includes(search.toLowerCase())) return false;
     if (filterStatus && t.status !== filterStatus) return false;
@@ -404,7 +411,7 @@ export default function AdminTaskManagement() {
 
       {/* Modal */}
       {editingTask !== undefined && (
-        <TaskFormModal task={editingTask} users={users} onClose={() => setEditingTask(undefined)} onSave={handleSave} />
+        <TaskFormModal task={editingTask} users={users} departments={departments} onClose={() => setEditingTask(undefined)} onSave={handleSave} />
       )}
     </div>
   );

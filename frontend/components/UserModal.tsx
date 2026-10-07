@@ -20,7 +20,7 @@ export const UserModal: React.FC<UserModalProps> = ({ isOpen, onClose, onSave, i
   const [email, setEmail] = useState('');
   
   const defaultRole = roles.length > 0 ? roles[0].name : 'Employee';
-  const defaultDepartment = departments.length > 0 ? departments[0].name : 'Product';
+  const defaultDepartment = departments[0]?.name || '';
 
   const [role, setRole] = useState<UserRole>(defaultRole);
   const [department, setDepartment] = useState(defaultDepartment);
@@ -52,7 +52,7 @@ export const UserModal: React.FC<UserModalProps> = ({ isOpen, onClose, onSave, i
         setName('');
         setEmail('');
         setRole(roles.length > 0 ? roles[0].name : 'Employee');
-        setDepartment(departments.length > 0 ? departments[0].name : 'Product');
+        setDepartment(departments[0]?.name || '');
         setAvatarUrl(`https://picsum.photos/id/${Math.floor(Math.random() * 100)}/50/50`);
         setPhone('');
         setDob('');
@@ -164,15 +164,11 @@ export const UserModal: React.FC<UserModalProps> = ({ isOpen, onClose, onSave, i
                      onChange={(e) => setDepartment(e.target.value)}
                      className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-400 outline-none bg-white"
                    >
-                     {departments.length > 0 ? (
-                       departments.map(d => <option key={d.id} value={d.name}>{d.name}</option>)
-                     ) : (
-                       <><option value="Board">Board</option>
-                       <option value="Product">Product</option>
-                       <option value="Marketing">Marketing</option>
-                       <option value="Sales">Sales</option>
-                       <option value="IT">IT</option></>
+                     <option value="">-- Chưa chọn phòng ban --</option>
+                     {initialUser?.department && !departments.some(d => d.name === initialUser.department) && (
+                       <option value={initialUser.department}>{initialUser.department}</option>
                      )}
+                     {departments.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
                    </select>
                 </div>
               </div>
