@@ -400,7 +400,7 @@ services:
   app:         # TranLe Tasks (Express + frontend/dist)
     ports: 3500, 5173→3500
     depends_on: mysql (healthy)
-    env: DATABASE_URL=mysql://tranle:***@mysql:3306/tranletask
+    env: DATABASE_URL=mysql://tranle:***@mysql:3306/Tranle_task_new
 
   mysql:       # MySQL 8.0
     ports: 3306
@@ -414,11 +414,13 @@ services:
 
 ### 8.2 Environment Variables
 
+Tên database mặc định đã chuyển sang `Tranle_task_new`. Khi chạy môi trường hiện có, đặt cả `MYSQL_DATABASE=Tranle_task_new` và database path trong `DATABASE_URL` thành `/Tranle_task_new`. Không xóa volume `data/mysql`: nếu volume MySQL đã được khởi tạo, cần tạo database mới và cấp quyền cho `MYSQL_USER` trước khi khởi động app; database `tranletask` cũ được giữ nguyên.
+
 ```bash
 # Backend
 NODE_ENV=production
 PORT=3500
-DATABASE_URL=mysql://tranle:password@localhost:3306/tranletask  # Bắt buộc MySQL
+DATABASE_URL=mysql://tranle:password@localhost:3306/Tranle_task_new  # Bắt buộc MySQL
 JWT_SECRET=<random 32+ chars>
 MAIL_ENCRYPTION_KEY=<32 bytes>
 SMTP_HOST / SMTP_PORT / SMTP_SECURE / SMTP_USER / SMTP_PASS / SMTP_FROM

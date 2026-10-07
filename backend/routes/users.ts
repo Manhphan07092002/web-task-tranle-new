@@ -41,7 +41,7 @@ export function userRoutes(db: any, mailer: any) {
     try {
       const isAdmin = req.user?.role === 'Admin' || req.user?.permissions?.includes('admin_panel') || req.user?.permissions?.includes('manage_users');
       const query = isAdmin
-        ? `SELECT u.id, u.name, u.email, u.role, u.department, u.avatar, u.bio, u.phone, u.dob, u.hometown, u.cccd, u.gender, u.preferences, u.isLocked, r.permissions FROM users u LEFT JOIN roles r ON u.role = r.name`
+        ? `SELECT u.id, u.name, u.email, u.role, u.department, u.avatar, u.bio, u.phone, u.dob, u.hometown, u.cccd, u.gender, u.preferences, u.isLocked, u.jobTitle, r.permissions FROM users u LEFT JOIN roles r ON u.role = r.name`
         : `SELECT u.id, u.name, u.email, u.role, u.department, u.avatar FROM users u`;
       const users = await db.all(query);
       res.json(users.map((u: any) => ({

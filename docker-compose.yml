@@ -12,7 +12,7 @@ services:
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - PORT=3500
-      - DATABASE_URL=${DATABASE_URL:-mysql://${MYSQL_USER:-tranle}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-tranletask}}
+      - DATABASE_URL=${DATABASE_URL:-mysql://${MYSQL_USER:-tranle}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-Tranle_task_new}}
       - JWT_SECRET=${JWT_SECRET}
       - MAIL_ENCRYPTION_KEY=${MAIL_ENCRYPTION_KEY}
     depends_on:
@@ -25,7 +25,7 @@ services:
     restart: unless-stopped
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     environment:
-      - MYSQL_DATABASE=${MYSQL_DATABASE:-tranletask}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-Tranle_task_new}
       - MYSQL_USER=${MYSQL_USER:-tranle}
       - MYSQL_PASSWORD=${MYSQL_PASSWORD}
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}

@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { decrypt, encrypt, isLegacyCbcCiphertext, isVersionedCiphertext } from './utils/cryptoUtils.js';
 import { runVersionedMigration, withMigrationLock } from './utils/dbMigrations.js';
 import { DatabaseTransactionGate } from './utils/dbTransactionGate.js';
+import { initializeDatabaseOnce } from './utils/dbBootstrap.js';
 
 // ─── SQL normalizer ──────────────────────────────────────────────────────────
 // Converts the SQLite-flavoured SQL used throughout the routes to MySQL,
@@ -374,9 +375,9 @@ CREATE TABLE IF NOT EXISTS mail_quotas (
 `;
 
 export async function initDbMysql(): Promise<MysqlDb> {
-  const url = process.env.DATABASE_URL || 'mysql://root:@127.0.0.1:3306/tranletask';
+  const url = process.env.DATABASE_URL || 'mysql://root:@127.0.0.1:3306/Tranle_task_new';
   const parsed = new URL(url);
-  const dbName = parsed.pathname.replace(/^\//, '') || 'tranletask';
+  const dbName = parsed.pathname.replace(/^\//, '') || 'Tranle_task_new';
   const host = parsed.hostname || '127.0.0.1';
   const port = parseInt(parsed.port || '3306', 10);
   const user = decodeURIComponent(parsed.username || 'root');
@@ -416,42 +417,46 @@ export async function initDbMysql(): Promise<MysqlDb> {
   // application instances. MySQL DDL is not transactional; each migration is
   // idempotent and records its version only after all of its steps complete.
   await withMigrationLock(db, async () => {
-    await db.exec(DDL);
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS _migrations (
-        version INT PRIMARY KEY,
-        name VARCHAR(191) NOT NULL,
-        appliedAt TEXT NOT NULL
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-
-    const ensureColumn = async (table: string, column: string, definition: string) => {
-      const existing = await db.get(
-        'SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
-        [table, column]
-      );
-      if (!existing || Number(existing.count) === 0) {
-        await db.run(`ALTER TABLE \`${table}\` ADD COLUMN ${definition}`);
-      }
-    };
-
-    await runVersionedMigration(db, 1, 'security_columns_and_reset_token_hashes', async () => {
-      await ensureColumn('users', 'tokenVersion', '`tokenVersion` INT NOT NULL DEFAULT 0');
-      await ensureColumn('password_reset_tokens', 'tokenHash', '`tokenHash` VARCHAR(191) UNIQUE');
-      await ensureColumn('uploaded_files', 'entityType', '`entityType` VARCHAR(64) NULL');
-      await ensureColumn('uploaded_files', 'entityId', '`entityId` VARCHAR(191) NULL');
-      await db.run(`
-        UPDATE password_reset_tokens
-        SET tokenHash = LOWER(SHA2(token, 256)), token = LOWER(SHA2(token, 256))
-        WHERE tokenHash IS NULL OR tokenHash = '' OR tokenHash <> token
+    await initializeDatabaseOnce(db, async () => {
+      await db.exec(DDL);
+      await db.exec(`
+        CREATE TABLE IF NOT EXISTS _migrations (
+          version INT PRIMARY KEY,
+          name VARCHAR(191) NOT NULL,
+          appliedAt TEXT NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
       `);
-    });
 
-    await runVersionedMigration(db, 2, 'notification_deduplication', async () => {
-      await ensureColumn('notifications', 'dedupeKey', '`dedupeKey` VARCHAR(64) NULL UNIQUE');
-    });
+      const ensureColumn = async (table: string, column: string, definition: string) => {
+        const existing = await db.get(
+          'SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+          [table, column]
+        );
+        if (!existing || Number(existing.count) === 0) {
+          await db.run(`ALTER TABLE \`${table}\` ADD COLUMN ${definition}`);
+        }
+      };
 
-    await seedIfEmpty(db);
+      await runVersionedMigration(db, 1, 'security_columns_and_reset_token_hashes', async () => {
+        await ensureColumn('users', 'tokenVersion', '`tokenVersion` INT NOT NULL DEFAULT 0');
+        await ensureColumn('password_reset_tokens', 'tokenHash', '`tokenHash` VARCHAR(191) UNIQUE');
+        await ensureColumn('uploaded_files', 'entityType', '`entityType` VARCHAR(64) NULL');
+        await ensureColumn('uploaded_files', 'entityId', '`entityId` VARCHAR(191) NULL');
+        await db.run(`
+          UPDATE password_reset_tokens
+          SET tokenHash = LOWER(SHA2(token, 256)), token = LOWER(SHA2(token, 256))
+          WHERE tokenHash IS NULL OR tokenHash = '' OR tokenHash <> token
+        `);
+      });
+
+      await runVersionedMigration(db, 2, 'notification_deduplication', async () => {
+        await ensureColumn('notifications', 'dedupeKey', '`dedupeKey` VARCHAR(64) NULL UNIQUE');
+      });
+
+      await runVersionedMigration(db, 3, 'personnel_job_title', async () => {
+        await ensureColumn('users', 'jobTitle', '`jobTitle` VARCHAR(255) NULL');
+      });
+    }, () => seedInitialData(db));
     await migrateMailCredentials(db);
   });
 
@@ -501,7 +506,7 @@ export async function migrateMailCredentials(db: MysqlDb) {
   if (migrated || skipped) console.info(`[SECURITY] Mail credential encryption migration: ${migrated} migrated, ${skipped} skipped.`);
 }
 
-async function seedIfEmpty(db: MysqlDb) {
+async function seedInitialData(db: MysqlDb) {
   const now = new Date().toISOString();
   const todayStr = now.split('T')[0];
 
@@ -795,7 +800,7 @@ async function seedIfEmpty(db: MysqlDb) {
     }
   }
 
-  // ── 6b. Đồng bộ dự án từ PROFILE TLEC VN - 2026.pdf (idempotent, chạy mọi lần) ─
+  // ── 6b. Khởi tạo dự án từ PROFILE TLEC VN - 2026.pdf khi cài đặt lần đầu ─────
   {
     const EPC = 'Khối Tổng Thầu EPC & Thi Công';
     const PDF_PROJECTS = [

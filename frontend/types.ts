@@ -89,6 +89,7 @@ export interface User {
   email: string;
   password?: string;
   role: UserRole;
+  jobTitle?: string | null;
   department: string;
   avatar: string;
   bio?: string;

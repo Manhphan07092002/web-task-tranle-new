@@ -606,7 +606,7 @@ export default function AdminUserManagement() {
                   <tr>
                     <th className="text-left py-3.5 px-5 text-xs font-bold text-gray-500 uppercase tracking-wider">Người dùng</th>
                     <th className="text-left py-3.5 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Email</th>
-                    <th className="text-left py-3.5 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Vai trò</th>
+                    <th className="text-left py-3.5 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Chức vụ</th>
                     <th className="text-left py-3.5 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Phòng ban</th>
                     <th className="text-right py-3.5 px-5 text-xs font-bold text-gray-500 uppercase tracking-wider">Thao tác</th>
                   </tr>
