@@ -37,6 +37,7 @@ import { aiRoutes, invalidateAiKeyCache } from './routes/ai.js';
 
 import { initSocket } from './socket.js';
 import { createRequireAuth, requireAdmin } from './middleware/auth.js';
+import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 
 import { scheduleFridayReminder } from './schedulers/fridayReminder.js';
 import { scheduleNoteReminders } from './schedulers/noteReminder.js';
@@ -176,13 +177,19 @@ async function startServer() {
 
   const frontendPath = path.join(__dirname, '../frontend/dist');
   app.use(express.static(frontendPath));
-  app.use(async (req, res) => {
+  app.use(async (req, res, next) => {
     if (!req.path.startsWith('/api')) {
       res.sendFile(path.join(frontendPath, 'index.html'));
     } else {
-      res.status(404).json({ error: 'API route not found' });
+      next();
     }
   });
+
+  // 404 handler for API routes
+  app.use('/api/*', notFoundHandler);
+
+  // Global error handler (must be last)
+  app.use(errorHandler);
 
   httpServer.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);

@@ -97,7 +97,7 @@ function wrapRow(row: Record<string, any>): any {
 class MysqlDb {
   private readonly transactionGate = new DatabaseTransactionGate();
 
-  constructor(private conn: mysql.Connection, private connectionConfig: mysql.ConnectionOptions) {}
+  constructor(private conn: mysql.Connection, private connectionConfig: mysql.ConnectionOptions) { }
 
   private async query(sql: string, params?: any[]): Promise<any> {
     const normalizedSql = normalizeSql(sql);
@@ -188,7 +188,7 @@ CREATE TABLE IF NOT EXISTS users (
   id VARCHAR(191) PRIMARY KEY, name TEXT NOT NULL, email VARCHAR(255) NOT NULL,
   password TEXT, role VARCHAR(64) NOT NULL, department VARCHAR(191) NOT NULL, avatar TEXT NOT NULL,
   mailPassword TEXT,
-  failedLogins INT NOT NULL DEFAULT 0, lockedUntil TEXT, isLocked TINYINT NOT NULL DEFAULT 0,
+  isLocked TINYINT NOT NULL DEFAULT 0,
   tokenVersion INT NOT NULL DEFAULT 0,
   phone TEXT, dob TEXT, hometown TEXT, bio TEXT, cccd TEXT, gender TEXT,
   preferences TEXT DEFAULT ('{}')
@@ -197,12 +197,16 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS tasks (
   id VARCHAR(191) PRIMARY KEY, title TEXT NOT NULL, description TEXT,
   startDate TEXT, dueDate TEXT, estimatedEndAt TEXT, priority VARCHAR(64), status VARCHAR(64),
-  createdBy VARCHAR(191), department VARCHAR(191), recurrence VARCHAR(64), contractId VARCHAR(191), projectId VARCHAR(191)
+  createdBy VARCHAR(191), department VARCHAR(191), recurrence VARCHAR(64), contractId VARCHAR(191), projectId VARCHAR(191),
+  INDEX idx_tasks_dept_status (department, status),
+  INDEX idx_tasks_status_duedate (status, dueDate),
+  INDEX idx_tasks_createdby (createdBy)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS task_assignees (
   taskId VARCHAR(191) NOT NULL, userId VARCHAR(191) NOT NULL,
-  PRIMARY KEY (taskId, userId)
+  PRIMARY KEY (taskId, userId),
+  INDEX idx_task_assignees_user (userId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS task_tags (
@@ -223,14 +227,18 @@ CREATE TABLE IF NOT EXISTS task_comments (
 CREATE TABLE IF NOT EXISTS notes (
   id VARCHAR(191) PRIMARY KEY, title TEXT NOT NULL, content TEXT,
   color VARCHAR(64), createdAt TEXT, reminderAt TEXT,
-  userId VARCHAR(191)
+  userId VARCHAR(191),
+  INDEX idx_notes_user_reminder (userId, reminderAt)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS reports (
   id VARCHAR(191) PRIMARY KEY, title TEXT NOT NULL, content TEXT,
   authorId VARCHAR(191) NOT NULL, department VARCHAR(191) NOT NULL, status VARCHAR(64) NOT NULL,
   createdAt TEXT NOT NULL, submittedAt TEXT, approvedAt TEXT, approvedBy VARCHAR(191),
-  directorFeedback TEXT, managerFeedback TEXT, deletedAt TEXT, isDeleted TINYINT DEFAULT 0
+  directorFeedback TEXT, managerFeedback TEXT, deletedAt TEXT, isDeleted TINYINT DEFAULT 0,
+  INDEX idx_reports_status_deleted (status, isDeleted),
+  INDEX idx_reports_department (department),
+  INDEX idx_reports_author (authorId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS roles (
@@ -262,7 +270,9 @@ CREATE TABLE IF NOT EXISTS system_config (
 CREATE TABLE IF NOT EXISTS notifications (
   id VARCHAR(191) PRIMARY KEY, userId VARCHAR(191) NOT NULL, type VARCHAR(64) NOT NULL,
   title TEXT NOT NULL, message TEXT NOT NULL, relatedId VARCHAR(191),
-  dedupeKey VARCHAR(64) UNIQUE, isRead TINYINT NOT NULL DEFAULT 0, createdAt TEXT NOT NULL
+  dedupeKey VARCHAR(64) UNIQUE, isRead TINYINT NOT NULL DEFAULT 0, createdAt TEXT NOT NULL,
+  INDEX idx_notifications_user_read (userId, isRead),
+  INDEX idx_notifications_created (createdAt)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS events (
@@ -273,7 +283,9 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE TABLE IF NOT EXISTS activity_logs (
   id VARCHAR(191) PRIMARY KEY, userId VARCHAR(191) NOT NULL, action VARCHAR(191) NOT NULL,
-  entityId VARCHAR(191), entityType VARCHAR(64), metadata TEXT, createdAt TEXT NOT NULL
+  entityId VARCHAR(191), entityType VARCHAR(64), metadata TEXT, createdAt TEXT NOT NULL,
+  INDEX idx_activity_user_created (userId, createdAt),
+  INDEX idx_activity_entity (entityType, entityId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS db_history (
@@ -304,7 +316,10 @@ CREATE TABLE IF NOT EXISTS contracts (
   vatRate DOUBLE DEFAULT 10, postTaxValue DOUBLE DEFAULT 0, paidAmount DOUBLE DEFAULT 0,
   projectId VARCHAR(191), contractType VARCHAR(64) DEFAULT 'output', supplierName TEXT,
   documentChecklist TEXT, signedDate TEXT, startDate TEXT, endDate TEXT,
-  warrantyMonths INT DEFAULT 0, payments TEXT
+  warrantyMonths INT DEFAULT 0, payments TEXT,
+  INDEX idx_contracts_status_deleted (status, isDeleted),
+  INDEX idx_contracts_department (department),
+  INDEX idx_contracts_createdby (createdBy)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS revenue_reports (
@@ -314,7 +329,10 @@ CREATE TABLE IF NOT EXISTS revenue_reports (
   authorId VARCHAR(191) NOT NULL, department VARCHAR(191) NOT NULL, status VARCHAR(64) NOT NULL DEFAULT 'Draft',
   approvedBy VARCHAR(191), approvedAt TEXT, managerFeedback TEXT, directorFeedback TEXT,
   createdAt TEXT NOT NULL, submittedAt TEXT, isDeleted TINYINT DEFAULT 0,
-  generationMode VARCHAR(64) DEFAULT 'manual'
+  generationMode VARCHAR(64) DEFAULT 'manual',
+  INDEX idx_revenue_status_deleted (status, isDeleted),
+  INDEX idx_revenue_department (department),
+  INDEX idx_revenue_author (authorId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -324,7 +342,10 @@ CREATE TABLE IF NOT EXISTS projects (
   biddingCode TEXT, biddingDate TEXT, procurementMethod TEXT, investor TEXT,
   biddingPrice DOUBLE DEFAULT 0, winningPrice DOUBLE DEFAULT 0,
   createdAt TEXT NOT NULL, updatedAt TEXT, isDeleted TINYINT DEFAULT 0,
-  priority VARCHAR(64) DEFAULT 'medium', phase VARCHAR(64) DEFAULT 'initiation'
+  priority VARCHAR(64) DEFAULT 'medium', phase VARCHAR(64) DEFAULT 'initiation',
+  INDEX idx_projects_status_deleted (status, isDeleted),
+  INDEX idx_projects_department (department),
+  INDEX idx_projects_manager (managerId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS project_reports (
@@ -455,6 +476,71 @@ export async function initDbMysql(): Promise<MysqlDb> {
 
       await runVersionedMigration(db, 3, 'personnel_job_title', async () => {
         await ensureColumn('users', 'jobTitle', '`jobTitle` VARCHAR(255) NULL');
+      });
+
+      await runVersionedMigration(db, 4, 'performance_indexes', async () => {
+        const ensureIndex = async (table: string, indexName: string, columns: string) => {
+          const existing = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+            [table, indexName]
+          );
+          if (!existing || Number(existing.count) === 0) {
+            await db.run(`CREATE INDEX ${indexName} ON \`${table}\` (${columns})`);
+          }
+        };
+
+        // Tasks indexes
+        await ensureIndex('tasks', 'idx_tasks_dept_status', 'department, status');
+        await ensureIndex('tasks', 'idx_tasks_status_duedate', 'status, dueDate');
+        await ensureIndex('tasks', 'idx_tasks_createdby', 'createdBy');
+        await ensureIndex('task_assignees', 'idx_task_assignees_user', 'userId');
+
+        // Contracts indexes
+        await ensureIndex('contracts', 'idx_contracts_status_deleted', 'status, isDeleted');
+        await ensureIndex('contracts', 'idx_contracts_department', 'department');
+        await ensureIndex('contracts', 'idx_contracts_createdby', 'createdBy');
+
+        // Notes indexes
+        await ensureIndex('notes', 'idx_notes_user_reminder', 'userId, reminderAt');
+
+        // Reports indexes
+        await ensureIndex('reports', 'idx_reports_status_deleted', 'status, isDeleted');
+        await ensureIndex('reports', 'idx_reports_department', 'department');
+        await ensureIndex('reports', 'idx_reports_author', 'authorId');
+
+        // Revenue reports indexes
+        await ensureIndex('revenue_reports', 'idx_revenue_status_deleted', 'status, isDeleted');
+        await ensureIndex('revenue_reports', 'idx_revenue_department', 'department');
+        await ensureIndex('revenue_reports', 'idx_revenue_author', 'authorId');
+
+        // Projects indexes
+        await ensureIndex('projects', 'idx_projects_status_deleted', 'status, isDeleted');
+        await ensureIndex('projects', 'idx_projects_department', 'department');
+        await ensureIndex('projects', 'idx_projects_manager', 'managerId');
+
+        // Notifications indexes
+        await ensureIndex('notifications', 'idx_notifications_user_read', 'userId, isRead');
+        await ensureIndex('notifications', 'idx_notifications_created', 'createdAt');
+
+        // Activity logs indexes
+        await ensureIndex('activity_logs', 'idx_activity_user_created', 'userId, createdAt');
+        await ensureIndex('activity_logs', 'idx_activity_entity', 'entityType, entityId');
+      });
+
+      await runVersionedMigration(db, 5, 'remove_legacy_columns', async () => {
+        const dropColumnIfExists = async (table: string, column: string) => {
+          const existing = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+            [table, column]
+          );
+          if (existing && Number(existing.count) > 0) {
+            await db.run(`ALTER TABLE \`${table}\` DROP COLUMN \`${column}\``);
+          }
+        };
+
+        // Remove unused auto-lock columns from users table
+        await dropColumnIfExists('users', 'failedLogins');
+        await dropColumnIfExists('users', 'lockedUntil');
       });
     }, () => seedInitialData(db));
     await migrateMailCredentials(db);

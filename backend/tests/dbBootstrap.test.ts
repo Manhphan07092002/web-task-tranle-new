@@ -36,6 +36,9 @@ function database() {
       return [[{ count: ['users', 'roles', 'departments', 'tasks', 'system_config', '_migrations'].filter(t => tables.has(t)).length }]];
     }
     if (sql.includes('FROM information_schema.columns')) return [[{ count: 1 }]];
+    if (sql.includes('FROM information_schema.statistics')) return [[{ count: 0 }]]; // Index checks
+    if (sql.startsWith('CREATE INDEX')) return [{ affectedRows: 0 }];
+    if (sql.startsWith('ALTER TABLE') && sql.includes('DROP COLUMN')) return [{ affectedRows: 0 }];
     if (sql === 'SELECT completed FROM _bootstrap WHERE id = 1') return [[...rows('_bootstrap').values()]];
     if (sql === 'SELECT version FROM _migrations WHERE version = ?') {
       const row = rows('_migrations').get(String(params[0]));
@@ -120,7 +123,7 @@ describe('first-install database bootstrap', () => {
     expect(store.rows('tasks').size).toBe(0);
     expect(store.rows('system_config').size).toBe(0);
     expect(store.rows('_bootstrap').get('1')?.completed).toBe(1);
-    expect(store.rows('_migrations').size).toBe(3);
+    expect(store.rows('_migrations').size).toBe(5); // 3 original + 2 new (indexes, legacy columns)
   });
 
   it('does not recreate accounts, roles, or config after all application data is deleted', async () => {

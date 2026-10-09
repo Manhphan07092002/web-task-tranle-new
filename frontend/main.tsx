@@ -9,6 +9,7 @@ import { AuthProvider } from './contexts/AuthContext';
 import { LanguageProvider } from './contexts/LanguageContext';
 import { DataProvider } from './contexts/DataContext';
 import { NotificationProvider } from './contexts/NotificationContext';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import 'flatpickr/dist/flatpickr.min.css';
 
 // Suppress Recharts ResponsiveContainer "width/height = -1" warning
@@ -23,28 +24,35 @@ const queryClient = new QueryClient({
     queries: {
       refetchOnWindowFocus: false,
       staleTime: 1000 * 60 * 5, // 5 minutes
+      retry: 2,
+      retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+    },
+    mutations: {
+      retry: 1,
     },
   },
 });
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <LanguageProvider>
-          <AuthProvider>
-            <DataProvider>
-              <NotificationProvider>
-                <Routes>
-                  <Route path="/admin/*" element={<AdminApp />} />
-                  <Route path="/*" element={<App />} />
-                </Routes>
-              </NotificationProvider>
-            </DataProvider>
-          </AuthProvider>
-        </LanguageProvider>
-      </BrowserRouter>
-      {/* <ReactQueryDevtools initialIsOpen={false} /> */}
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <LanguageProvider>
+            <AuthProvider>
+              <DataProvider>
+                <NotificationProvider>
+                  <Routes>
+                    <Route path="/admin/*" element={<AdminApp />} />
+                    <Route path="/*" element={<App />} />
+                  </Routes>
+                </NotificationProvider>
+              </DataProvider>
+            </AuthProvider>
+          </LanguageProvider>
+        </BrowserRouter>
+        {/* <ReactQueryDevtools initialIsOpen={false} /> */}
+      </QueryClientProvider>
+    </ErrorBoundary>
   </React.StrictMode>
 );
