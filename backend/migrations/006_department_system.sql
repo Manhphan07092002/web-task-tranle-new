@@ -1,28 +1,47 @@
 -- Migration 006: Department System & Management Levels
 -- Implements organizational hierarchy and management level-based RBAC
 -- Safe to run: uses IF NOT EXISTS and preserves existing data
+-- ⚠️ IMPORTANT: departments table ALREADY EXISTS - we ALTER it, not CREATE new
 
 -- ============================================================
--- PART 1: CREATE NEW TABLES
+-- PART 1: UPGRADE EXISTING DEPARTMENTS TABLE
 -- ============================================================
 
--- Departments table: hierarchical structure
-CREATE TABLE IF NOT EXISTS departments (
-  id VARCHAR(36) PRIMARY KEY,
-  code VARCHAR(50) UNIQUE NOT NULL,
-  name VARCHAR(255) NOT NULL,
-  parentId VARCHAR(36),
-  level INT NOT NULL COMMENT '1=BGD, 2=Main dept, 3=Sub-dept',
-  managerId VARCHAR(36),
-  description TEXT,
-  isActive TINYINT DEFAULT 1,
-  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (parentId) REFERENCES departments(id) ON DELETE SET NULL,
-  INDEX idx_dept_parent (parentId),
-  INDEX idx_dept_code (code),
-  INDEX idx_dept_active (isActive)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- Check if departments table exists (it should from DDL)
+-- Current schema: id, name (UNIQUE), description, color, managerId
+-- Add new columns for hierarchy and RBAC
+
+-- Add new columns to existing departments table
+ALTER TABLE departments
+  ADD COLUMN IF NOT EXISTS code VARCHAR(50) UNIQUE,
+  ADD COLUMN IF NOT EXISTS parentId VARCHAR(191),
+  ADD COLUMN IF NOT EXISTS level INT DEFAULT 2 COMMENT '1=BGD, 2=Main dept, 3=Sub-dept',
+  ADD COLUMN IF NOT EXISTS isActive TINYINT DEFAULT 1,
+  ADD COLUMN IF NOT EXISTS createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
+
+-- Add indexes for performance
+CREATE INDEX IF NOT EXISTS idx_dept_parent ON departments(parentId);
+CREATE INDEX IF NOT EXISTS idx_dept_code ON departments(code);
+CREATE INDEX IF NOT EXISTS idx_dept_active ON departments(isActive);
+
+-- Add foreign key constraint for parent-child relationship
+-- Use a stored procedure pattern to check if FK exists first
+SET @fk_dept_parent_exists = (
+  SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+  WHERE CONSTRAINT_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'departments'
+  AND CONSTRAINT_NAME = 'fk_dept_parent'
+);
+
+SET @sql_add_fk = IF(@fk_dept_parent_exists = 0,
+  'ALTER TABLE departments ADD CONSTRAINT fk_dept_parent FOREIGN KEY (parentId) REFERENCES departments(id) ON DELETE SET NULL',
+  'SELECT "FK fk_dept_parent already exists" AS msg'
+);
+
+PREPARE stmt FROM @sql_add_fk;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 -- Positions table: job positions with management levels
 CREATE TABLE IF NOT EXISTS positions (
@@ -103,35 +122,103 @@ EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
 -- ============================================================
--- PART 3: SEED DEPARTMENTS
+-- PART 3: SEED/UPDATE DEPARTMENTS
 -- ============================================================
 
--- Insert Ban Giám Đốc (root department)
+-- Insert Ban Giám Đốc (root department) if not exists
 INSERT IGNORE INTO departments (id, code, name, level, isActive, description) VALUES
 ('dept-bgd', 'BGD', 'Ban Giám Đốc', 1, 1, 'Ban điều hành công ty');
 
--- Insert 8 main departments
-INSERT IGNORE INTO departments (id, code, name, parentId, level, isActive, description) VALUES
-('dept-ke-toan', 'KT', 'Phòng Kế Toán', 'dept-bgd', 2, 1, 'Quản lý tài chính, kế toán, công nợ'),
-('dept-hcns', 'HCNS', 'Phòng Hành Chính - Nhân Sự', 'dept-bgd', 2, 1, 'Quản lý nhân sự, hành chính, văn phòng'),
-('dept-kinh-doanh', 'KD', 'Phòng Kinh Doanh', 'dept-bgd', 2, 1, 'Bán hàng, chăm sóc khách hàng, lead generation'),
-('dept-du-an', 'DA', 'Phòng Dự Án', 'dept-bgd', 2, 1, 'Quản lý dự án, thi công, giám sát'),
-('dept-ky-thuat', 'KTBH', 'Phòng Kỹ Thuật - Bảo Hành', 'dept-bgd', 2, 1, 'Thiết kế kỹ thuật, bảo hành, O&M'),
-('dept-marketing', 'MKT', 'Phòng Marketing', 'dept-bgd', 2, 1, 'Marketing, truyền thông, xây dựng thương hiệu'),
-('dept-kho', 'KHO', 'Kho Vận', 'dept-bgd', 2, 1, 'Quản lý kho, xuất nhập tồn, logistics'),
-('dept-mua-hang', 'MH', 'Mua Hàng', 'dept-bgd', 2, 1, 'Mua sắm, đàm phán nhà cung cấp');
+-- Update existing departments OR insert if not exists
+-- Using INSERT ... ON DUPLICATE KEY UPDATE pattern
+
+INSERT INTO departments (id, code, name, parentId, level, isActive, description) VALUES
+('dept-ke-toan', 'KT', 'Phòng Kế Toán', 'dept-bgd', 2, 1, 'Quản lý tài chính, kế toán, công nợ')
+ON DUPLICATE KEY UPDATE
+  code = VALUES(code),
+  parentId = VALUES(parentId),
+  level = VALUES(level),
+  description = VALUES(description);
+
+INSERT INTO departments (id, code, name, parentId, level, isActive, description) VALUES
+('dept-hcns', 'HCNS', 'Phòng Hành Chính - Nhân Sự', 'dept-bgd', 2, 1, 'Quản lý nhân sự, hành chính, văn phòng')
+ON DUPLICATE KEY UPDATE
+  code = VALUES(code),
+  parentId = VALUES(parentId),
+  level = VALUES(level),
+  description = VALUES(description);
+
+INSERT INTO departments (id, code, name, parentId, level, isActive, description) VALUES
+('dept-kinh-doanh', 'KD', 'Phòng Kinh Doanh', 'dept-bgd', 2, 1, 'Bán hàng, chăm sóc khách hàng, lead generation')
+ON DUPLICATE KEY UPDATE
+  code = VALUES(code),
+  parentId = VALUES(parentId),
+  level = VALUES(level),
+  description = VALUES(description);
+
+INSERT INTO departments (id, code, name, parentId, level, isActive, description) VALUES
+('dept-du-an', 'DA', 'Phòng Dự Án', 'dept-bgd', 2, 1, 'Quản lý dự án, thi công, giám sát')
+ON DUPLICATE KEY UPDATE
+  code = VALUES(code),
+  parentId = VALUES(parentId),
+  level = VALUES(level),
+  description = VALUES(description);
+
+INSERT INTO departments (id, code, name, parentId, level, isActive, description) VALUES
+('dept-ky-thuat', 'KTBH', 'Phòng Kỹ Thuật - Bảo Hành', 'dept-bgd', 2, 1, 'Thiết kế kỹ thuật, bảo hành, O&M')
+ON DUPLICATE KEY UPDATE
+  code = VALUES(code),
+  parentId = VALUES(parentId),
+  level = VALUES(level),
+  description = VALUES(description);
+
+INSERT INTO departments (id, code, name, parentId, level, isActive, description) VALUES
+('dept-marketing', 'MKT', 'Phòng Marketing', 'dept-bgd', 2, 1, 'Marketing, truyền thông, xây dựng thương hiệu')
+ON DUPLICATE KEY UPDATE
+  code = VALUES(code),
+  parentId = VALUES(parentId),
+  level = VALUES(level),
+  description = VALUES(description);
+
+INSERT INTO departments (id, code, name, parentId, level, isActive, description) VALUES
+('dept-kho', 'KHO', 'Kho Vận', 'dept-bgd', 2, 1, 'Quản lý kho, xuất nhập tồn, logistics')
+ON DUPLICATE KEY UPDATE
+  code = VALUES(code),
+  parentId = VALUES(parentId),
+  level = VALUES(level),
+  description = VALUES(description);
+
+INSERT INTO departments (id, code, name, parentId, level, isActive, description) VALUES
+('dept-mua-hang', 'MH', 'Mua Hàng', 'dept-bgd', 2, 1, 'Mua sắm, đàm phán nhà cung cấp')
+ON DUPLICATE KEY UPDATE
+  code = VALUES(code),
+  parentId = VALUES(parentId),
+  level = VALUES(level),
+  description = VALUES(description);
 
 -- ============================================================
 -- PART 4: MIGRATE EXISTING DATA
 -- ============================================================
 
 -- Map users.department (old string field) to primaryDepartmentId (new FK)
--- This is a best-effort mapping based on common department names
+-- Strategy: Match by department name (departments.name) to get department ID
+-- ⚠️ users.department is VARCHAR, not FK yet - keep it for backward compatibility
 
 UPDATE users u
 SET u.primaryDepartmentId = (
   SELECT d.id FROM departments d
-  WHERE d.code = u.department
+  WHERE d.name = u.department
+  LIMIT 1
+)
+WHERE u.department IS NOT NULL
+  AND u.department != ''
+  AND u.primaryDepartmentId IS NULL;
+
+-- Fallback: Try matching by partial name if exact match failed
+UPDATE users u
+SET u.primaryDepartmentId = (
+  SELECT d.id FROM departments d
+  WHERE u.department LIKE CONCAT('%', d.name, '%')
      OR d.name LIKE CONCAT('%', u.department, '%')
   LIMIT 1
 )
@@ -140,6 +227,10 @@ WHERE u.department IS NOT NULL
   AND u.primaryDepartmentId IS NULL;
 
 -- Set managementLevel based on current role
+-- Admin = 99 (system level, no business approval)
+-- Director = 40 (company-wide)
+-- Manager = 20 (department-wide)
+-- Employee = 10 (own data only)
 UPDATE users
 SET managementLevel = CASE role
   WHEN 'Admin' THEN 99
@@ -152,9 +243,10 @@ END
 WHERE managementLevel IS NULL OR managementLevel = 10;
 
 -- Generate employee codes for users without one
+-- Format: EMP-YYYYMMDD-### based on creation order
 UPDATE users
-SET employeeCode = CONCAT('EMP-', LPAD(id, 6, '0'))
-WHERE employeeCode IS NULL;
+SET employeeCode = CONCAT('EMP-', DATE_FORMAT(NOW(), '%Y%m%d'), '-', LPAD(SUBSTRING(id, 1, 3), 3, '0'))
+WHERE employeeCode IS NULL OR employeeCode = '';
 
 -- ============================================================
 -- PART 5: CREATE DEFAULT POSITIONS

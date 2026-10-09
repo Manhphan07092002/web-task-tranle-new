@@ -77,27 +77,164 @@ Bàn giao → Thanh toán → Công nợ → Bảo hành/O&M
 
 #### 0.1 Database Schema Upgrade
 
-**Tạo Migration 006: Department Hierarchy & Management Levels**
+**⚠️ QUAN TRỌNG: Xung đột cấu trúc đã phát hiện**
+
+**Bảng `departments` ĐÃ TỒN TẠI** trong `backend/db_mysql.ts` (line 250-253):
+```sql
+CREATE TABLE IF NOT EXISTS departments (
+  id VARCHAR(191) PRIMARY KEY,
+  name VARCHAR(191) NOT NULL UNIQUE,
+  description TEXT,
+  color VARCHAR(64) NOT NULL DEFAULT '#6366f1',
+  managerId VARCHAR(191)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+**Route đang sử dụng:** `backend/routes/departments.ts`
+- Dùng `departments.name` như là department identifier (UNIQUE)
+- `users.department` là VARCHAR chứa tên phòng ban (không phải FK)
+- `tasks.department` cũng là VARCHAR chứa tên phòng ban
+
+**Frontend types:** `frontend/types.ts` (line 143-149)
+```typescript
+export interface Department {
+  id: string;
+  name: string;        // UNIQUE, đang dùng làm identifier
+  description?: string;
+  color: string;
+  managerId?: string;  // Đã có sẵn
+}
+```
+
+---
+
+**✅ GIẢI PHÁP: Migration 006 phải ALTER TABLE thay vì CREATE TABLE mới**
+
+**Migration 006 - Revised Strategy:**
 
 ```sql
--- Bảng departments: cấu trúc cây
-CREATE TABLE IF NOT EXISTS departments (
+-- BƯỚC 1: Thêm cột mới vào bảng departments hiện tại
+ALTER TABLE departments 
+  ADD COLUMN IF NOT EXISTS code VARCHAR(50) UNIQUE,
+  ADD COLUMN IF NOT EXISTS parentId VARCHAR(191),
+  ADD COLUMN IF NOT EXISTS level INT DEFAULT 2,
+  ADD COLUMN IF NOT EXISTS isActive TINYINT DEFAULT 1,
+  ADD COLUMN IF NOT EXISTS createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
+
+-- Thêm indexes
+CREATE INDEX IF NOT EXISTS idx_dept_parent ON departments(parentId);
+CREATE INDEX IF NOT EXISTS idx_dept_code ON departments(code);
+CREATE INDEX IF NOT EXISTS idx_dept_active ON departments(isActive);
+
+-- Foreign key (nếu chưa có)
+ALTER TABLE departments 
+  ADD CONSTRAINT fk_dept_parent FOREIGN KEY (parentId) REFERENCES departments(id) ON DELETE SET NULL;
+
+-- BƯỚC 2: Update existing departments với code và level
+UPDATE departments SET code = 'KT', level = 2 WHERE name = 'Phòng Kế Toán';
+UPDATE departments SET code = 'HCNS', level = 2 WHERE name = 'Phòng Hành Chính - Nhân Sự';
+-- ... (update các phòng khác)
+
+-- BƯỚC 3: Tạo Ban Giám Đốc (level 1, root)
+INSERT IGNORE INTO departments (id, code, name, level, isActive, description) VALUES
+('dept-bgd', 'BGD', 'Ban Giám Đốc', 1, 1, 'Ban điều hành công ty');
+
+-- BƯỚC 3: Tạo Ban Giám Đốc (level 1, root)
+INSERT IGNORE INTO departments (id, code, name, level, isActive, description) VALUES
+('dept-bgd', 'BGD', 'Ban Giám Đốc', 1, 1, 'Ban điều hành công ty');
+
+-- BƯỚC 4: Set parentId cho tất cả phòng ban = BGD
+UPDATE departments SET parentId = 'dept-bgd' WHERE level = 2;
+```
+
+---
+
+**Bảng positions, user_positions, management_scopes:** TẠO MỚI (chưa tồn tại)
+
+```sql
+-- Positions table: job positions with management levels
+CREATE TABLE IF NOT EXISTS positions (
   id VARCHAR(36) PRIMARY KEY,
   code VARCHAR(50) UNIQUE NOT NULL,
   name VARCHAR(255) NOT NULL,
-  parentId VARCHAR(36),
-  level INT NOT NULL, -- 1=BGD, 2=Phòng chính, 3=Bộ phận con
-  managerId VARCHAR(36),
+  departmentId VARCHAR(191),
+  managementLevel INT NOT NULL COMMENT '10=Employee, 20=Manager, 30=Deputy, 40=Director',
   description TEXT,
   isActive TINYINT DEFAULT 1,
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (parentId) REFERENCES departments(id) ON DELETE SET NULL,
-  FOREIGN KEY (managerId) REFERENCES users(id) ON DELETE SET NULL,
-  INDEX idx_dept_parent (parentId),
-  INDEX idx_dept_code (code),
-  INDEX idx_dept_active (isActive)
+  FOREIGN KEY (departmentId) REFERENCES departments(id) ON DELETE CASCADE,
+  INDEX idx_pos_dept (departmentId),
+  INDEX idx_pos_level (managementLevel),
+  INDEX idx_pos_code (code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- User positions: users can have multiple positions
+CREATE TABLE IF NOT EXISTS user_positions (
+  id VARCHAR(36) PRIMARY KEY,
+  userId VARCHAR(191) NOT NULL,
+  positionId VARCHAR(36) NOT NULL,
+  isPrimary TINYINT DEFAULT 0 COMMENT '1=Primary position',
+  startDate DATE,
+  endDate DATE,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (positionId) REFERENCES positions(id) ON DELETE CASCADE,
+  UNIQUE KEY unique_user_position (userId, positionId),
+  INDEX idx_up_user (userId),
+  INDEX idx_up_position (positionId),
+  INDEX idx_up_primary (isPrimary)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Management scopes: Deputy Directors assigned to manage departments
+CREATE TABLE IF NOT EXISTS management_scopes (
+  id VARCHAR(36) PRIMARY KEY,
+  userId VARCHAR(191) NOT NULL,
+  departmentId VARCHAR(191) NOT NULL,
+  scopeType VARCHAR(50) NOT NULL DEFAULT 'FULL' COMMENT 'FULL, READ_ONLY, APPROVAL_ONLY',
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (departmentId) REFERENCES departments(id) ON DELETE CASCADE,
+  UNIQUE KEY unique_user_dept_scope (userId, departmentId),
+  INDEX idx_ms_user (userId),
+  INDEX idx_ms_dept (departmentId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+---
+
+**Bảng users:** THÊM CỘT MỚI (bảng đã tồn tại)
+
+```sql
+-- Add new columns to users table
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS managementLevel INT DEFAULT 10
+    COMMENT '10=Employee, 20=Manager, 30=Deputy, 40=Director, 99=Admin',
+  ADD COLUMN IF NOT EXISTS primaryDepartmentId VARCHAR(191),
+  ADD COLUMN IF NOT EXISTS employeeCode VARCHAR(50);
+
+-- Add indexes for performance
+CREATE INDEX IF NOT EXISTS idx_users_management_level ON users(managementLevel);
+CREATE INDEX IF NOT EXISTS idx_users_dept ON users(primaryDepartmentId);
+CREATE INDEX IF NOT EXISTS idx_users_employee_code ON users(employeeCode);
+
+-- Add foreign key constraint
+ALTER TABLE users 
+  ADD CONSTRAINT fk_users_dept 
+  FOREIGN KEY (primaryDepartmentId) REFERENCES departments(id) ON DELETE SET NULL;
+```
+
+---
+
+**Migration Strategy:**
+1. ✅ ALTER existing `departments` table (thêm code, parentId, level, isActive, timestamps)
+2. ✅ INSERT or UPDATE 9 departments (BGD + 8 phòng)
+3. ✅ CREATE 3 bảng mới (positions, user_positions, management_scopes)
+4. ✅ ALTER `users` table (thêm managementLevel, primaryDepartmentId, employeeCode)
+5. ✅ Map `users.department` (string) → `users.primaryDepartmentId` (FK)
+6. ✅ Set `managementLevel` từ role hiện tại
+7. ✅ Generate employee codes
+8. ⚠️ GIỮ NGUYÊN `users.department` (VARCHAR) để backward compatibility với code hiện tại
 
 -- Bảng positions: chức vụ với management level
 CREATE TABLE IF NOT EXISTS positions (
@@ -165,54 +302,128 @@ ALTER TABLE users
 
 #### 0.2 Seed Departments Chuẩn
 
-**File:** `backend/seeds/departments_seed.sql`
+**⚠️ ĐÃ ĐƯỢC XỬ LÝ trong Migration 006**
 
-```sql
--- Ban Giám Đốc (root)
-INSERT INTO departments (id, code, name, level, isActive) VALUES
-('dept-bgd', 'BGD', 'Ban Giám Đốc', 1, 1);
+Không cần file seed riêng. Migration 006 đã bao gồm:
+- INSERT Ban Giám Đốc (root)
+- INSERT/UPDATE 8 phòng ban chính với `ON DUPLICATE KEY UPDATE`
 
--- 8 phòng ban chính
-INSERT INTO departments (id, code, name, parentId, level, isActive) VALUES
-('dept-ke-toan', 'KT', 'Phòng Kế Toán', 'dept-bgd', 2, 1),
-('dept-hcns', 'HCNS', 'Phòng Hành Chính - Nhân Sự', 'dept-bgd', 2, 1),
-('dept-kinh-doanh', 'KD', 'Phòng Kinh Doanh', 'dept-bgd', 2, 1),
-('dept-du-an', 'DA', 'Phòng Dự Án', 'dept-bgd', 2, 1),
-('dept-ky-thuat', 'KT-BH', 'Phòng Kỹ Thuật - Bảo Hành', 'dept-bgd', 2, 1),
-('dept-marketing', 'MKT', 'Phòng Marketing', 'dept-bgd', 2, 1),
-('dept-kho', 'KHO', 'Kho Vận', 'dept-bgd', 2, 1),
-('dept-mua-hang', 'MH', 'Mua Hàng', 'dept-bgd', 2, 1);
+**Departments seeded:**
+1. Ban Giám Đốc (BGD) - Level 1 (root)
+2. Phòng Kế Toán (KT) - Level 2
+3. Phòng Hành Chính - Nhân Sự (HCNS) - Level 2
+4. Phòng Kinh Doanh (KD) - Level 2
+5. Phòng Dự Án (DA) - Level 2
+6. Phòng Kỹ Thuật - Bảo Hành (KTBH) - Level 2
+7. Phòng Marketing (MKT) - Level 2
+8. Kho Vận (KHO) - Level 2
+9. Mua Hàng (MH) - Level 2
+
+**Cấu trúc cây:**
+```
+Ban Giám Đốc (BGD, level=1)
+├── Phòng Kế Toán (parentId=dept-bgd)
+├── Phòng HCNS (parentId=dept-bgd)
+├── Phòng Kinh Doanh (parentId=dept-bgd)
+├── Phòng Dự Án (parentId=dept-bgd)
+├── Phòng Kỹ Thuật - Bảo Hành (parentId=dept-bgd)
+├── Phòng Marketing (parentId=dept-bgd)
+├── Kho Vận (parentId=dept-bgd)
+└── Mua Hàng (parentId=dept-bgd)
 ```
 
 #### 0.3 Migration Plan Chi Tiết
 
-**File:** `backend/migrations/006_department_system.sql`
+**File:** `backend/migrations/006_department_system.sql` ✅ ĐÃ TẠO
 
-Bao gồm:
-- Tạo 4 bảng mới (departments, positions, user_positions, management_scopes)
-- Thêm 3 cột vào users
-- Seed 9 departments (BGD + 8 phòng)
-- Map dữ liệu cũ:
-  ```sql
-  -- Map users.department (string) → users.primaryDepartmentId (FK)
-  UPDATE users u 
-  SET u.primaryDepartmentId = (
-    SELECT d.id FROM departments d 
-    WHERE d.code = u.department OR d.name LIKE CONCAT('%', u.department, '%')
-    LIMIT 1
-  )
-  WHERE u.department IS NOT NULL;
-  
-  -- Set managementLevel từ role
-  UPDATE users SET managementLevel = 
-    CASE role
-      WHEN 'Admin' THEN 99 -- System level
-      WHEN 'Director' THEN 40
-      WHEN 'Manager' THEN 20
-      WHEN 'Employee' THEN 10
-      ELSE 10
-    END;
-  ```
+**Nội dung migration:**
+
+**PART 1: Upgrade Departments Table**
+- ALTER TABLE thêm 6 cột mới: code, parentId, level, isActive, createdAt, updatedAt
+- Thêm 3 indexes: idx_dept_parent, idx_dept_code, idx_dept_active
+- Thêm FK constraint: fk_dept_parent (parentId → departments.id)
+
+**PART 2: Create New Tables**
+- positions (18 dòng): chức vụ với managementLevel
+- user_positions: many-to-many users ↔ positions
+- management_scopes: Deputy Director quản lý phòng nào
+
+**PART 3: Seed/Update Departments**
+- INSERT Ban Giám Đốc (dept-bgd, BGD, level=1)
+- INSERT/UPDATE 8 phòng ban với ON DUPLICATE KEY UPDATE
+  - Nếu phòng đã tồn tại (by name UNIQUE): UPDATE code, parentId, level
+  - Nếu chưa tồn tại: INSERT mới
+
+**PART 4: Migrate Existing Data**
+- Map users.department (string) → users.primaryDepartmentId (FK):
+  - Khớp chính xác theo departments.name
+  - Khớp gần đúng nếu chính xác fail (LIKE pattern)
+- Set users.managementLevel từ users.role:
+  - Admin → 99, Director → 40, Deputy Director → 30, Manager → 20, Employee → 10
+- Generate users.employeeCode: EMP-YYYYMMDD-###
+
+**PART 5: Create Default Positions**
+- 18 positions chuẩn:
+  - Giám Đốc (GD, level=40)
+  - Phó Giám Đốc (PGD, level=30)
+  - 8 Trưởng Phòng (TP-*, level=20)
+  - 8 Nhân Viên (NV-*, level=10)
+
+**PART 6: Verification Queries** (commented out)
+- Check department structure
+- Check users migration
+- Check position count
+
+---
+
+**⚠️ BACKWARD COMPATIBILITY:**
+
+1. **Không xóa `users.department` (VARCHAR)**
+   - Route hiện tại vẫn dùng `users.department` và `departments.name`
+   - Phải giữ để không break existing code
+   - Sau khi migration Phase 1 hoàn thành, mới cân nhắc deprecate
+
+2. **Không xóa `departments.name UNIQUE`**
+   - Route `/api/departments` vẫn dựa vào name làm identifier
+   - Frontend vẫn hiển thị name
+   - Thêm `code` để có identifier ngắn gọn hơn cho tương lai
+
+3. **Không ALTER bảng users với FOREIGN KEY ngay**
+   - Thêm cột `primaryDepartmentId` nhưng chỉ INDEX, chưa enforce FK
+   - Tránh lỗi khi có user.department không match với departments.name
+
+---
+
+**Rollback Strategy:**
+
+```sql
+-- Nếu cần rollback Migration 006
+
+-- 1. Drop new tables
+DROP TABLE IF EXISTS management_scopes;
+DROP TABLE IF EXISTS user_positions;
+DROP TABLE IF EXISTS positions;
+
+-- 2. Remove FK và cột mới từ departments
+ALTER TABLE departments DROP FOREIGN KEY IF EXISTS fk_dept_parent;
+ALTER TABLE departments 
+  DROP COLUMN IF EXISTS code,
+  DROP COLUMN IF EXISTS parentId,
+  DROP COLUMN IF EXISTS level,
+  DROP COLUMN IF EXISTS isActive,
+  DROP COLUMN IF EXISTS createdAt,
+  DROP COLUMN IF EXISTS updatedAt;
+
+-- 3. Remove cột mới từ users
+ALTER TABLE users DROP FOREIGN KEY IF EXISTS fk_users_dept;
+ALTER TABLE users
+  DROP COLUMN IF EXISTS managementLevel,
+  DROP COLUMN IF EXISTS primaryDepartmentId,
+  DROP COLUMN IF EXISTS employeeCode;
+
+-- 4. Delete BGD department nếu vừa tạo
+DELETE FROM departments WHERE id = 'dept-bgd';
+```
 
 ---
 

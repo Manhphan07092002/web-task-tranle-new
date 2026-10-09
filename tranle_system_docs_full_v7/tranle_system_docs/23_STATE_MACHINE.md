@@ -1,0 +1,83 @@
+# STATE MACHINE TOÀN HỆ THỐNG
+
+## Quy tắc chung
+- Không PATCH status tùy ý.
+- Transition quan trọng phải qua action/service.
+- Backend kiểm tra state hiện tại, permission, required field, business rule.
+- Transition phải audit.
+
+## Lead
+`NEW → CONTACTED → QUALIFIED → CONVERTED`
+Nhánh: `NEW/CONTACTED → DISQUALIFIED`
+
+## Opportunity
+`DISCOVERY → QUALIFIED → SURVEY → SOLUTION → QUOTATION → NEGOTIATION → WON/LOST`
+
+## Technical Request
+`NEW → ASSIGNED → SURVEYING → DESIGNING → REVIEW → COMPLETED`
+Nhánh: `REVIEW → RETURNED → DESIGNING`, hoặc `CANCELLED`.
+
+## Quote
+`DRAFT → PENDING_APPROVAL → APPROVED → SENT → ACCEPTED/REJECTED/EXPIRED`
+
+## Contract
+`DRAFT → REVIEW → PENDING_APPROVAL → APPROVED → SIGNED → ACTIVE → COMPLETED`
+Nhánh: `REJECTED`, `TERMINATED`, `CANCELLED`.
+
+## Project
+`PLANNING → READY → IN_PROGRESS → ACCEPTANCE → HANDOVER → COMPLETED`
+Nhánh: `ON_HOLD`, `CANCELLED`.
+
+## Task
+`TODO → IN_PROGRESS → REVIEW → DONE`
+Nhánh: `BLOCKED`, `CANCELLED`, `REOPENED`.
+
+## Ticket
+`OPEN → ASSIGNED → DIAGNOSING → IN_PROGRESS → RESOLVED → CLOSED`
+Nhánh: `WAITING_PART`, `WAITING_VENDOR`, `WAITING_CUSTOMER`, `REOPENED`.
+
+## Purchase Request
+`DRAFT → PENDING_APPROVAL → APPROVED → SOURCING → ORDERED → PARTIALLY_RECEIVED → COMPLETED`
+Nhánh: `REJECTED`, `CANCELLED`.
+
+## RFQ
+`DRAFT → SENT → RESPONDED → CLOSED`
+
+## Purchase Order
+`DRAFT → PENDING_APPROVAL → APPROVED → SENT → PARTIAL_RECEIPT → RECEIVED → CLOSED`
+
+## Stock Receipt
+`DRAFT → CONFIRMED → RECEIVING → DONE`
+
+## Stock Issue
+`DRAFT → CONFIRMED → RESERVED → PICKING → DONE`
+
+## Stock Transfer
+`DRAFT → CONFIRMED → IN_TRANSIT → RECEIVED → DONE`
+
+## Stock Count
+`DRAFT → COUNTING → REVIEW → APPROVED → ADJUSTED → CLOSED`
+
+## Payment Request
+`DRAFT → PENDING_MANAGER → PENDING_FINANCE → PENDING_EXECUTIVE → APPROVED → PAID`
+Tùy ngưỡng có thể bỏ qua PENDING_EXECUTIVE.
+
+## Advance
+`REQUESTED → APPROVED → DISBURSED → SETTLEMENT_PENDING → SETTLED`
+
+## Acceptance
+`DRAFT → INTERNAL_REVIEW → CUSTOMER_REVIEW → ACCEPTED/REJECTED`
+
+## Workflow
+Definition: `DRAFT → PUBLISHED → ACTIVE → INACTIVE`
+Run: `RUNNING → WAITING → COMPLETED/FAILED/CANCELLED`
+
+## Transition Matrix mẫu
+| Entity | From | Action | To | Actor |
+|---|---|---|---|---|
+| Quote | DRAFT | submit | PENDING_APPROVAL | Sales |
+| Quote | PENDING_APPROVAL | approve | APPROVED | Approver |
+| Ticket | OPEN | assign | ASSIGNED | Manager |
+| Ticket | RESOLVED | close | CLOSED | Allowed role |
+| PO | APPROVED | send | SENT | Purchasing |
+| Receipt | RECEIVING | complete | DONE | Warehouse |
