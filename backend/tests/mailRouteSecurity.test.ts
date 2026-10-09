@@ -28,6 +28,7 @@ describe('mail route security boundaries', () => {
   it('blocks private system-configured mail endpoints before opening a TLS connection', async () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('JWT_SECRET', jwtSecret);
+    vi.stubEnv('MAIL_ENCRYPTION_KEY', 'test-only-mail-encryption-key');
     vi.stubEnv('MAIL_ALLOWED_CUSTOM_HOSTS', '');
     const db = {
       get: vi.fn(async () => ({
@@ -43,15 +44,14 @@ describe('mail route security boundaries', () => {
       run: vi.fn(),
     };
     const tlsConnect = vi.spyOn(tls, 'connect');
-    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    await request(makeApp(db)).post('/api/mail/connect')
+    const response = await request(makeApp(db)).post('/api/mail/connect')
       .set('Authorization', `Bearer ${token()}`)
       .send({ email: 'user@example.test', password: 'mail-password' })
-      .expect(401);
+      .expect(400);
 
     expect(tlsConnect).not.toHaveBeenCalled();
     expect(db.run).not.toHaveBeenCalled();
-    expect(errorLog).toHaveBeenCalled();
+    expect(response.body.code).toBe('MAIL_ENDPOINT_INVALID');
   });
 });

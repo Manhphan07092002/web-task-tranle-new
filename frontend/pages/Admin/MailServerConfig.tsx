@@ -16,11 +16,11 @@ interface SmtpConfig {
 
 export default function AdminMailServerConfig() {
   const [smtpConfig, setSmtpConfig] = useState<SmtpConfig>({
-    IMAP_HOST: '',
+    IMAP_HOST: 'mail.tranlecorp.com.vn',
     IMAP_PORT: '993',
-    SMTP_HOST: '',
-    SMTP_PORT: '587',
-    SMTP_SECURE: 'false',
+    SMTP_HOST: 'mail.tranlecorp.com.vn',
+    SMTP_PORT: '465',
+    SMTP_SECURE: 'true',
     SMTP_USER: '',
     SMTP_PASS: '',
     SMTP_FROM: '',
@@ -121,6 +121,17 @@ export default function AdminMailServerConfig() {
 
   const handleSmtpChange = (field: keyof SmtpConfig, value: string) => {
     setSmtpConfig(prev => ({ ...prev, [field]: value }));
+  };
+
+  const useTranleWebmailPreset = () => {
+    setSmtpConfig(prev => ({
+      ...prev,
+      IMAP_HOST: 'mail.tranlecorp.com.vn',
+      IMAP_PORT: '993',
+      SMTP_HOST: 'mail.tranlecorp.com.vn',
+      SMTP_PORT: '465',
+      SMTP_SECURE: 'true',
+    }));
   };
 
   const saveSmtpConfig = async () => {
@@ -758,10 +769,14 @@ export default function AdminMailServerConfig() {
               <h4 className="text-sm font-bold text-gray-800 mb-4 flex items-center gap-2">
                 <Server size={16} className="text-blue-500" /> Cấu hình Máy chủ Mail (Dùng chung)
               </h4>
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                <span>Email Trần Lê: mail.tranlecorp.com.vn (IMAP SSL 993, SMTP SSL 465)</span>
+                <button type="button" onClick={useTranleWebmailPreset} className="font-bold underline underline-offset-2 hover:text-blue-900">Dùng cấu hình này</button>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-semibold text-gray-700 mb-1.5 uppercase tracking-wider">IMAP Host (Nhận thư)</label>
-                  <input value={smtpConfig.IMAP_HOST} onChange={(e) => handleSmtpChange('IMAP_HOST', e.target.value)} placeholder="imap.vnptemail.vn" className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-200 outline-none" />
+                  <input value={smtpConfig.IMAP_HOST} onChange={(e) => handleSmtpChange('IMAP_HOST', e.target.value)} placeholder="mail.tranlecorp.com.vn" className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-200 outline-none" />
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-700 mb-1.5 uppercase tracking-wider">IMAP Port</label>
@@ -769,11 +784,11 @@ export default function AdminMailServerConfig() {
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-700 mb-1.5 uppercase tracking-wider">SMTP Host (Gửi thư)</label>
-                  <input value={smtpConfig.SMTP_HOST} onChange={(e) => handleSmtpChange('SMTP_HOST', e.target.value)} placeholder="smtp.vnptemail.vn" className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-200 outline-none" />
+                  <input value={smtpConfig.SMTP_HOST} onChange={(e) => handleSmtpChange('SMTP_HOST', e.target.value)} placeholder="mail.tranlecorp.com.vn" className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-200 outline-none" />
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-700 mb-1.5 uppercase tracking-wider">SMTP Port</label>
-                  <input value={smtpConfig.SMTP_PORT} onChange={(e) => handleSmtpChange('SMTP_PORT', e.target.value)} placeholder="587" className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-200 outline-none" />
+                  <input value={smtpConfig.SMTP_PORT} onChange={(e) => handleSmtpChange('SMTP_PORT', e.target.value)} placeholder="465" className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-200 outline-none" />
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-700 mb-1.5 uppercase tracking-wider">Kết nối bảo mật (SMTP Secure)</label>

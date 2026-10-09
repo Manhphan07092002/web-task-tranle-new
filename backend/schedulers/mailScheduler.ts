@@ -3,6 +3,7 @@ import { decrypt } from '../utils/cryptoUtils.js';
 import { mailTlsOptions } from '../utils/mailTls.js';
 import { createMailer } from '../mailer.js';
 import { assertMailEndpointsSafe } from '../utils/mailHostSecurity.js';
+import { TRANLE_WEBMAIL } from '../utils/tranleWebmail.js';
 
 export function initMailScheduler(db: any) {
   const mailer = createMailer(db);
@@ -11,8 +12,8 @@ export function initMailScheduler(db: any) {
   setInterval(async () => {
     try {
       const config = await mailer.getSystemConfig();
-      const smtpHost = config.SMTP_HOST || 'smtp.vnptemail.vn';
-      const smtpPort = Number(config.SMTP_PORT || 587);
+      const smtpHost = config.SMTP_HOST || TRANLE_WEBMAIL.host;
+      const smtpPort = Number(config.SMTP_PORT || TRANLE_WEBMAIL.smtpPort);
       const smtpSecure = smtpPort === 465 || String(config.SMTP_SECURE || 'false') === 'true';
 
       const now = new Date().toISOString();
@@ -49,7 +50,8 @@ export function initMailScheduler(db: any) {
               if (parsed.smtpHost) targetSmtpHost = parsed.smtpHost;
               if (parsed.smtpPort) {
                 targetSmtpPort = Number(parsed.smtpPort);
-                targetSmtpSecure = targetSmtpPort === 465 || smtpSecure;
+                // User connections carry their own port, so use its TLS convention.
+                targetSmtpSecure = targetSmtpPort === 465;
               }
             }
           } catch (_) { }

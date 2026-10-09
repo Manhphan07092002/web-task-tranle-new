@@ -93,6 +93,18 @@ describe('mail credential security', () => {
     expect(config.SMTP_PASS).toBe('smtp-secret');
     expect(secret).not.toBe(config.SMTP_PASS);
   });
+
+  it('uses the new Tran Le Webmail settings when no system override exists', async () => {
+    const db = { all: vi.fn().mockResolvedValue([]) };
+    const config = await createMailer(db).getSystemConfig();
+    expect(config).toMatchObject({
+      IMAP_HOST: 'mail.tranlecorp.com.vn',
+      IMAP_PORT: '993',
+      SMTP_HOST: 'mail.tranlecorp.com.vn',
+      SMTP_PORT: '465',
+      SMTP_SECURE: 'true',
+    });
+  });
 });
 
 describe('mail TLS policy', () => {

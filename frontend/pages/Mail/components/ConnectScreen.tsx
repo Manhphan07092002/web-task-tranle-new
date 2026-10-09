@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Mail, Wifi, WifiOff, RefreshCw } from 'lucide-react';
 import { useAuth } from '../../../contexts/AuthContext';
 import { apiFetch } from '../../../services/api';
+import { useMailConnectionCooldown } from '../../../hooks/useMailConnectionCooldown';
 
 interface ConnectScreenProps {
   onSuccess: () => void;
@@ -13,23 +14,27 @@ export default function ConnectScreen({ onSuccess }: ConnectScreenProps) {
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
+  const { retryAfterSeconds, applyCooldown } = useMailConnectionCooldown();
 
   const handleConnect = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isConnecting || retryAfterSeconds > 0) return;
     setIsConnecting(true);
     setLoginError('');
     try {
       const res = await apiFetch('/api/mail/connect', {
         method: 'POST',
-        body: JSON.stringify({ email: loginEmail, password: loginPassword })
+        body: JSON.stringify({ email: loginEmail, password: loginPassword, provider: 'webmail' })
       });
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Failed');
+        const err = await res.json().catch(() => ({}));
+        applyCooldown(res, err);
+        throw new Error(err.error || 'Không thể kết nối email. Vui lòng thử lại sau.');
       }
+      setLoginPassword('');
       onSuccess();
     } catch (err: any) {
-      setLoginError(err.message || 'Kết nối thất bại. Vui lòng kiểm tra lại mật khẩu.');
+      setLoginError(err.message || 'Không thể kết nối email. Vui lòng kiểm tra đường truyền và thử lại.');
     } finally {
       setIsConnecting(false);
     }
@@ -48,7 +53,7 @@ export default function ConnectScreen({ onSuccess }: ConnectScreenProps) {
         <p className="text-center text-gray-400 mb-8 text-sm leading-relaxed">
           {loginError
             ? <span className="text-red-500 font-medium">{loginError}</span>
-            : <>Nhập mật khẩu hòm thư <span className="font-semibold text-blue-600">{loginEmail}</span><br />để đồng bộ email VNPT của bạn.</>
+            : <>Nhập mật khẩu hòm thư <span className="font-semibold text-blue-600">{loginEmail}</span><br />để đồng bộ Email Trần Lê của bạn.</>
           }
         </p>
 
@@ -75,7 +80,7 @@ export default function ConnectScreen({ onSuccess }: ConnectScreenProps) {
             <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm">
               <WifiOff size={16} className="flex-shrink-0 mt-0.5" />
               <div>
-                <p className="font-medium">Xác thực thất bại</p>
+                <p className="font-medium">Kết nối chưa thành công</p>
                 <p className="text-xs text-red-400 mt-0.5">{loginError}</p>
               </div>
             </div>
@@ -83,11 +88,11 @@ export default function ConnectScreen({ onSuccess }: ConnectScreenProps) {
 
           <button
             type="submit"
-            disabled={isConnecting}
+            disabled={isConnecting || retryAfterSeconds > 0}
             className="w-full py-3.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-bold text-sm hover:from-blue-700 hover:to-indigo-700 transition-all shadow-lg shadow-blue-200 disabled:opacity-60 flex items-center justify-center gap-2"
           >
             {isConnecting ? <RefreshCw className="animate-spin" size={18} /> : <Wifi size={18} />}
-            {isConnecting ? 'Đang kết nối...' : 'Kết Nối Máy Chủ VNPT'}
+            {isConnecting ? 'Đang kết nối...' : retryAfterSeconds > 0 ? `Thử lại sau ${retryAfterSeconds} giây` : 'Kết Nối Email Trần Lê'}
           </button>
         </form>
 

@@ -2,6 +2,7 @@ import nodemailer from 'nodemailer';
 import { decrypt, isLegacyCbcCiphertext, isVersionedCiphertext } from './utils/cryptoUtils.js';
 import { mailTlsOptions } from './utils/mailTls.js';
 import { assertMailEndpointsSafe } from './utils/mailHostSecurity.js';
+import { TRANLE_WEBMAIL } from './utils/tranleWebmail.js';
 
 type DbType = any; // will be passed in at runtime
 
@@ -14,11 +15,11 @@ export function createMailer(db: DbType) {
       ? (decrypt(storedSmtpPass) || '')
       : (storedSmtpPass || process.env.SMTP_PASS || '');
     return {
-      IMAP_HOST: config.IMAP_HOST || process.env.IMAP_HOST || 'imap.vnptemail.vn',
-      IMAP_PORT: config.IMAP_PORT || process.env.IMAP_PORT || '993',
-      SMTP_HOST: config.SMTP_HOST || process.env.SMTP_HOST || '',
-      SMTP_PORT: config.SMTP_PORT || process.env.SMTP_PORT || '587',
-      SMTP_SECURE: config.SMTP_SECURE || process.env.SMTP_SECURE || 'false',
+      IMAP_HOST: config.IMAP_HOST || process.env.IMAP_HOST || TRANLE_WEBMAIL.host,
+      IMAP_PORT: config.IMAP_PORT || process.env.IMAP_PORT || String(TRANLE_WEBMAIL.imapPort),
+      SMTP_HOST: config.SMTP_HOST || process.env.SMTP_HOST || TRANLE_WEBMAIL.host,
+      SMTP_PORT: config.SMTP_PORT || process.env.SMTP_PORT || String(TRANLE_WEBMAIL.smtpPort),
+      SMTP_SECURE: config.SMTP_SECURE || process.env.SMTP_SECURE || String(TRANLE_WEBMAIL.smtpSecure),
       SMTP_USER: config.SMTP_USER || process.env.SMTP_USER || '',
       SMTP_PASS: smtpPass,
       SMTP_FROM: config.SMTP_FROM || process.env.SMTP_FROM || '',

@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import { ImapFlow } from 'imapflow';
 import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
 import multer from 'multer';
@@ -7,18 +6,19 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 // @ts-ignore
 import MailComposer from 'nodemailer/lib/mail-composer';
-import tls from 'tls';
 import { encrypt, decrypt } from '../utils/cryptoUtils.js';
 import { createRequireAuth } from '../middleware/auth.js';
 import { createMailer } from '../mailer.js';
 import { assertMailEndpointsSafe, configuredMailHostAllowlist } from '../utils/mailHostSecurity.js';
 import { mailTlsOptions } from '../utils/mailTls.js';
 import { validate } from '../middleware/validate.js';
+import { TRANLE_WEBMAIL } from '../utils/tranleWebmail.js';
+import { connectImapMailbox } from '../utils/imapConnection.js';
 
 const MailConnectSchema = z.object({
   email: z.string().trim().email().max(320),
-  password: z.string().min(1).max(4096),
-  provider: z.enum(['poste', 'vnpt', 'custom']).optional(),
+  password: z.string().min(1).max(4096).refine((value) => !/[\r\n\0]/.test(value), 'Invalid mail password'),
+  provider: z.enum(['poste', 'vnpt', 'webmail', 'custom']).optional(),
   customImapHost: z.string().max(253).optional(),
   customImapPort: z.coerce.number().int().min(1).max(65535).optional(),
   customSmtpHost: z.string().max(253).optional(),
@@ -45,6 +45,24 @@ const MailBulkSchema = z.object({
   allInFolder: z.boolean().optional().default(false),
 }).refine((body) => body.allInFolder || Boolean(body.uids?.length), 'uids are required unless allInFolder is true');
 
+function isTranleWebmailEndpoint(host: unknown, port: unknown, expectedPort: number): boolean {
+  const normalizedHost = String(host || '').trim().toLowerCase();
+  return (normalizedHost === TRANLE_WEBMAIL.host || normalizedHost === 'share-mail05.nhanhoa.com')
+    && Number(port) === expectedPort;
+}
+
+/** Convert older custom records that match the company Webmail endpoint to its preset. */
+export function resolveMailProvider(userConfig: any, systemSmtpHost: unknown): 'poste' | 'custom' | 'webmail' {
+  const usesTranleWebmail = isTranleWebmailEndpoint(userConfig?.imapHost, userConfig?.imapPort, TRANLE_WEBMAIL.imapPort)
+    && isTranleWebmailEndpoint(userConfig?.smtpHost, userConfig?.smtpPort, TRANLE_WEBMAIL.smtpPort);
+  if (userConfig?.provider === 'webmail' || (userConfig?.provider === 'custom' && usesTranleWebmail)) return 'webmail';
+  if (userConfig?.provider === 'poste' || userConfig?.provider === 'custom') return userConfig.provider;
+
+  const host = String(systemSmtpHost || '').toLowerCase();
+  const isPoste = host === 'tranle_mailserver' || host.includes('localhost') || host.includes('mailserver') || host.includes('127.0.0.1');
+  return isPoste ? 'poste' : 'webmail';
+}
+
 export function isSafeMailHeaders(to: unknown, subject: unknown, cc: unknown, bcc: unknown, body: unknown): boolean {
   const hasInjection = (value: unknown): boolean => {
     if (typeof value === 'string') return /[\r\n]/.test(value);
@@ -70,7 +88,18 @@ export function mailRoutes(db: any) {
   const mailConnectLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 8,
-    message: { error: 'Too many mail connection attempts from this IP' },
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: (req, res) => {
+      const resetTime = (req as any).rateLimit?.resetTime?.getTime() || Date.now() + 15 * 60 * 1000;
+      const retryAfterSeconds = Math.max(1, Math.ceil((resetTime - Date.now()) / 1000));
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      res.status(429).json({
+        code: 'MAIL_RATE_LIMITED',
+        error: 'Bạn đã thử kết nối quá nhiều lần. Vui lòng chờ trước khi thử lại.',
+        retryAfterSeconds,
+      });
+    },
   });
   const allowedCustomMailHosts = configuredMailHostAllowlist();
   const getDynamicConfig = async () => {
@@ -89,10 +118,9 @@ export function mailRoutes(db: any) {
         } catch(e) {}
       }
       const config = await getDynamicConfig();
-      const host = (config.SMTP_HOST || '').toLowerCase();
-      const isPoste = host.includes('tranlecorp.com.vn') || host.includes('tranlecorp.com') || host.includes('ctcdn.vn') || host.includes('localhost') || host.includes('mailserver') || host.includes('127.0.0.1');
+      const provider = resolveMailProvider(userConfig, config.SMTP_HOST);
       res.json({
-        provider: userConfig.provider || (isPoste ? 'poste' : 'vnpt'),
+        provider,
         imapHost: userConfig.imapHost || config.IMAP_HOST,
         smtpHost: userConfig.smtpHost || config.SMTP_HOST
       });
@@ -106,16 +134,23 @@ export function mailRoutes(db: any) {
     const { email, password, provider, customImapHost, customImapPort, customSmtpHost, customSmtpPort } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-    console.info(`[IMAP Connect] Login attempt (provider: ${provider})`);
-
+    let stage: 'config' | 'connect' | 'save' = 'config';
     try {
+      if (!process.env.MAIL_ENCRYPTION_KEY?.trim()) {
+        return res.status(503).json({ code: 'MAIL_CONFIG_ERROR', error: 'Máy chủ chưa cấu hình khóa mã hóa email. Vui lòng liên hệ quản trị viên.' });
+      }
       const config = await getDynamicConfig();
       let targetImapHost = config.IMAP_HOST;
       let targetImapPort = Number(config.IMAP_PORT);
       let targetSmtpHost = config.SMTP_HOST;
       let targetSmtpPort = Number(config.SMTP_PORT);
 
-      if (provider === 'poste') {
+      if (provider === 'webmail' || provider === 'vnpt') {
+        targetImapHost = TRANLE_WEBMAIL.host;
+        targetImapPort = TRANLE_WEBMAIL.imapPort;
+        targetSmtpHost = TRANLE_WEBMAIL.host;
+        targetSmtpPort = TRANLE_WEBMAIL.smtpPort;
+      } else if (provider === 'poste') {
         targetImapHost = 'tranle_mailserver';
         targetImapPort = 993;
         targetSmtpHost = 'tranle_mailserver';
@@ -135,64 +170,23 @@ export function mailRoutes(db: any) {
         }
       }
 
-      await assertMailEndpointsSafe({
-        imapHost: String(targetImapHost), imapPort: targetImapPort,
-        smtpHost: String(targetSmtpHost), smtpPort: targetSmtpPort,
-      }, allowedCustomMailHosts);
-
-      const authResult = await new Promise<{ success: boolean, reason?: string }>((resolve, reject) => {
-        const socket = tls.connect(targetImapPort, targetImapHost, tlsOptions);
-
-        // Timeout after 15s
-        const timer = setTimeout(() => {
-          socket.destroy();
-          resolve({ success: false, reason: 'Connection timeout' });
-        }, 15000);
-
-        let buffer = '';
-        let loginAttempt = 1; // 1 = full email, 2 = username only
-        let greetingReceived = false;
-
-        socket.on('data', (data: any) => {
-          buffer += data.toString();
-          // Wait for greeting
-          if (!greetingReceived && buffer.includes('* OK')) {
-            greetingReceived = true;
-            socket.write(`A1 LOGIN "${email}" "${password}"\r\n`);
-          }
-
-          if (greetingReceived) {
-            if (buffer.includes('A1 OK') || buffer.includes('A2 OK')) {
-              clearTimeout(timer);
-              socket.write('A3 LOGOUT\r\n');
-              resolve({ success: true });
-            } else if (buffer.includes('A1 NO') || buffer.includes('A1 BAD')) {
-              if (loginAttempt === 1) {
-                // Try just the username part
-                loginAttempt = 2;
-                const usernameOnly = email.split('@')[0];
-                console.info('[IMAP Connect] Retrying with username-only login');
-                socket.write(`A2 LOGIN "${usernameOnly}" "${password}"\r\n`);
-              }
-            } else if (buffer.includes('A2 NO') || buffer.includes('A2 BAD')) {
-              clearTimeout(timer);
-              socket.destroy();
-              resolve({ success: false, reason: buffer });
-            }
-          }
-        });
-
-        socket.on('error', (err: any) => {
-          clearTimeout(timer);
-          resolve({ success: false, reason: err.message });
-        });
-      });
-
-      if (!authResult.success) {
-        console.error('Raw TLS Login failed:', authResult.reason);
-        throw new Error('AUTHENTICATE failed');
+      try {
+        await assertMailEndpointsSafe({
+          imapHost: String(targetImapHost), imapPort: targetImapPort,
+          smtpHost: String(targetSmtpHost), smtpPort: targetSmtpPort,
+        }, allowedCustomMailHosts);
+      } catch {
+        return res.status(400).json({ code: 'MAIL_ENDPOINT_INVALID', error: 'Máy chủ hoặc cổng email không hợp lệ hoặc không được phép kết nối.' });
       }
 
+      stage = 'connect';
+      const client = await connectImapMailbox({
+        host: targetImapHost, port: targetImapPort, email, password,
+        allowUsernameFallback: !isTranleWebmailEndpoint(targetImapHost, targetImapPort, TRANLE_WEBMAIL.imapPort),
+      });
+      client.close();
+
+      stage = 'save';
       // If successful, encrypt and save both email and password
       const mailAuthData = JSON.stringify({
         email,
@@ -205,15 +199,35 @@ export function mailRoutes(db: any) {
       });
       const encryptedData = encrypt(mailAuthData);
       await db.run('UPDATE users SET mailPassword = ? WHERE id = ?', [encryptedData, req.user.id]);
+      smtpCache.delete(req.user.id);
 
       res.json({ success: true, message: 'Connected successfully' });
     } catch (error: any) {
-      console.error('Mail connect error:', error);
-      let errMsg = error.message || 'Lỗi không xác định';
-      if (errMsg.includes('AUTHENTICATE failed')) {
-        errMsg = 'Tài khoản Email hoặc Mật khẩu không chính xác. Vui lòng kiểm tra lại!';
+      let status = 500;
+      let code = stage === 'save' ? 'MAIL_SAVE_FAILED' : 'MAIL_CONFIG_ERROR';
+      let message = stage === 'save'
+        ? 'Đăng nhập hộp thư thành công nhưng không lưu được cấu hình. Vui lòng liên hệ quản trị viên.'
+        : 'Không đọc được cấu hình email trên máy chủ. Vui lòng liên hệ quản trị viên.';
+      if (stage === 'connect') {
+        status = 502;
+        code = 'MAIL_CONNECTION_FAILED';
+        message = 'Không kết nối được máy chủ email. Vui lòng kiểm tra máy chủ và đường truyền.';
+        const upstreamCode = String(error.code || '');
+        if (/CERT|TLS|SSL|SELF_SIGNED|UNABLE_TO_VERIFY|UNABLE_TO_GET_ISSUER/.test(upstreamCode)) {
+          code = 'MAIL_TLS_ERROR';
+          message = 'Không xác minh được chứng chỉ bảo mật của máy chủ email. Vui lòng liên hệ quản trị viên.';
+        } else if (/TIMEOUT|TIMEDOUT/.test(upstreamCode)) {
+          status = 504;
+          code = 'MAIL_TIMEOUT';
+          message = 'Máy chủ email phản hồi quá chậm. Vui lòng thử lại sau.';
+        } else if (error.authenticationFailed === true) {
+          status = 401;
+          code = 'MAIL_AUTH_FAILED';
+          message = 'Máy chủ từ chối đăng nhập hộp thư. Kiểm tra đầy đủ địa chỉ email và mật khẩu của chính hộp thư đó.';
+        }
       }
-      res.status(401).json({ error: errMsg });
+      console.warn(`[Mail connect] ${code}`);
+      res.status(status).json({ code, error: message });
     }
   });
 
@@ -246,36 +260,10 @@ export function mailRoutes(db: any) {
     const finalImapPort = Number(targetImapPort || config.IMAP_PORT);
     await assertMailEndpointsSafe({ imapHost: finalImapHost, imapPort: finalImapPort });
 
-    let client = new ImapFlow({
-      host: finalImapHost,
-      port: finalImapPort,
-      secure: true,
-      auth: { user: email, pass: password },
-      logger: false as any,
-      tls: tlsOptions
+    return connectImapMailbox({
+      host: finalImapHost, port: finalImapPort, email, password,
+      allowUsernameFallback: !isTranleWebmailEndpoint(finalImapHost, finalImapPort, TRANLE_WEBMAIL.imapPort),
     });
-
-    try {
-      await client.connect();
-    } catch (err: any) {
-      if (err.message?.includes('AUTHENTICATE failed')) {
-        // Retry with just the username
-        const usernameOnly = email.split('@')[0];
-        console.info('[ImapFlow] Retrying with username-only login');
-        client = new ImapFlow({
-          host: finalImapHost,
-          port: finalImapPort,
-          secure: true,
-          auth: { user: usernameOnly, pass: password },
-          logger: false as any,
-          tls: tlsOptions
-        });
-        await client.connect();
-      } else {
-        throw err;
-      }
-    }
-    return client;
   };
 
   // 3. Helper to get SMTP transporter (cached per user for performance)
@@ -310,14 +298,16 @@ export function mailRoutes(db: any) {
     }
 
     const config = await getDynamicConfig();
-    const finalSmtpHost = targetSmtpHost || config.SMTP_HOST || 'smtp.vnptemail.vn';
-    const finalSmtpPort = Number(targetSmtpPort || config.SMTP_PORT || 587);
+    const hasUserSmtpConfig = Boolean(targetSmtpHost || targetSmtpPort);
+    const finalSmtpHost = targetSmtpHost || config.SMTP_HOST || TRANLE_WEBMAIL.host;
+    const finalSmtpPort = Number(targetSmtpPort || config.SMTP_PORT || TRANLE_WEBMAIL.smtpPort);
     await assertMailEndpointsSafe({ smtpHost: finalSmtpHost, smtpPort: finalSmtpPort });
 
     const makeTransporter = (user: string) => nodemailer.createTransport({
       host: finalSmtpHost,
       port: finalSmtpPort,
-      secure: finalSmtpPort === 465 || config.SMTP_SECURE === 'true',
+      // Per-user hosts only store their port; do not inherit TLS mode from the system host.
+      secure: finalSmtpPort === 465 || (!hasUserSmtpConfig && config.SMTP_SECURE === 'true'),
       auth: { user, pass: password },
       tls: tlsOptions,
       connectionTimeout: 60000,
@@ -986,10 +976,10 @@ export function mailRoutes(db: any) {
 
       const config = await getDynamicConfig();
       // 1. Configure Nodemailer
-      const scheduledSmtpPort = Number(config.SMTP_PORT || 587);
-      await assertMailEndpointsSafe({ smtpHost: config.SMTP_HOST || 'smtp.vnptemail.vn', smtpPort: scheduledSmtpPort });
+      const scheduledSmtpPort = Number(config.SMTP_PORT || TRANLE_WEBMAIL.smtpPort);
+      await assertMailEndpointsSafe({ smtpHost: config.SMTP_HOST || TRANLE_WEBMAIL.host, smtpPort: scheduledSmtpPort });
       const transporter = nodemailer.createTransport({
-        host: config.SMTP_HOST || 'smtp.vnptemail.vn',
+        host: config.SMTP_HOST || TRANLE_WEBMAIL.host,
         port: scheduledSmtpPort,
         secure: scheduledSmtpPort === 465 || config.SMTP_SECURE === 'true',
         auth: { user: senderEmail, pass: password },

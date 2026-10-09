@@ -8,6 +8,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useData } from '../../contexts/DataContext';
 import Flatpickr from 'react-flatpickr';
 import { toLocalDateString } from '../../utils/dateUtils';
+import { useMailConnectionCooldown } from '../../hooks/useMailConnectionCooldown';
 
 export const SettingsView: React.FC = () => {
   const { t } = useLanguage();
@@ -51,9 +52,10 @@ export const SettingsView: React.FC = () => {
   const [showMailPw, setShowMailPw] = useState(false);
   const [mailStatus, setMailStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
   const [isCheckingMail, setIsCheckingMail] = useState(false);
+  const { retryAfterSeconds, applyCooldown } = useMailConnectionCooldown();
   const [mailError, setMailError] = useState('');
   const [mailSuccess, setMailSuccess] = useState('');
-  const [mailProvider, setMailProvider] = useState<'system' | 'poste' | 'custom'>('system');
+  const [mailProvider, setMailProvider] = useState<'webmail' | 'poste' | 'custom'>('webmail');
   const [customImapHost, setCustomImapHost] = useState('');
   const [customImapPort, setCustomImapPort] = useState('993');
   const [customSmtpHost, setCustomSmtpHost] = useState('');
@@ -95,14 +97,14 @@ export const SettingsView: React.FC = () => {
       })
       .then(data => {
         if (data && data.provider) {
-          const mappedProvider = data.provider === 'vnpt' ? 'system' : data.provider;
+          const mappedProvider = data.provider === 'poste' || data.provider === 'custom' ? data.provider : 'webmail';
           setMailProvider(mappedProvider);
           if (data.imapHost) setCustomImapHost(data.imapHost);
           if (data.smtpHost) setCustomSmtpHost(data.smtpHost);
         }
       })
       .catch(() => {
-        setMailProvider('system'); // Fallback
+        setMailProvider('webmail'); // Fallback
       });
   }, []);
 
@@ -514,11 +516,11 @@ export const SettingsView: React.FC = () => {
         );
 
       case 'mail':
-        let providerLabel = 'Hệ thống';
+        let providerLabel = 'Email Trần Lê';
         if (mailProvider === 'poste') providerLabel = 'Poste.io';
         else if (mailProvider === 'custom') providerLabel = 'Tùy chỉnh';
 
-        const providerHelpLink = mailProvider === 'poste' ? 'mail.tranlecorp.com.vn' : mailProvider === 'custom' ? 'IT support' : 'webmail.tranlecorp.com.vn';
+        const providerHelpLink = mailProvider === 'poste' ? 'mail.tranlecorp.com.vn' : mailProvider === 'custom' ? 'IT support' : 'share-mail05.nhanhoa.com:2096';
         const emailPlaceholder = mailProvider === 'poste' ? 'vd: ten.nhanvien@tranlecorp.com.vn' : mailProvider === 'custom' ? 'vd: ten@domain.com' : 'vd: ten.nhanvien@tranlecorp.com.vn';
         const passwordPlaceholder = mailStatus === 'connected' ? '(giữ nguyên nếu không đổi)' : `Nhập mật khẩu email ${providerLabel}...`;
         const helpDescription = mailProvider === 'poste' 
@@ -550,13 +552,13 @@ export const SettingsView: React.FC = () => {
                 <p className={`text-sm font-semibold ${
                   mailStatus === 'connected' ? 'text-green-700' : mailStatus === 'error' ? 'text-red-600' : 'text-gray-600'
                 }`}>
-                  {mailStatus === 'connected' ? '✅ Email đang kết nối' : mailStatus === 'error' ? '❌ Chưa kết nối hoặc sai mật khẩu' : 'Đang kiểm tra...'}
+                  {mailStatus === 'connected' ? '✅ Email đang kết nối' : mailStatus === 'error' ? '❌ Chưa kết nối được email' : 'Đang kiểm tra...'}
                 </p>
                 <p className="text-xs text-gray-400 mt-0.5">
                   {mailStatus === 'connected'
                     ? `Hộp thư ${providerLabel} đang hoạt động bình thường.`
                     : mailStatus === 'error'
-                      ? `Nhập lại mật khẩu email ${providerLabel} để kết nối lại.`
+                      ? `Kiểm tra cấu hình và thông tin hộp thư ${providerLabel} để kết nối lại.`
                       : 'Đang kiểm tra trạng thái kết nối...'}
                 </p>
               </div>
@@ -585,9 +587,9 @@ export const SettingsView: React.FC = () => {
                   <div className="grid grid-cols-3 gap-2">
                     <button
                       type="button"
-                      onClick={() => setMailProvider('system')}
-                      className={`px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${mailProvider === 'system' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}
-                    >Hệ thống</button>
+                    onClick={() => setMailProvider('webmail')}
+                      className={`px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${mailProvider === 'webmail' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                    >Email Trần Lê</button>
                     <button
                       type="button"
                       onClick={() => setMailProvider('poste')}
@@ -663,6 +665,7 @@ export const SettingsView: React.FC = () => {
 
                 <button
                   onClick={async () => {
+                    if (isCheckingMail || retryAfterSeconds > 0) return;
                     if (!mailEmail || !mailPassword) { setMailError('Vui lòng nhập đầy đủ email và mật khẩu.'); return; }
                     setIsCheckingMail(true);
                     setMailError('');
@@ -683,12 +686,13 @@ export const SettingsView: React.FC = () => {
                       });
                       if (res.ok) {
                         setMailStatus('connected');
-                        setMailSuccess('Kết nối thành công! Hộp thư đã được đồng bộ.');
+                        setMailSuccess('Kết nối thành công! Đã lưu cấu hình hộp thư.');
                         setMailPassword('');
                         setTimeout(() => setMailSuccess(''), 4000);
                       } else {
-                        const err = await res.json();
-                        setMailError(err.error || 'Kết nối thất bại. Kiểm tra lại email và mật khẩu.');
+                        const err = await res.json().catch(() => ({}));
+                        applyCooldown(res, err);
+                        setMailError(err.error || 'Không thể kết nối email. Vui lòng thử lại sau.');
                         setMailStatus('error');
                       }
                     } catch {
@@ -698,11 +702,11 @@ export const SettingsView: React.FC = () => {
                       setIsCheckingMail(false);
                     }
                   }}
-                  disabled={isCheckingMail}
+                  disabled={isCheckingMail || retryAfterSeconds > 0}
                   className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-medium rounded-xl transition-colors shadow-sm"
                 >
                   {isCheckingMail ? <RefreshCw size={15} className="animate-spin" /> : <Wifi size={15} />}
-                  {isCheckingMail ? 'Đang kết nối...' : mailStatus === 'connected' ? 'Cập nhật mật khẩu' : `Kết nối Email ${providerLabel}`}
+                  {isCheckingMail ? 'Đang kết nối...' : retryAfterSeconds > 0 ? `Thử lại sau ${retryAfterSeconds} giây` : mailStatus === 'connected' ? 'Cập nhật mật khẩu' : `Kết nối Email ${providerLabel}`}
                 </button>
               </div>
             </div>
