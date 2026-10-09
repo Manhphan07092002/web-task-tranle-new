@@ -15,6 +15,7 @@ import ReportsPage from './pages/Reports/TaskReports';
 import ContractsPage from './pages/Contracts/index';
 import RevenuePage from './pages/Revenue/index';
 import ProductsPage from './pages/Products/index';
+import WarehousePage from './pages/Warehouse/index';
 import ForgotPasswordPage from './pages/ForgotPassword/index';
 import ResetPasswordPage from './pages/ResetPassword/index';
 import NotificationsPage from './pages/Notifications/index';
@@ -434,6 +435,7 @@ export default function TranLeTaskApp() {
               <Route path="/project-reports" element={<ProjectReportsPage />} />
               <Route path="/contracts" element={<ContractsPage />} />
               <Route path="/products" element={<ProductsPage />} />
+              <Route path="/warehouse" element={<WarehousePage />} />
               <Route path="/revenue" element={<RevenuePage />} />
               <Route path="/notifications" element={<NotificationsPage />} />
               <Route path="/documents" element={<DocumentsPage />} />

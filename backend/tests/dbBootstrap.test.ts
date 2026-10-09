@@ -123,7 +123,7 @@ describe('first-install database bootstrap', () => {
     expect(store.rows('tasks').size).toBe(0);
     expect(store.rows('system_config').size).toBe(0);
     expect(store.rows('_bootstrap').get('1')?.completed).toBe(1);
-    expect(store.rows('_migrations').size).toBe(5); // 3 original + 2 new (indexes, legacy columns)
+    expect(store.rows('_migrations').size).toBe(6); // 3 original + indexes + legacy columns + warehouse tables
   });
 
   it('does not recreate accounts, roles, or config after all application data is deleted', async () => {

@@ -6,7 +6,7 @@ export interface DataScopeContext {
   primaryDepartmentId: string;
   managedDepartmentIds?: string[]; // For Deputy Directors
   action: 'VIEW' | 'CREATE' | 'EDIT' | 'DELETE' | 'APPROVE';
-  resourceType: 'task' | 'contract' | 'project' | 'report' | 'revenue' | 'document';
+  resourceType: 'task' | 'contract' | 'project' | 'report' | 'revenue' | 'document' | 'inventory' | 'warehouse_transaction' | 'warehouse';
 }
 
 export interface Resource {
@@ -162,6 +162,12 @@ export class RBACService {
         20: 1,              // Manager: own department only
         30: 1,              // Deputy: managed departments
         40: 1,              // Director: all
+      },
+      warehouse: {
+        10: 0,              // Employee can only request
+        20: 1,              // Manager can approve
+        30: 1,              // Deputy can approve
+        40: 1,              // Director can approve
       },
     };
 

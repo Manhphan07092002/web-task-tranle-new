@@ -58,10 +58,18 @@ export function authRoutes(db: any) {
       }
 
       const role = await db.get('SELECT permissions FROM roles WHERE name = ?', [user.role]);
-      
+      let managedDepartments: string[] = [];
+      try {
+        const scopes = await db.all('SELECT departmentId FROM management_scopes WHERE userId = ?', [user.id]);
+        managedDepartments = scopes.map((s: { departmentId: string }) => s.departmentId);
+      } catch { managedDepartments = []; }
+
       const userClientData = {
-        id: user.id, name: user.name, email: user.email, role: user.role, 
-        department: user.department, avatar: user.avatar, 
+        id: user.id, name: user.name, email: user.email, role: user.role,
+        department: user.department, avatar: user.avatar,
+        managementLevel: user.managementLevel ?? 10,
+        primaryDepartmentId: user.primaryDepartmentId || null,
+        managedDepartments,
         permissions: role?.permissions ? JSON.parse(role.permissions) : []
       };
       const jwtPayload = { sub: user.id, tokenVersion: Number(user.tokenVersion || 0) };

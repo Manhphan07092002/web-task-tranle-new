@@ -11,6 +11,8 @@ export interface JwtPayload {
   avatar: string;
   permissions: string[];
   tokenVersion?: number;
+  managementLevel?: number;
+  primaryDepartmentId?: string;
 }
 
 declare global {
@@ -40,7 +42,7 @@ function verifyBearerToken(req: Request, res: Response, next: NextFunction, db: 
 
     (async () => {
       const user = await db.get(
-        'SELECT u.id, u.name, u.email, u.role, u.department, u.avatar, u.isLocked, u.lockedUntil, u.tokenVersion, r.permissions FROM users u LEFT JOIN roles r ON u.role = r.name WHERE u.id = ?',
+        'SELECT u.id, u.name, u.email, u.role, u.department, u.avatar, u.isLocked, u.lockedUntil, u.tokenVersion, u.managementLevel, u.primaryDepartmentId, r.permissions FROM users u LEFT JOIN roles r ON u.role = r.name WHERE u.id = ?',
         [payload.sub]
       );
       const temporarilyLocked = user?.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now();
@@ -60,6 +62,8 @@ function verifyBearerToken(req: Request, res: Response, next: NextFunction, db: 
         avatar: user.avatar,
         permissions: user.permissions ? JSON.parse(user.permissions) : [],
         tokenVersion: Number(user.tokenVersion || 0),
+        managementLevel: user.managementLevel,
+        primaryDepartmentId: user.primaryDepartmentId,
       };
       next();
     })().catch((e: any) => {

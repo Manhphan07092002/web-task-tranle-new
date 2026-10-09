@@ -72,40 +72,44 @@ export function requireDepartmentScope(resourceType: string) {
  */
 export function requireApprovalAuthority(resourceType: string) {
   return async (req: Request, res: Response, next: NextFunction) => {
-    const user = (req as any).user;
-    const db = (req as any).db;
-    const { amount } = req.body;
+    try {
+      const user = (req as any).user;
+      const db = (req as any).db;
+      const amount = req.body?.amount;
 
-    if (!user || !db) {
-      return res.status(401).json({ error: 'Unauthorized' });
+      if (!user || !db) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      const rbac = new RBACService(db);
+
+      const ctx: DataScopeContext = {
+        userId: user.id,
+        managementLevel: user.managementLevel ?? 10,
+        primaryDepartmentId: user.primaryDepartmentId || '',
+        action: 'APPROVE',
+        resourceType: resourceType as any,
+      };
+
+      const authority = await rbac.checkApprovalAuthority(ctx, resourceType, amount);
+
+      if (!authority.canApprove) {
+        return res.status(403).json({
+          error: 'Insufficient approval authority',
+          reason: authority.reason,
+          maxAmount: authority.maxAmount,
+        });
+      }
+
+      // Attach approval context
+      (req as any).approvalAuthority = authority;
+      (req as any).rbacContext = ctx;
+      (req as any).rbacService = rbac;
+
+      next();
+    } catch (error) {
+      res.status(500).json({ error: 'Internal server error in approval middleware' });
     }
-
-    const rbac = new RBACService(db);
-
-    const ctx: DataScopeContext = {
-      userId: user.id,
-      managementLevel: user.managementLevel ?? 10,
-      primaryDepartmentId: user.primaryDepartmentId || '',
-      action: 'APPROVE',
-      resourceType: resourceType as any,
-    };
-
-    const authority = await rbac.checkApprovalAuthority(ctx, resourceType, amount);
-
-    if (!authority.canApprove) {
-      return res.status(403).json({
-        error: 'Insufficient approval authority',
-        reason: authority.reason,
-        maxAmount: authority.maxAmount,
-      });
-    }
-
-    // Attach approval context
-    (req as any).approvalAuthority = authority;
-    (req as any).rbacContext = ctx;
-    (req as any).rbacService = rbac;
-
-    next();
   };
 }
 

@@ -91,6 +91,9 @@ export interface User {
   role: UserRole;
   jobTitle?: string | null;
   department: string;
+  primaryDepartmentId?: string;
+  managementLevel?: number;
+  managedDepartments?: string[];
   avatar: string;
   bio?: string;
   phone?: string;

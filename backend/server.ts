@@ -34,6 +34,7 @@ import { productRoutes } from './routes/products.js';
 import { projectRoutes } from './routes/projects.js';
 import { documentRoutes } from './routes/documents.js';
 import { aiRoutes, invalidateAiKeyCache } from './routes/ai.js';
+import { warehouseRoutes } from './routes/warehouse.js';
 
 import { initSocket } from './socket.js';
 import { createRequireAuth, requireAdmin } from './middleware/auth.js';
@@ -166,6 +167,7 @@ async function startServer() {
   app.use('/api/products', requireAuth, productRoutes(db));
   app.use('/api/projects', requireAuth, projectRoutes(db));
   app.use('/api/documents', requireAuth, documentRoutes(db));
+  app.use('/api/warehouse', requireAuth, warehouseRoutes(db));
 
   scheduleFridayReminder(db);
   scheduleNoteReminders(db);
@@ -185,8 +187,8 @@ async function startServer() {
     }
   });
 
-  // 404 handler for API routes
-  app.use('/api/*', notFoundHandler);
+  // 404 handler for API routes (Express 5: named splat required)
+  app.use('/api/{*splat}', notFoundHandler);
 
   // Global error handler (must be last)
   app.use(errorHandler);
