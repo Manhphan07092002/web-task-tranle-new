@@ -1,58 +1,15 @@
 import {
-  LayoutDashboard, FileText, ArrowLeftRight, ClipboardCheck, ShoppingCart,
-  MapPin, TriangleAlert, Search, BarChart3, Package, Users, Briefcase,
+  LayoutDashboard, FileText, Users, Briefcase,
   DollarSign, TrendingUp, HeartHandshake, ClipboardList, Wrench, Megaphone,
-  Calculator, Truck, Factory, Presentation, UserCheck,
+  Calculator, Truck, Factory, Presentation, UserCheck, Package, TriangleAlert, BarChart3,
+  ShoppingCart, ClipboardCheck,
 } from 'lucide-react';
 import type { DeptKey, NavGroup } from './menuTypes';
 
 const stub = (dept: string, id: string): string => `/dept/${dept}?m=${id}`;
 
-// Full menu configs per department. Only WAREHOUSE and BOARD link to real
+// Full menu configs per department. Only BOARD links to real
 // pages today; other departments point to a placeholder until built.
-const WAREHOUSE_GROUP: NavGroup = {
-  label: 'Kho vận',
-  scopeBadge: true,
-  items: [
-    { id: 'warehouse_dashboard', label: 'Tổng quan kho', icon: LayoutDashboard, path: '/warehouse/dashboard', permission: null },
-    { id: 'warehouse_stock', label: 'Tồn kho', icon: Package, path: '/warehouse', permission: null },
-    {
-      id: 'wh_docs', label: 'Phiếu nhập / xuất', icon: FileText, path: '/warehouse/inbound', permission: null,
-      children: [
-        { id: 'wh_docs_all', label: 'Phiếu nhập / xuất', to: '/warehouse/inbound' },
-        { id: 'wh_docs_in', label: 'Phiếu nhập kho mới', to: '/warehouse/inbound/new' },
-        { id: 'wh_docs_out', label: 'Phiếu xuất kho thi công', to: '/warehouse/outbound/new' },
-      ],
-    },
-    {
-      id: 'wh_transfer', label: 'Điều chuyển', icon: ArrowLeftRight, path: '/warehouse/transfers', permission: null,
-      children: [
-        { id: 'wh_transfer_all', label: 'Điều chuyển', to: '/warehouse/transfers' },
-        { id: 'wh_transfer_internal', label: 'Điều chuyển giữa các kho', to: '/warehouse/transfers/internal' },
-        { id: 'wh_transfer_site', label: 'Điều chuyển ra công trường', to: '/warehouse/transfers/site' },
-      ],
-    },
-    {
-      id: 'wh_count', label: 'Kiểm kê', icon: ClipboardCheck, path: '/warehouse/count-period', permission: null,
-      children: [
-        { id: 'wh_count_all', label: 'Kiểm kê', to: '/warehouse/count-period' },
-        { id: 'wh_count_period', label: 'Kỳ kiểm kê tháng', to: '/warehouse/count-period' },
-        { id: 'wh_count_report', label: 'Biên bản xử lý thừa / thiếu', to: '/warehouse/count-report' },
-      ],
-    },
-    { id: 'wh_pick_list', label: 'Danh sách lấy hàng', icon: ShoppingCart, path: '/warehouse/pick-list', permission: null },
-    { id: 'wh_locations', label: 'Vị trí kho', icon: MapPin, path: '/warehouse/locations', permission: null },
-    { id: 'wh_alerts', label: 'Cảnh báo tồn', icon: TriangleAlert, path: '/warehouse/alerts', permission: null },
-    { id: 'wh_inquiry', label: 'Tra cứu tồn kho', icon: Search, path: '/warehouse/inquiry', permission: null },
-    {
-      id: 'wh_reports', label: 'Báo cáo phòng', icon: BarChart3, path: '/warehouse/reports',
-      permission: ['view_all_reports', 'approve_dept_reports', 'director_feedback', 'manage_warehouse', 'admin_panel'],
-      minLevel: 20,
-    },
-  ],
-};
-
-// Ban Giám đốc sees aggregate views only — never the inner submenus of each department.
 const BOARD_GROUP: NavGroup = {
   label: 'Ban Giám đốc',
   scopeBadge: true,
@@ -62,7 +19,7 @@ const BOARD_GROUP: NavGroup = {
     { id: 'board_revenue', label: 'Doanh thu & tài chính', icon: DollarSign, path: '/revenue', permission: null },
     { id: 'board_projects', label: 'Dự án', icon: Briefcase, path: '/projects', permission: null },
     { id: 'board_sales', label: 'Kinh doanh', icon: TrendingUp, path: '/contracts', permission: null },
-    { id: 'board_warehouse', label: 'Kho vận', icon: Package, path: '/warehouse/dashboard', permission: null },
+    { id: 'board_warehouse', label: 'Kho vận', icon: Package, path: '/dept/warehouse', permission: null },
     { id: 'board_alerts', label: 'Cảnh báo', icon: TriangleAlert, path: '/notifications', permission: null },
     { id: 'board_reports', label: 'Báo cáo tổng hợp', icon: BarChart3, path: '/reports', permission: null },
   ],
@@ -80,8 +37,7 @@ function stubGroup(key: Lowercase<DeptKey>, label: string, items: { id: string; 
   };
 }
 
-export const DEPARTMENT_MENUS: Record<DeptKey, NavGroup> = {
-  WAREHOUSE: WAREHOUSE_GROUP,
+export const DEPARTMENT_MENUS: Partial<Record<DeptKey, NavGroup>> = {
   BOARD: BOARD_GROUP,
   SALES: stubGroup('sales', 'Kinh doanh', [
     { id: 'sales_overview', label: 'Tổng quan kinh doanh', icon: LayoutDashboard },

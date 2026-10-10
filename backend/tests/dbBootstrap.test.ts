@@ -48,7 +48,6 @@ function database() {
     const count = sql.match(/^SELECT COUNT\(\*\) as count FROM (\w+)$/i);
     if (count) return [[{ count: rows(count[1]).size }]];
     if (sql.startsWith('UPDATE password_reset_tokens')) return [{ affectedRows: 0 }];
-    if (sql.startsWith('UPDATE warehouse_transactions')) return [{ affectedRows: 0 }];
     if (sql === 'UPDATE _bootstrap SET completed = 1 WHERE id = 1') {
       rows('_bootstrap').get('1')!.completed = 1;
       return [{ affectedRows: 1 }];
@@ -125,7 +124,7 @@ describe('first-install database bootstrap', () => {
     expect(store.rows('tasks').size).toBe(0);
     expect(store.rows('system_config').size).toBe(0);
     expect(store.rows('_bootstrap').get('1')?.completed).toBe(1);
-    expect(store.rows('_migrations').size).toBe(13); // 3 original + indexes + legacy + wh tables + assign + dept backfill + scopeType + counts + transfer scope + location master + stock inquiry
+    expect(store.rows('_migrations').size).toBe(7); // 3 original + indexes + legacy columns + dept RBAC backfill + scopes scopeType
   });
 
   it('does not recreate accounts, roles, or config after all application data is deleted', async () => {

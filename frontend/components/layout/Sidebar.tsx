@@ -23,7 +23,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isMobileMenuOpen, setIsMobileM
   const level = user?.managementLevel ?? 10;
   // Department -> menu config -> render. Only ONE department module renders.
   const deptKey = resolveDeptKey(user, departments || []);
-  const deptGroup: NavGroup | null = deptKey ? DEPARTMENT_MENUS[deptKey] : null;
+  const deptGroup: NavGroup | null = deptKey ? (DEPARTMENT_MENUS[deptKey] ?? null) : null;
   const NAV_GROUPS: NavGroup[] = deptGroup
     ? [...COMMON_TOP_GROUPS, deptGroup, SYSTEM_GROUP]
     : [...COMMON_TOP_GROUPS, SYSTEM_GROUP];
