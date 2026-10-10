@@ -33,6 +33,13 @@ import { clientRoutes } from './routes/clients.js';
 import { productRoutes } from './routes/products.js';
 import { projectRoutes } from './routes/projects.js';
 import { documentRoutes } from './routes/documents.js';
+import { warehouseMasterRoutes } from './routes/warehouseMaster.js';
+import { warehouseDocsRoutes } from './routes/warehouseDocs.js';
+import { warehouseStockRoutes } from './routes/warehouseStock.js';
+import { warehouseSerialsRoutes } from './routes/warehouseSerials.js';
+import { warehouseCountsRoutes } from './routes/warehouseCounts.js';
+import { warehouseAlertsRoutes } from './routes/warehouseAlerts.js';
+import { warehouseBundlesRoutes } from './routes/warehouseBundles.js';
 import { aiRoutes, invalidateAiKeyCache } from './routes/ai.js';
 
 import { initSocket } from './socket.js';
@@ -169,6 +176,13 @@ async function startServer() {
   app.use('/api/products', requireAuth, productRoutes(db));
   app.use('/api/projects', requireAuth, projectRoutes(db));
   app.use('/api/documents', requireAuth, documentRoutes(db));
+  app.use('/api/warehouse', requireAuth, warehouseMasterRoutes(db));
+  app.use('/api/warehouse', requireAuth, warehouseDocsRoutes(db));
+  app.use('/api/warehouse', requireAuth, warehouseStockRoutes(db));
+  app.use('/api/warehouse', requireAuth, warehouseSerialsRoutes(db));
+  app.use('/api/warehouse', requireAuth, warehouseCountsRoutes(db));
+  app.use('/api/warehouse', requireAuth, warehouseAlertsRoutes(db));
+  app.use('/api/warehouse', requireAuth, warehouseBundlesRoutes(db));
 
   scheduleFridayReminder(db);
   scheduleNoteReminders(db);

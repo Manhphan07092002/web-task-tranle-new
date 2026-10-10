@@ -562,6 +562,393 @@ export async function initDbMysql(): Promise<MysqlDb> {
         await ensureColumn('management_scopes', 'createdAt', '`createdAt` DATETIME DEFAULT CURRENT_TIMESTAMP');
       });
 
+      await runVersionedMigration(db, 15, 'warehouse_master_data', async () => {
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS stock_products (
+            id VARCHAR(36) PRIMARY KEY,
+            code VARCHAR(50) NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            brand VARCHAR(100),
+            model VARCHAR(100),
+            category VARCHAR(100),
+            unit VARCHAR(20) DEFAULT 'pcs',
+            tracking VARCHAR(20) DEFAULT 'NONE',
+            warrantyMonths INT DEFAULT 0,
+            minStock DECIMAL(18,3) DEFAULT 0,
+            maxStock DECIMAL(18,3) DEFAULT 0,
+            reorderPoint DECIMAL(18,3) DEFAULT 0,
+            requiresCertificates TINYINT DEFAULT 0,
+            isActive TINYINT DEFAULT 1,
+            notes TEXT,
+            createdBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_stock_product_code (code),
+            FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE SET NULL,
+            INDEX idx_sp_code (code),
+            INDEX idx_sp_category (category),
+            INDEX idx_sp_brand (brand),
+            INDEX idx_sp_tracking (tracking)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS warehouses (
+            id VARCHAR(36) PRIMARY KEY,
+            code VARCHAR(50) NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            region VARCHAR(100),
+            address TEXT,
+            managerId VARCHAR(36),
+            isActive TINYINT DEFAULT 1,
+            createdBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_warehouse_code (code),
+            FOREIGN KEY (managerId) REFERENCES users(id) ON DELETE SET NULL,
+            FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE SET NULL,
+            INDEX idx_wh_code (code)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS warehouse_locations (
+            id VARCHAR(36) PRIMARY KEY,
+            warehouseId VARCHAR(36) NOT NULL,
+            parentId VARCHAR(36),
+            code VARCHAR(50) NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            type VARCHAR(20) DEFAULT 'INTERNAL',
+            purpose VARCHAR(20) DEFAULT 'SALEABLE',
+            isActive TINYINT DEFAULT 1,
+            createdBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_wh_location_code (code),
+            FOREIGN KEY (warehouseId) REFERENCES warehouses(id) ON DELETE CASCADE,
+            FOREIGN KEY (parentId) REFERENCES warehouse_locations(id) ON DELETE SET NULL,
+            FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE SET NULL,
+            INDEX idx_whl_warehouse (warehouseId),
+            INDEX idx_whl_parent (parentId),
+            INDEX idx_whl_code (code)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
+      await runVersionedMigration(db, 16, 'warehouse_stock_documents', async () => {
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS stock_documents (
+            id VARCHAR(36) PRIMARY KEY,
+            code VARCHAR(50) NOT NULL,
+            type VARCHAR(20) NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+            sourceType VARCHAR(20) DEFAULT 'INTERNAL',
+            sourceId VARCHAR(100),
+            supplierName VARCHAR(255),
+            warehouseId VARCHAR(36) NOT NULL,
+            requesterId VARCHAR(36),
+            assigneeId VARCHAR(36),
+            notes TEXT,
+            createdBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_stock_doc_code (code),
+            FOREIGN KEY (warehouseId) REFERENCES warehouses(id) ON DELETE RESTRICT,
+            FOREIGN KEY (requesterId) REFERENCES users(id) ON DELETE SET NULL,
+            FOREIGN KEY (assigneeId) REFERENCES users(id) ON DELETE SET NULL,
+            FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE SET NULL,
+            INDEX idx_sdoc_type_status (type, status),
+            INDEX idx_sdoc_warehouse (warehouseId),
+            INDEX idx_sdoc_assignee (assigneeId),
+            INDEX idx_sdoc_requester (requesterId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS stock_document_lines (
+            id VARCHAR(36) PRIMARY KEY,
+            docId VARCHAR(36) NOT NULL,
+            productId VARCHAR(36) NOT NULL,
+            productCode VARCHAR(50) NOT NULL,
+            productName VARCHAR(255) NOT NULL,
+            qtyOrdered DECIMAL(18,3) NOT NULL DEFAULT 0,
+            qtyReceived DECIMAL(18,3) NOT NULL DEFAULT 0,
+            unit VARCHAR(20) DEFAULT 'pcs',
+            locationId VARCHAR(36),
+            notes TEXT,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (docId) REFERENCES stock_documents(id) ON DELETE CASCADE,
+            FOREIGN KEY (productId) REFERENCES stock_products(id) ON DELETE RESTRICT,
+            FOREIGN KEY (locationId) REFERENCES warehouse_locations(id) ON DELETE SET NULL,
+            INDEX idx_sdline_doc (docId),
+            INDEX idx_sdline_product (productId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS stock_moves (
+            id VARCHAR(36) PRIMARY KEY,
+            productId VARCHAR(36) NOT NULL,
+            productCode VARCHAR(50) NOT NULL,
+            warehouseId VARCHAR(36) NOT NULL,
+            locationId VARCHAR(36),
+            lotId VARCHAR(36),
+            serialNo VARCHAR(100),
+            qty DECIMAL(18,3) NOT NULL,
+            moveType VARCHAR(20) NOT NULL,
+            docId VARCHAR(36),
+            lineId VARCHAR(36),
+            createdBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (productId) REFERENCES stock_products(id) ON DELETE RESTRICT,
+            FOREIGN KEY (warehouseId) REFERENCES warehouses(id) ON DELETE RESTRICT,
+            FOREIGN KEY (locationId) REFERENCES warehouse_locations(id) ON DELETE SET NULL,
+            FOREIGN KEY (docId) REFERENCES stock_documents(id) ON DELETE SET NULL,
+            INDEX idx_smove_product_wh (productId, warehouseId),
+            INDEX idx_smove_location (locationId),
+            INDEX idx_smove_doc (docId),
+            INDEX idx_smove_created (createdAt)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS stock_balances (
+            productId VARCHAR(36) NOT NULL,
+            warehouseId VARCHAR(36) NOT NULL,
+            locationId VARCHAR(36) NOT NULL DEFAULT '',
+            onHand DECIMAL(18,3) NOT NULL DEFAULT 0,
+            reserved DECIMAL(18,3) NOT NULL DEFAULT 0,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (productId, warehouseId, locationId),
+            FOREIGN KEY (productId) REFERENCES stock_products(id) ON DELETE CASCADE,
+            FOREIGN KEY (warehouseId) REFERENCES warehouses(id) ON DELETE CASCADE,
+            INDEX idx_sbal_warehouse (warehouseId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
+      await runVersionedMigration(db, 17, 'warehouse_stock_transfer', async () => {
+        await ensureColumn('stock_documents', 'toWarehouseId', '`toWarehouseId` VARCHAR(36) NULL');
+        await ensureColumn('stock_documents', 'receiverId', '`receiverId` VARCHAR(36) NULL');
+        await ensureColumn('stock_documents', 'etaDate', '`etaDate` DATE NULL');
+        const ensureSdocIndex = async (indexName: string, columns: string) => {
+          const existing = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+            ['stock_documents', indexName]
+          );
+          if (!existing || Number(existing.count) === 0) {
+            await db.run(`CREATE INDEX \`${indexName}\` ON stock_documents (${columns})`);
+          }
+        };
+        await ensureSdocIndex('idx_sdoc_towarehouse', '`toWarehouseId`');
+        await ensureSdocIndex('idx_sdoc_receiver', '`receiverId`');
+        await ensureSdocIndex('idx_sdoc_eta', '`etaDate`');
+      });
+
+      await runVersionedMigration(db, 18, 'warehouse_stock_reservations', async () => {
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS reservations (
+            id VARCHAR(36) PRIMARY KEY,
+            sourceType VARCHAR(20) DEFAULT 'INTERNAL',
+            sourceId VARCHAR(100),
+            productId VARCHAR(36) NOT NULL,
+            productCode VARCHAR(50) NOT NULL,
+            productName VARCHAR(255) NOT NULL,
+            warehouseId VARCHAR(36) NOT NULL,
+            locationId VARCHAR(36),
+            qty DECIMAL(18,3) NOT NULL,
+            qtyConsumed DECIMAL(18,3) NOT NULL DEFAULT 0,
+            status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+            assigneeId VARCHAR(36),
+            expiresAt DATETIME,
+            notes TEXT,
+            createdBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (productId) REFERENCES stock_products(id) ON DELETE RESTRICT,
+            FOREIGN KEY (warehouseId) REFERENCES warehouses(id) ON DELETE RESTRICT,
+            FOREIGN KEY (locationId) REFERENCES warehouse_locations(id) ON DELETE SET NULL,
+            FOREIGN KEY (assigneeId) REFERENCES users(id) ON DELETE SET NULL,
+            FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE SET NULL,
+            INDEX idx_res_product_wh (productId, warehouseId),
+            INDEX idx_res_status (status),
+            INDEX idx_res_expiry (expiresAt),
+            INDEX idx_res_assignee (assigneeId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
+      await runVersionedMigration(db, 19, 'warehouse_doc_duedate', async () => {
+        await ensureColumn('stock_documents', 'dueDate', '`dueDate` DATE NULL');
+        const existing = await db.get(
+          'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+          ['stock_documents', 'idx_sdoc_due']
+        );
+        if (!existing || Number(existing.count) === 0) {
+          await db.run('CREATE INDEX `idx_sdoc_due` ON stock_documents (`dueDate`)');
+        }
+      });
+
+      await runVersionedMigration(db, 20, 'warehouse_serials_lots', async () => {
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS lots (
+            id VARCHAR(36) PRIMARY KEY,
+            lotCode VARCHAR(100) NOT NULL,
+            productId VARCHAR(36) NOT NULL,
+            productCode VARCHAR(50) NOT NULL,
+            expiryDate DATE,
+            supplierName VARCHAR(255),
+            notes TEXT,
+            createdBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_lot_code (lotCode),
+            FOREIGN KEY (productId) REFERENCES stock_products(id) ON DELETE RESTRICT,
+            FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE SET NULL,
+            INDEX idx_lots_product (productId),
+            INDEX idx_lots_expiry (expiryDate)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS serials (
+            id VARCHAR(36) PRIMARY KEY,
+            serialNo VARCHAR(100) NOT NULL,
+            productId VARCHAR(36) NOT NULL,
+            productCode VARCHAR(50) NOT NULL,
+            productName VARCHAR(255) NOT NULL,
+            lotId VARCHAR(36),
+            status VARCHAR(20) NOT NULL DEFAULT 'IN_STOCK',
+            warehouseId VARCHAR(36),
+            locationId VARCHAR(36),
+            receiptDocId VARCHAR(36),
+            receiptLineId VARCHAR(36),
+            issueDocId VARCHAR(36),
+            issueLineId VARCHAR(36),
+            customerRef VARCHAR(255),
+            warrantyStart DATE,
+            warrantyEnd DATE,
+            notes TEXT,
+            createdBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_serial_no (serialNo),
+            FOREIGN KEY (productId) REFERENCES stock_products(id) ON DELETE RESTRICT,
+            FOREIGN KEY (lotId) REFERENCES lots(id) ON DELETE SET NULL,
+            FOREIGN KEY (warehouseId) REFERENCES warehouses(id) ON DELETE SET NULL,
+            FOREIGN KEY (locationId) REFERENCES warehouse_locations(id) ON DELETE SET NULL,
+            FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE SET NULL,
+            INDEX idx_serial_product (productId),
+            INDEX idx_serial_status (status),
+            INDEX idx_serial_warehouse (warehouseId),
+            INDEX idx_serial_lot (lotId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
+      await runVersionedMigration(db, 21, 'warehouse_stock_counts', async () => {        await db.exec(`
+          CREATE TABLE IF NOT EXISTS stock_counts (
+            id VARCHAR(36) PRIMARY KEY,
+            code VARCHAR(50) NOT NULL,
+            warehouseId VARCHAR(36) NOT NULL,
+            locationId VARCHAR(36),
+            status VARCHAR(20) NOT NULL DEFAULT 'planned',
+            blindCount TINYINT DEFAULT 1,
+            assigneeId VARCHAR(36),
+            notes TEXT,
+            createdBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_stock_count_code (code),
+            FOREIGN KEY (warehouseId) REFERENCES warehouses(id) ON DELETE RESTRICT,
+            FOREIGN KEY (locationId) REFERENCES warehouse_locations(id) ON DELETE SET NULL,
+            FOREIGN KEY (assigneeId) REFERENCES users(id) ON DELETE SET NULL,
+            FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE SET NULL,
+            INDEX idx_sc_warehouse (warehouseId),
+            INDEX idx_sc_status (status),
+            INDEX idx_sc_assignee (assigneeId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS stock_count_lines (
+            id VARCHAR(36) PRIMARY KEY,
+            countId VARCHAR(36) NOT NULL,
+            productId VARCHAR(36) NOT NULL,
+            productCode VARCHAR(50) NOT NULL,
+            productName VARCHAR(255) NOT NULL,
+            systemQty DECIMAL(18,3) NOT NULL DEFAULT 0,
+            countedQty DECIMAL(18,3),
+            status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            resolution TEXT,
+            resolvedBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (countId) REFERENCES stock_counts(id) ON DELETE CASCADE,
+            FOREIGN KEY (productId) REFERENCES stock_products(id) ON DELETE RESTRICT,
+            FOREIGN KEY (resolvedBy) REFERENCES users(id) ON DELETE SET NULL,
+            INDEX idx_scl_count (countId),
+            INDEX idx_scl_status (status),
+            INDEX idx_scl_product (productId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
+      await runVersionedMigration(db, 22, 'warehouse_stock_policies', async () => {
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS stock_policies (
+            id VARCHAR(36) PRIMARY KEY,
+            productId VARCHAR(36) NOT NULL,
+            warehouseId VARCHAR(36) NOT NULL,
+            minStock DECIMAL(18,3) DEFAULT 0,
+            maxStock DECIMAL(18,3) DEFAULT 0,
+            reorderPoint DECIMAL(18,3) DEFAULT 0,
+            preferredQty DECIMAL(18,3) DEFAULT 0,
+            leadTimeDays INT DEFAULT 0,
+            createdBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_stock_policy (productId, warehouseId),
+            FOREIGN KEY (productId) REFERENCES stock_products(id) ON DELETE CASCADE,
+            FOREIGN KEY (warehouseId) REFERENCES warehouses(id) ON DELETE CASCADE,
+            FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE SET NULL,
+            INDEX idx_spol_product (productId),
+            INDEX idx_spol_warehouse (warehouseId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
+      await runVersionedMigration(db, 23, 'warehouse_stock_bundles', async () => {
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS bundles (
+            id VARCHAR(36) PRIMARY KEY,
+            code VARCHAR(50) NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            unit VARCHAR(20) DEFAULT 'set',
+            mode VARCHAR(20) DEFAULT 'VIRTUAL_BUNDLE',
+            kitProductId VARCHAR(36),
+            notes TEXT,
+            isActive TINYINT DEFAULT 1,
+            createdBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_bundle_code (code),
+            FOREIGN KEY (kitProductId) REFERENCES stock_products(id) ON DELETE SET NULL,
+            FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE SET NULL,
+            INDEX idx_bundle_mode (mode)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS bundle_items (
+            id VARCHAR(36) PRIMARY KEY,
+            bundleId VARCHAR(36) NOT NULL,
+            productId VARCHAR(36) NOT NULL,
+            productCode VARCHAR(50) NOT NULL,
+            productName VARCHAR(255) NOT NULL,
+            quantity DECIMAL(18,3) NOT NULL DEFAULT 1,
+            unit VARCHAR(20) DEFAULT 'pcs',
+            FOREIGN KEY (bundleId) REFERENCES bundles(id) ON DELETE CASCADE,
+            FOREIGN KEY (productId) REFERENCES stock_products(id) ON DELETE RESTRICT,
+            INDEX idx_bitem_bundle (bundleId),
+            INDEX idx_bitem_product (productId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
 
 
 
@@ -671,7 +1058,9 @@ async function seedInitialData(db: MysqlDb) {
         'admin_panel', 'manage_users', 'manage_meetings', 'view_all_tasks',
         'manage_dept_tasks', 'view_own_tasks', 'view_all_reports', 'approve_dept_reports',
         'director_feedback', 'create_report', 'view_dept_users', 'join_meetings',
-        'create_revenue_report', 'approve_dept_revenue', 'approve_all_revenue', 'manage_warehouse'
+        'create_revenue_report', 'approve_dept_revenue', 'approve_all_revenue', 'manage_warehouse',
+        'stock.view', 'stock.receive', 'stock.issue', 'stock.transfer', 'stock.count',
+        'stock.approve', 'stock.adjust', 'stock.manage', 'stock.reports', 'misa.reconcile'
       ]),
       isSystem: 1
     },
@@ -682,7 +1071,8 @@ async function seedInitialData(db: MysqlDb) {
       color: '#0f172a', // Design System Dark / Navy
       permissions: JSON.stringify([
         'view_all_reports', 'director_feedback', 'view_all_tasks', 'manage_meetings',
-        'join_meetings', 'approve_all_revenue', 'manage_warehouse'
+        'join_meetings', 'approve_all_revenue', 'manage_warehouse',
+        'stock.view', 'stock.approve', 'stock.reports', 'misa.reconcile'
       ]),
       isSystem: 1
     },
@@ -693,7 +1083,9 @@ async function seedInitialData(db: MysqlDb) {
       color: '#16a34a', // Design System Primary Energy Green
       permissions: JSON.stringify([
         'manage_dept_tasks', 'approve_dept_reports', 'view_dept_users', 'manage_meetings',
-        'join_meetings', 'create_report', 'create_revenue_report', 'approve_dept_revenue', 'manage_warehouse'
+        'join_meetings', 'create_report', 'create_revenue_report', 'approve_dept_revenue', 'manage_warehouse',
+        'stock.view', 'stock.receive', 'stock.issue', 'stock.transfer', 'stock.count',
+        'stock.approve', 'stock.adjust', 'stock.manage', 'stock.reports'
       ]),
       isSystem: 1
     },
@@ -703,7 +1095,8 @@ async function seedInitialData(db: MysqlDb) {
       description: 'Kỹ sư & nhân viên thực thi dự án, tư vấn thiết kế, thi công lắp đặt, O&M và báo cáo tiến độ.',
       color: '#f59e0b', // Design System Solar Gold
       permissions: JSON.stringify([
-        'view_own_tasks', 'create_report', 'join_meetings', 'create_revenue_report'
+        'view_own_tasks', 'create_report', 'join_meetings', 'create_revenue_report',
+        'stock.view', 'stock.receive', 'stock.issue', 'stock.transfer', 'stock.count'
       ]),
       isSystem: 1
     },
