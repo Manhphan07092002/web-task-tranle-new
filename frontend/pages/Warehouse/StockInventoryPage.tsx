@@ -22,8 +22,7 @@ const PAGE_SIZES = [20, 50, 100];
 export default function StockInventoryPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const level = user?.managementLevel ?? 10;
-  const isManager = level !== 99 && level >= 20;
+  const isManager = (user?.permissions || []).includes('stock.manage');
   const [view, setView] = useState<View>('summary');
   const [rows, setRows] = useState<(StockSummaryRow | StockLocationRow)[]>([]);
   const [total, setTotal] = useState(0);

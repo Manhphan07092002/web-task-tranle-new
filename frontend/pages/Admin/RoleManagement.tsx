@@ -5,12 +5,13 @@ import {
   CheckCircle, X, Save, Users, Lock, Plus, Minus, Settings
 } from 'lucide-react';
 
-// All available permissions in the system
+// All available permissions in the system.
+// Keep in sync with backend/middleware/warehouseAuth.ts (WAREHOUSE_PERMISSIONS).
 const ALL_PERMISSIONS = [
   { id: 'admin_panel',          label: 'Truy cập Admin Panel',              group: 'Quản trị' },
   { id: 'manage_users',         label: 'Quản lý người dùng (CRUD)',         group: 'Quản trị' },
   { id: 'manage_meetings',      label: 'Quản lý tất cả cuộc họp',           group: 'Quản trị' },
-  { id: 'manage_warehouse',     label: 'Quản lý Xuất/Nhập Kho',             group: 'Quản trị' },
+  { id: 'manage_warehouse',     label: 'Quản lý Xuất/Nhập Kho (sản phẩm)', group: 'Quản trị' },
   { id: 'view_all_tasks',       label: 'Xem tất cả công việc',              group: 'Công việc' },
   { id: 'manage_dept_tasks',    label: 'Giao/sửa việc trong phòng ban',     group: 'Công việc' },
   { id: 'view_own_tasks',       label: 'Xem công việc được giao',           group: 'Công việc' },
@@ -23,6 +24,20 @@ const ALL_PERMISSIONS = [
   { id: 'create_revenue_report',label: 'Tạo báo cáo doanh thu',            group: 'Kinh doanh' },
   { id: 'approve_dept_revenue', label: 'Duyệt báo cáo doanh thu phòng ban', group: 'Kinh doanh' },
   { id: 'approve_all_revenue',  label: 'Duyệt tất cả báo cáo doanh thu',    group: 'Kinh doanh' },
+
+  // ── Kho vận (module tồn kho) ─────────────────────────────────────────────
+  // Mọi biến động kho đều phải sinh stock_move; quyền ở đây là thứ quyết định
+  // menu + API, KHÔNG phải cấp bậc (managementLevel không thể chỉnh ở đâu).
+  { id: 'stock.view',     label: 'Xem tồn kho, vị trí, serial/lô, combo',        group: 'Kho vận' },
+  { id: 'stock.receive',  label: 'Nhận hàng theo phiếu nhập kho',               group: 'Kho vận' },
+  { id: 'stock.issue',    label: 'Soạn/xuất hàng theo phiếu xuất kho',          group: 'Kho vận' },
+  { id: 'stock.transfer', label: 'Gửi/nhận hàng điều chuyển giữa các kho',      group: 'Kho vận' },
+  { id: 'stock.count',    label: 'Thực hiện kiểm kê (không thấy số sổ sách)',   group: 'Kho vận' },
+  { id: 'stock.approve',  label: 'Duyệt chênh lệch kiểm kê, phiếu nháp, điều chuyển', group: 'Kho vận' },
+  { id: 'stock.adjust',   label: 'Xem sổ điều chỉnh tồn (do kiểm kê sinh)',      group: 'Kho vận' },
+  { id: 'stock.manage',   label: 'Quản lý kho: hàng hóa, kho/vị trí, giữ hàng, cảnh báo, chính sách Min/Max', group: 'Kho vận' },
+  { id: 'stock.reports',  label: 'Báo cáo nhập-xuất-tồn, tồn theo kho, đang vận chuyển', group: 'Kho vận' },
+  { id: 'misa.reconcile', label: 'Đối soát dữ liệu kho với MISA',                group: 'Kho vận' },
 ];
 
 const PERM_GROUPS = [...new Set(ALL_PERMISSIONS.map(p => p.group))];
@@ -43,34 +58,49 @@ const PRESET_COLORS = [
   '#84cc16', '#f59e0b', '#6366f1', '#14b8a6',
 ];
 
+// Quyền kho vận gán theo vai trò — đúng bộ backend yêu cầu cho từng nhóm.
+const WH_ALL = ['stock.view', 'stock.receive', 'stock.issue', 'stock.transfer', 'stock.count',
+  'stock.approve', 'stock.adjust', 'stock.manage', 'stock.reports', 'misa.reconcile'];
+const WH_MANAGER = ['stock.view', 'stock.receive', 'stock.issue', 'stock.transfer', 'stock.count',
+  'stock.approve', 'stock.adjust', 'stock.manage', 'stock.reports'];
+const WH_STAFF = ['stock.view', 'stock.receive', 'stock.issue', 'stock.transfer', 'stock.count'];
+const WH_BOARD = ['stock.view', 'stock.approve', 'stock.reports', 'misa.reconcile'];
+
 const ROLE_PRESETS = [
   {
     label: 'Admin',
     name: 'Admin',
     color: '#ef4444',
     desc: 'Toàn quyền hệ thống: quản trị, cấu hình, và xem mọi dữ liệu.',
-    perms: ['admin_panel', 'manage_users', 'manage_meetings', 'view_all_tasks', 'manage_dept_tasks', 'view_own_tasks', 'view_all_reports', 'approve_dept_reports', 'director_feedback', 'create_report', 'view_dept_users', 'join_meetings', 'create_revenue_report', 'approve_dept_revenue', 'approve_all_revenue', 'manage_warehouse']
+    perms: ['admin_panel', 'manage_users', 'manage_meetings', 'view_all_tasks', 'manage_dept_tasks', 'view_own_tasks', 'view_all_reports', 'approve_dept_reports', 'director_feedback', 'create_report', 'view_dept_users', 'join_meetings', 'create_revenue_report', 'approve_dept_revenue', 'approve_all_revenue', 'manage_warehouse', ...WH_ALL]
   },
   {
     label: 'Giám đốc',
     name: 'Giám đốc',
     color: '#8b5cf6',
-    desc: 'Xem toàn bộ báo cáo, cung cấp phản hồi Giám đốc. Xem tiến độ công việc.',
-    perms: ['view_all_reports', 'director_feedback', 'view_all_tasks', 'manage_meetings', 'join_meetings', 'approve_all_revenue', 'manage_warehouse']
+    desc: 'Xem toàn bộ báo cáo, cung cấp phản hồi Giám đốc. Xem tiến độ công việc và tổng quan kho.',
+    perms: ['view_all_reports', 'director_feedback', 'view_all_tasks', 'manage_meetings', 'join_meetings', 'approve_all_revenue', 'manage_warehouse', ...WH_BOARD]
   },
   {
     label: 'Phó giám đốc',
     name: 'Phó giám đốc',
     color: '#3b82f6',
     desc: 'Hỗ trợ giám đốc điều phối các dự án và phòng ban.',
-    perms: ['view_all_reports', 'director_feedback', 'view_all_tasks', 'join_meetings']
+    perms: ['view_all_reports', 'director_feedback', 'view_all_tasks', 'join_meetings', ...WH_BOARD]
   },
   {
-    label: 'Trưởng phòng',
-    name: 'Trưởng phòng',
+    label: 'Trưởng phòng kho',
+    name: 'Trưởng phòng kho',
     color: '#f59e0b',
-    desc: 'Quản lý nhân viên trong phòng ban, giao việc, duyệt báo cáo phòng ban và doanh thu.',
-    perms: ['manage_dept_tasks', 'approve_dept_reports', 'view_dept_users', 'create_report', 'view_own_tasks', 'join_meetings', 'approve_dept_revenue', 'manage_warehouse']
+    desc: 'Quản lý vận hành kho: hàng hóa, kho/vị trí, giữ hàng, duyệt chênh lệch kiểm kê, cảnh báo và báo cáo.',
+    perms: ['view_own_tasks', 'create_report', 'view_dept_users', 'manage_dept_tasks', 'join_meetings', ...WH_MANAGER]
+  },
+  {
+    label: 'Nhân viên kho',
+    name: 'Nhân viên kho',
+    color: '#10b981',
+    desc: 'Xử lý phiếu được giao: nhận hàng, soạn/xuất, điều chuyển và kiểm kê. Không thấy số sổ sách khi kiểm kê mù.',
+    perms: ['view_own_tasks', 'create_report', 'join_meetings', ...WH_STAFF]
   },
   {
     label: 'Nhân viên',

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
-import { canManageWarehouse, requireWarehouseView } from '../middleware/warehouseAuth.js';
+import { canManageWarehouse, isWhAdmin, managesWarehouse, requireWarehouseView } from '../middleware/warehouseAuth.js';
 
 // Stock documents (A2-A5): RECEIPT/ISSUE/TRANSFER flows + reservations.
 // Every physical move generates immutable stock_moves; balances project.
@@ -9,10 +9,12 @@ function canManageDocs(req: any): boolean {
   return canManageWarehouse(req, 'stock.manage');
 }
 
-function docScope(req: any): { level: number; userId: string; ownOnly: boolean } {
+// Data scope: holders of stock.manage see every document; everyone else only
+// the ones they are requester/assignee/receiver/creator of. Permission-driven,
+// not chức danh-driven.
+function docScope(req: any): { userId: string; ownOnly: boolean } {
   const user = req.user || {};
-  const level = user.managementLevel ?? 10;
-  return { level, userId: user.id, ownOnly: level === 10 };
+  return { userId: user.id, ownOnly: !managesWarehouse(req) };
 }
 
 function docCode(prefix: string): string {
@@ -32,8 +34,8 @@ export function warehouseDocsRoutes(db: any) {
   // ============================================================
   router.get('/documents', async (req, res) => {
     try {
-      const { level, userId, ownOnly } = docScope(req);
-      if (level === 99) return res.json([]);
+      const { userId, ownOnly } = docScope(req);
+      if (isWhAdmin(req)) return res.json([]);
 
       const conditions: string[] = [];
       const params: any[] = [];
@@ -163,8 +165,8 @@ export function warehouseDocsRoutes(db: any) {
   // ============================================================
   router.get('/documents/:id', async (req, res) => {
     try {
-      const { level, userId, ownOnly } = docScope(req);
-      if (level === 99) return res.status(403).json({ error: 'Forbidden' });
+      const { userId, ownOnly } = docScope(req);
+      if (isWhAdmin(req)) return res.status(403).json({ error: 'Forbidden' });
       const doc = await db.get(
         `SELECT d.*, w.code AS warehouseCode, w.name AS warehouseName,
                 tw.code AS toWarehouseCode, tw.name AS toWarehouseName,
@@ -777,7 +779,7 @@ export function warehouseDocsRoutes(db: any) {
   router.get('/balances', async (req, res) => {
     try {
       const user: any = req.user || {};
-      if ((user.managementLevel ?? 10) === 99) return res.json([]);
+      if (isWhAdmin(req)) return res.json([]);
       const conditions: string[] = [];
       const params: any[] = [];
       const warehouseId = String(req.query.warehouseId || '');
@@ -842,8 +844,7 @@ export function warehouseDocsRoutes(db: any) {
   router.get('/reservations', async (req, res) => {
     try {
       const user: any = req.user || {};
-      const level = user.managementLevel ?? 10;
-      if (level === 99) return res.json([]);
+      if (isWhAdmin(req)) return res.json([]);
       const conditions: string[] = [];
       const params: any[] = [];
       const status = String(req.query.status || '');
@@ -851,7 +852,7 @@ export function warehouseDocsRoutes(db: any) {
         conditions.push('r.status = ?');
         params.push(status);
       }
-      if (level === 10) {
+      if (!managesWarehouse(req)) {
         conditions.push('(r.createdBy = ? OR r.assigneeId = ?)');
         params.push(user.id, user.id);
       }

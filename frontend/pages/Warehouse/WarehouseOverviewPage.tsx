@@ -33,8 +33,7 @@ function todayLabel(): string {
 export default function WarehouseOverviewPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const level = user?.managementLevel ?? 10;
-  const isManager = level !== 99 && level >= 20;
+  const isManager = (user?.permissions || []).includes('stock.manage');
   const [data, setData] = useState<StaffOverview | ManagerOverview | { role: 'none' } | null>(null);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [warehouseId, setWarehouseId] = useState('');

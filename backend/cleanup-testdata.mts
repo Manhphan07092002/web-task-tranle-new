@@ -82,7 +82,8 @@ try {
   const [delUsers]: any = await conn.query(`DELETE FROM users WHERE email LIKE '%@example.com'`);
   report.push(`users:${delUsers.affectedRows}`);
   const [delRoles]: any = await conn.query(
-    `DELETE FROM roles WHERE name LIKE 'DocsRole%' OR name LIKE 'Bare%' OR name LIKE 'PermRole%' OR name LIKE 'NoPermRole%'`
+    `DELETE FROM roles WHERE name LIKE 'DocsRole%' OR name LIKE 'Bare%' OR name LIKE 'PermRole%'
+       OR name LIKE 'NoPermRole%' OR name LIKE 'TmpRole%' OR name LIKE 'Lv20Role%'`
   );
   report.push(`roles:${delRoles.affectedRows}`);
   await conn.query('COMMIT');

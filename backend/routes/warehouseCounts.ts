@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
-import { requireWarehouseView } from '../middleware/warehouseAuth.js';
-import { canManageWarehouse } from '../middleware/warehouseAuth.js';
+import { canManageWarehouse, isWhAdmin, managesWarehouse, requireWarehouseView } from '../middleware/warehouseAuth.js';
 
 // Stock counts (B2, spec §19-20, §28): blind count + variance + adjustment.
 // Flow: planned -> in_progress -> reconciling -> done.
@@ -64,8 +63,7 @@ export function warehouseCountsRoutes(db: any) {
   router.get('/counts', async (req, res) => {
     try {
       const user: any = req.user || {};
-      const level = user.managementLevel ?? 10;
-      if (level === 99) return res.json([]);
+      if (isWhAdmin(req)) return res.json([]);
       const conditions: string[] = [];
       const params: any[] = [];
       const status = String(req.query.status || '');
@@ -73,7 +71,8 @@ export function warehouseCountsRoutes(db: any) {
         conditions.push('c.status = ?');
         params.push(status);
       }
-      if (level === 10) {
+      // Blind scope: only stock.manage holders see counts they did not create.
+      if (!managesWarehouse(req)) {
         conditions.push('(c.createdBy = ? OR c.assigneeId = ?)');
         params.push(user.id, user.id);
       }

@@ -1031,7 +1031,7 @@ describe('Warehouse alerts & policies', () => {
 
 describe('Warehouse reports', () => {
   it('Moves history filters/paginates; summary aggregates by day/type/warehouse', async () => {
-    const tp = await createTestUser(20, ['stock.manage']);
+    const tp = await createTestUser(20, ['stock.manage', 'stock.reports']);
     const staff = await createTestUser(10, ['stock.view']);
 
     // Staff forbidden from summary (TP-only)
@@ -1218,7 +1218,7 @@ describe('Warehouse transfer suggestions', () => {
 
 describe('Warehouse remaining pages (approvals/variances/adjustments/history)', () => {
   it('ADJUSTMENT docs listable but not creatable; variances aggregate; history filters', async () => {
-    const tp = await createTestUser(20, ['stock.manage']);
+    const tp = await createTestUser(20, ['stock.manage', 'stock.approve']);
     const staff = await createTestUser(10, ['stock.view']);
     const stamp = Date.now();
 
@@ -1302,6 +1302,34 @@ describe('Warehouse auth alignment (menu OR-rule)', () => {
     expect((await request(app).get('/api/warehouse/transfer-suggestions').use(auth)).status).toBe(200);
     expect((await request(app).post('/api/warehouse/products')
       .use(auth).send({ code: `PM-${Date.now()}`, name: 'Perm Product' })).status).toBe(200);
+  });
+
+  it('Level-20 user WITHOUT permissions is blocked — level alone grants nothing', async () => {
+    // managementLevel is frozen at its column default and no UI/API writes it,
+    // so access must come from the role's permissions, never from the level.
+    const userId = randomUUID();
+    const email = `lv20-${Date.now()}@example.com`;
+    await db.run(
+      `INSERT INTO users (id, name, email, password, role, managementLevel, primaryDepartmentId, department, avatar)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [userId, 'Level20 User', email, 'hashedpass', 'Employee', 20, 'dept-kho', 'Kho Van', '']
+    );
+    const roleName = `Lv20Role${Date.now()}`;
+    await db.run('INSERT INTO roles (id, name, description, color, permissions, isSystem) VALUES (?, ?, ?, ?, ?, ?)',
+      [randomUUID(), roleName, '', '#000', JSON.stringify(['stock.view']), 0]);
+    await db.run('UPDATE users SET role = ? WHERE id = ?', [roleName, userId]);
+    const token = jwt.sign({ sub: userId, tokenVersion: 0 }, JWT_SECRET, { expiresIn: '1h' });
+    const auth = (r: any) => r.set('Authorization', `Bearer ${token}`);
+
+    expect((await request(app).get('/api/warehouse/alerts').use(auth)).status).toBe(403);
+    expect((await request(app).get('/api/warehouse/count-variances').use(auth)).status).toBe(403);
+    expect((await request(app).get('/api/warehouse/report/summary').use(auth)).status).toBe(403);
+    expect((await request(app).get('/api/warehouse/transfer-suggestions').use(auth)).status).toBe(403);
+    // ...and cannot write master data
+    expect((await request(app).post('/api/warehouse/products')
+      .use(auth).send({ code: `PM-${Date.now()}`, name: 'Denied' })).status).toBe(403);
+    // ...but scoped reads still work
+    expect((await request(app).get('/api/warehouse/dashboard/overview').use(auth)).status).toBe(200);
   });
 
   it('Level-10 user without permissions is still blocked from manager views', async () => {

@@ -26,8 +26,10 @@ export interface NavItem {
   path: string;
   /** Visible when user has ANY of these permissions. */
   permission: string[] | null;
-  /** Visible when managementLevel >= minLevel (except Admin 99). OR-combined with permission. */
-  minLevel?: number;
+  // NOTE: minLevel was removed deliberately. managementLevel defaults to 10 and
+  // no UI/API writes it, so gating a menu on level made access assignable only
+  // through migration seed. Visibility is permission-driven; `maxLevel` remains
+  // for staff-only items.
   /** Visible when managementLevel <= maxLevel. AND-combined (e.g. staff-only items). */
   maxLevel?: number;
   children?: NavChild[];

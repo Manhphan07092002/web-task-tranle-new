@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
-import { canManageWarehouse } from '../middleware/warehouseAuth.js';
+import { canManageWarehouse, isWhAdmin } from '../middleware/warehouseAuth.js';
 
 // Product bundles (C1, spec §23).
 // VIRTUAL_BUNDLE: config only; buildable = MIN(FLOOR(available / qty_per_bundle)).
@@ -54,8 +54,7 @@ export function warehouseBundlesRoutes(db: any) {
   // ============================================================
   router.get('/bundles', async (req, res) => {
     try {
-      const level = req.user?.managementLevel ?? 10;
-      if (level === 99) return res.json([]);
+      if (isWhAdmin(req)) return res.json([]);
       const warehouseId = String(req.query.warehouseId || '') || undefined;
       const rows: any = await db.all(
         `SELECT b.*, p.code AS kitCode, p.name AS kitName,
@@ -85,8 +84,7 @@ export function warehouseBundlesRoutes(db: any) {
   // GET /api/warehouse/bundles/:id - detail
   router.get('/bundles/:id', async (req, res) => {
     try {
-      const level = req.user?.managementLevel ?? 10;
-      if (level === 99) return res.status(403).json({ error: 'Forbidden' });
+      if (isWhAdmin(req)) return res.status(403).json({ error: 'Forbidden' });
       const bundle = await db.get('SELECT * FROM bundles WHERE id = ?', [req.params.id]);
       if (!bundle) return res.status(404).json({ error: 'Bundle not found' });
       const warehouseId = String(req.query.warehouseId || '') || undefined;

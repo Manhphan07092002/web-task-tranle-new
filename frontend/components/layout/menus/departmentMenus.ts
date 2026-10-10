@@ -26,18 +26,18 @@ const WAREHOUSE_GROUPS: NavGroup[] = [
       { id: 'wh_receipt', label: 'Nhập kho', icon: ArrowDownToLine, path: '/warehouse/receipts', permission: ['stock.receive'] },
       { id: 'wh_issue', label: 'Xuất kho', icon: ArrowUpFromLine, path: '/warehouse/issues', permission: ['stock.issue'] },
       { id: 'wh_transfer', label: 'Điều chuyển', icon: ArrowLeftRight, path: '/warehouse/transfers', permission: ['stock.transfer'] },
-      { id: 'wh_reserve', label: 'Giữ hàng / Phân bổ', icon: BookmarkPlus, path: '/warehouse/reservations', permission: ['stock.manage'], minLevel: 20 },
+      { id: 'wh_reserve', label: 'Giữ hàng / Phân bổ', icon: BookmarkPlus, path: '/warehouse/reservations', permission: ['stock.manage'] },
       { id: 'wh_count', label: 'Kiểm kê', icon: ClipboardCheck, path: '/warehouse/counts', permission: ['stock.count'] },
     ],
   },
   {
     label: 'Hàng hóa',
     items: [
-      { id: 'wh_products', label: 'Danh mục hàng hóa', icon: FileText, path: '/warehouse/products', permission: ['stock.manage'], minLevel: 20 },
+      { id: 'wh_products', label: 'Danh mục hàng hóa', icon: FileText, path: '/warehouse/products', permission: ['stock.manage'] },
       { id: 'wh_serials', label: 'Serial / Lô', icon: Search, path: '/warehouse/serials', permission: ['stock.view'] },
       { id: 'wh_scan', label: 'Quét mã', icon: ScanLine, path: '/warehouse/scan', permission: ['stock.view'] },
       { id: 'wh_combos', label: 'Combo / Bộ sản phẩm', icon: Package, path: '/warehouse/bundles', permission: ['stock.view'] },
-      { id: 'wh_locations', label: 'Kho & Vị trí', icon: Factory, path: '/warehouse/locations', permission: ['stock.manage'], minLevel: 20 },
+      { id: 'wh_locations', label: 'Kho & Vị trí', icon: Factory, path: '/warehouse/locations', permission: ['stock.manage'] },
     ],
   },
   {
@@ -50,28 +50,28 @@ const WAREHOUSE_GROUPS: NavGroup[] = [
   {
     label: 'Kiểm soát',
     items: [
-      { id: 'wh_alerts', label: 'Cảnh báo tồn kho', icon: TriangleAlert, path: '/warehouse/alerts', permission: ['stock.manage', 'stock.reports'], minLevel: 20 },
-      { id: 'wh_exceptions', label: 'Hàng ngoại lệ', icon: ClipboardCheck, path: '/warehouse/alerts?tab=exceptions', permission: ['stock.manage'], minLevel: 20 },
-      { id: 'wh_slow', label: 'Tồn lâu', icon: History, path: '/warehouse/alerts?tab=slow', permission: ['stock.manage', 'stock.reports'], minLevel: 20 },
+      { id: 'wh_alerts', label: 'Cảnh báo tồn kho', icon: TriangleAlert, path: '/warehouse/alerts', permission: ['stock.manage', 'stock.reports'] },
+      { id: 'wh_exceptions', label: 'Hàng ngoại lệ', icon: ClipboardCheck, path: '/warehouse/alerts?tab=exceptions', permission: ['stock.manage'] },
+      { id: 'wh_slow', label: 'Tồn lâu', icon: History, path: '/warehouse/alerts?tab=slow', permission: ['stock.manage', 'stock.reports'] },
     ],
   },
   {
     label: 'Phê duyệt',
     items: [
-      { id: 'wh_approvals', label: 'Chờ duyệt', icon: CheckSquare, path: '/warehouse/approvals', permission: ['stock.approve'], minLevel: 20 },
-      { id: 'wh_variances', label: 'Chênh lệch kiểm kê', icon: FileText, path: '/warehouse/variances', permission: ['stock.approve'], minLevel: 20 },
-      { id: 'wh_adjust', label: 'Điều chỉnh tồn', icon: SlidersHorizontal, path: '/warehouse/adjustments', permission: ['stock.adjust'], minLevel: 20 },
+      { id: 'wh_approvals', label: 'Chờ duyệt', icon: CheckSquare, path: '/warehouse/approvals', permission: ['stock.approve'] },
+      { id: 'wh_variances', label: 'Chênh lệch kiểm kê', icon: FileText, path: '/warehouse/variances', permission: ['stock.approve'] },
+      { id: 'wh_adjust', label: 'Điều chỉnh tồn', icon: SlidersHorizontal, path: '/warehouse/adjustments', permission: ['stock.adjust'] },
     ],
   },
   {
     label: 'Báo cáo',
     items: [
-      { id: 'wh_rep_inout', label: 'Nhập – Xuất – Tồn', icon: BarChart3, path: '/warehouse/reports?tab=overview', permission: ['stock.reports'], minLevel: 20 },
-      { id: 'wh_rep_wh', label: 'Tồn theo kho', icon: BarChart3, path: '/warehouse/reports?tab=by-warehouse', permission: ['stock.reports'], minLevel: 20 },
-      { id: 'wh_rep_minmax', label: 'Tồn Min / Max', icon: BarChart3, path: '/warehouse/alerts?tab=policies', permission: ['stock.reports'], minLevel: 20 },
-      { id: 'wh_rep_transit', label: 'Đang vận chuyển', icon: Truck, path: '/warehouse/reports?tab=transit', permission: ['stock.reports'], minLevel: 20 },
-      { id: 'wh_rep_history', label: 'Lịch sử hàng hóa', icon: History, path: '/warehouse/reports?tab=history', permission: ['stock.reports'], minLevel: 20 },
-      { id: 'wh_rep_misa', label: 'Đối soát MISA', icon: FileText, path: stub('warehouse', 'wh_rep_misa'), permission: ['misa.reconcile'], minLevel: 20 },
+      { id: 'wh_rep_inout', label: 'Nhập – Xuất – Tồn', icon: BarChart3, path: '/warehouse/reports?tab=overview', permission: ['stock.reports'] },
+      { id: 'wh_rep_wh', label: 'Tồn theo kho', icon: BarChart3, path: '/warehouse/reports?tab=by-warehouse', permission: ['stock.reports'] },
+      { id: 'wh_rep_minmax', label: 'Tồn Min / Max', icon: BarChart3, path: '/warehouse/alerts?tab=policies', permission: ['stock.reports'] },
+      { id: 'wh_rep_transit', label: 'Đang vận chuyển', icon: Truck, path: '/warehouse/reports?tab=transit', permission: ['stock.reports'] },
+      { id: 'wh_rep_history', label: 'Lịch sử hàng hóa', icon: History, path: '/warehouse/reports?tab=history', permission: ['stock.reports'] },
+      { id: 'wh_rep_misa', label: 'Đối soát MISA', icon: FileText, path: stub('warehouse', 'wh_rep_misa'), permission: ['misa.reconcile'] },
     ],
   },
 ];

@@ -89,12 +89,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ isMobileMenuOpen, setIsMobileM
   const perms = user?.permissions || [];
   const hasPerm = (p: string) => perms.includes(p);
 
-  const canSeeItem = (permission: string[] | null, minLevel?: number, maxLevel?: number) => {
+  // Menu visibility is permission-driven. managementLevel is NOT consulted:
+  // that column defaults to 10 and nothing writes it, so a level gate would
+  // make menus assignable only through migration seed. `maxLevel` is the one
+  // level-based exception and marks staff-only items (e.g. NV's "Việc cần xử lý").
+  const canSeeItem = (permission: string[] | null, maxLevel?: number) => {
     if (maxLevel !== undefined && level > maxLevel) return false;
-    if (permission && permission.some(p => hasPerm(p))) return true;
-    if (minLevel !== undefined && level !== 99 && level >= minLevel) return true;
-    if (!permission && minLevel === undefined) return true;
-    return false;
+    if (permission) return permission.some(p => hasPerm(p));
+    return true;
   };
 
   return (
@@ -138,7 +140,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isMobileMenuOpen, setIsMobileM
           {/* Nav Groups */}
           <nav className="flex-1 px-3 py-2 overflow-y-auto space-y-4">
             {NAV_GROUPS.map(group => {
-              const visibleItems = group.items.filter(item => canSeeItem(item.permission, item.minLevel, item.maxLevel));
+              const visibleItems = group.items.filter(item => canSeeItem(item.permission, item.maxLevel));
               if (visibleItems.length === 0) return null;
               return (
                 <div key={group.label}>

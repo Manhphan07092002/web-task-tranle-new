@@ -23,8 +23,7 @@ const filterCls = 'px-3 py-2 border border-gray-200 dark:border-slate-600 rounde
 
 export default function StockSerialsPage() {
   const { user } = useAuth();
-  const level = user?.managementLevel ?? 10;
-  const isManager = level !== 99 && level >= 20;
+  const isManager = (user?.permissions || []).includes('stock.manage');
   const [tab, setTab] = useState<'serials' | 'lots'>('serials');
   const [error, setError] = useState<string | null>(null);
 

@@ -41,8 +41,7 @@ const todayStr = () => new Date().toISOString().slice(0, 10);
 export default function StockTransfersPage() {
   const { user } = useAuth();
   const { users } = useData();
-  const level = user?.managementLevel ?? 10;
-  const isManager = level !== 99 && (level >= 20 || (user?.permissions || []).includes('stock.manage'));
+  const isManager = (user?.permissions || []).includes('stock.manage');
   const [docs, setDocs] = useState<StockDocument[]>([]);
   const [tab, setTab] = useState('');
   const [loading, setLoading] = useState(true);

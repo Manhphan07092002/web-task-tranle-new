@@ -36,8 +36,7 @@ const STATUS_META: Record<string, { label: string; badge: string }> = {
 export default function StockReceiptsPage() {
   const { user } = useAuth();
   const { users } = useData();
-  const level = user?.managementLevel ?? 10;
-  const isManager = level !== 99 && (level >= 20 || (user?.permissions || []).includes('stock.manage'));
+  const isManager = (user?.permissions || []).includes('stock.manage');
   const [docs, setDocs] = useState<StockDocument[]>([]);
   const [tab, setTab] = useState('');
   const [loading, setLoading] = useState(true);

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
-import { canManageWarehouse } from '../middleware/warehouseAuth.js';
+import { canManageWarehouse, isWhAdmin, managesWarehouse, requireWarehouseView } from '../middleware/warehouseAuth.js';
 
 // Serial / Lot tracking (B1, spec §22).
 // - Register: on RECEIPT lines (handler), sets IN_STOCK + warranty from product.
@@ -28,8 +28,7 @@ export function warehouseSerialsRoutes(db: any) {
   // ============================================================
   router.get('/lots', async (req, res) => {
     try {
-      const level = req.user?.managementLevel ?? 10;
-      if (level === 99) return res.json([]);
+      if (isWhAdmin(req)) return res.json([]);
       const conditions: string[] = [];
       const params: any[] = [];
       const search = String(req.query.search || '').trim();
@@ -62,8 +61,7 @@ export function warehouseSerialsRoutes(db: any) {
   router.post('/lots', async (req, res) => {
     try {
       const user = (req.user || {}) as any;
-      const level = user.managementLevel ?? 10;
-      if (level === 99 || level < 10) return res.status(403).json({ error: 'Forbidden' });
+      if (isWhAdmin(req)) return res.status(403).json({ error: 'Forbidden' });
       const { productId, lotCode, expiryDate, supplierName, notes } = req.body;
       if (!productId || !lotCode || !String(lotCode).trim()) {
         return res.status(400).json({ error: 'productId and lotCode are required' });
@@ -92,8 +90,7 @@ export function warehouseSerialsRoutes(db: any) {
   router.patch('/lots/:id', async (req, res) => {
     try {
       const user = (req.user || {}) as any;
-      const level = user.managementLevel ?? 10;
-      if (level === 99 || level < 10) return res.status(403).json({ error: 'Forbidden' });
+      if (isWhAdmin(req)) return res.status(403).json({ error: 'Forbidden' });
       const row = await db.get('SELECT * FROM lots WHERE id = ?', [req.params.id]);
       if (!row) return res.status(404).json({ error: 'Lot not found' });
       const { expiryDate, supplierName, notes } = req.body;
@@ -138,8 +135,7 @@ export function warehouseSerialsRoutes(db: any) {
   // ============================================================
   router.get('/serials', async (req, res) => {
     try {
-      const level = req.user?.managementLevel ?? 10;
-      if (level === 99) return res.json([]);
+      if (isWhAdmin(req)) return res.json([]);
       const conditions: string[] = [];
       const params: any[] = [];
       const search = String(req.query.search || '').trim();
@@ -186,8 +182,7 @@ export function warehouseSerialsRoutes(db: any) {
 
   router.get('/serials/:serialNo', async (req, res) => {
     try {
-      const level = req.user?.managementLevel ?? 10;
-      if (level === 99) return res.status(403).json({ error: 'Forbidden' });
+      if (isWhAdmin(req)) return res.status(403).json({ error: 'Forbidden' });
       const serialNo = String(req.params.serialNo || '');
       const row: any = await db.get(
         `SELECT s.*, p.name AS productName, p.model, p.brand, p.warrantyMonths,

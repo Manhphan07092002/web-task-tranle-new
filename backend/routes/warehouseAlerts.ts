@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
-import { canManageWarehouse, requireWarehouseView } from '../middleware/warehouseAuth.js';
+import { canManageWarehouse, isWhAdmin, requireWarehouseView } from '../middleware/warehouseAuth.js';
 
 // Alerts + Min/Max policies (B3, spec §26-27). Management views share the
 // sidebar OR-rule: level 20+ (incl. Director) or matching permission.
@@ -231,8 +231,7 @@ export function warehouseAlertsRoutes(db: any) {
   router.get('/moves', async (req, res) => {
     try {
       const user: any = req.user || {};
-      const level = user.managementLevel ?? 10;
-      if (level === 99) return res.json({ rows: [], total: 0, page: 1, pageSize: 20 });
+      if (isWhAdmin(req)) return res.json({ rows: [], total: 0, page: 1, pageSize: 20 });
       const conditions: string[] = [];
       const params: any[] = [];
       const productId = String(req.query.productId || '');

@@ -1,12 +1,12 @@
 import { Router } from 'express';
+import { isWhAdmin, managesWarehouse } from '../middleware/warehouseAuth.js';
 
 // Central stock inquiry (A6, spec §9-§12): ONE page, tabs Tổng hợp /
 // Theo kho-vị trí (+ Serial-Lô / Combo land in Phase B/C).
 // UI always prefers Available = onHand - reserved.
 
-function stockScope(req: any): { level: number; restricted: boolean } {
-  const level = req.user?.managementLevel ?? 10;
-  return { level, restricted: level === 99 };
+function stockScope(req: any): { restricted: boolean } {
+  return { restricted: isWhAdmin(req) };
 }
 
 // Incoming = ordered but not yet received on open receipt docs.
@@ -33,7 +33,7 @@ export function warehouseStockRoutes(db: any) {
   // ============================================================
   router.get('/stock', async (req, res) => {
     try {
-      const { level, restricted } = stockScope(req);
+      const { restricted } = stockScope(req);
       if (restricted) return res.json({ rows: [], total: 0, page: 1, pageSize: 20 });
 
       const view = String(req.query.view || 'summary');
@@ -179,7 +179,7 @@ export function warehouseStockRoutes(db: any) {
   // ============================================================
   router.get('/stock/:productId', async (req, res) => {
     try {
-      const { level, restricted } = stockScope(req);
+      const { restricted } = stockScope(req);
       if (restricted) return res.status(403).json({ error: 'Forbidden' });
       const product = await db.get('SELECT * FROM stock_products WHERE id = ?', [req.params.productId]);
       if (!product) return res.status(404).json({ error: 'Product not found' });
@@ -219,7 +219,7 @@ export function warehouseStockRoutes(db: any) {
         },
       };
       // TP extras: active reservations + incoming docs
-      if (level !== 99 && level >= 20) {
+      if (!isWhAdmin(req) && managesWarehouse(req)) {
         const reservations: any = await db.all(
           `SELECT r.id, r.qty, r.qtyConsumed, r.status, r.sourceType, r.sourceId,
                   w.code AS warehouseCode, u.name AS assigneeName, r.expiresAt
@@ -259,12 +259,13 @@ export function warehouseStockRoutes(db: any) {
   router.get('/dashboard/overview', async (req, res) => {
     try {
       const user: any = req.user || {};
-      const level = user.managementLevel ?? 10;
       const userId = user.id;
-      if (level === 99 || !userId) return res.json({ role: 'none' });
+      if (isWhAdmin(req) || !userId) return res.json({ role: 'none' });
       const today = new Date().toISOString().slice(0, 10);
 
-      if (level === 10) {
+      // Permission-driven scope: stock.manage = department manager view,
+      // otherwise personal ("Nhân viên") view.
+      if (!managesWarehouse(req)) {
         const own = '(d.requesterId = ? OR d.assigneeId = ? OR d.receiverId = ? OR d.createdBy = ?)';
         const ownParams = [userId, userId, userId, userId];
         const countBy = async (type: string, statuses: string[]) => {

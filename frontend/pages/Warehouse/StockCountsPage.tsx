@@ -41,8 +41,7 @@ const LINE_STATUS_META: Record<string, { label: string; badge: string }> = {
 export default function StockCountsPage() {
   const { user } = useAuth();
   const { users } = useData();
-  const level = user?.managementLevel ?? 10;
-  const isManager = level !== 99 && level >= 20;
+  const isManager = (user?.permissions || []).includes('stock.manage');
   const [counts, setCounts] = useState<StockCount[]>([]);
   const [tab, setTab] = useState('');
   const [loading, setLoading] = useState(true);

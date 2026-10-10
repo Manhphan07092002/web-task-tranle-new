@@ -606,10 +606,10 @@ export default function AdminDashboard() {
               {stats.roleBreakdown.map(r => {
                 const percent = Math.round((r.count / stats.totalUsers) * 100);
                 const permissions: Record<string, string> = {
-                  Admin: 'Quản trị viên: Toàn quyền truy cập, cài đặt hệ thống',
-                  Director: 'Giám đốc: Xem tổng quan, duyệt báo cáo, chỉ đạo',
-                  Manager: 'Quản lý: Điều phối nhân sự, giao việc phòng ban',
-                  Employee: 'Nhân viên: Xử lý công việc được giao',
+                  Admin: 'Quản trị viên: Toàn quyền truy cập, cài đặt hệ thống, toàn quyền kho',
+                  Director: 'Giám đốc: Xem tổng quan, duyệt báo cáo, giám sát kho và đối soát MISA',
+                  Manager: 'Quản lý: Điều phối nhân sự, giao việc phòng ban, quản lý vận hành kho',
+                  Employee: 'Nhân viên: Xử lý công việc được giao, nhận/xuất/điều chuyển và kiểm kê kho',
                 };
                 return (
                   <tr key={r.role} className="hover:bg-brand-50/30 transition-colors group">

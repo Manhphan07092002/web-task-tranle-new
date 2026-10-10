@@ -17,8 +17,7 @@ const inputCls = 'px-3 py-2 border border-gray-200 dark:border-slate-600 rounded
 
 export default function StockBundlesPage() {
   const { user } = useAuth();
-  const level = user?.managementLevel ?? 10;
-  const isManager = level !== 99 && (level >= 20 || (user?.permissions || []).includes('stock.manage'));
+  const isManager = (user?.permissions || []).includes('stock.manage');
   const [bundles, setBundles] = useState<Bundle[]>([]);
   const [warehouseId, setWarehouseId] = useState('');
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
