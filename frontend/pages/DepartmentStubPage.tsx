@@ -5,14 +5,15 @@ import { DEPARTMENT_MENUS } from '../components/layout/menus/departmentMenus';
 import { DEPT_LABELS, type DeptKey } from '../components/layout/menus/menuTypes';
 
 // Placeholder for department modules that are planned but not built yet.
-// One generic route (/dept/:key) serves all non-warehouse departments.
+// One generic route (/dept/:key) serves all departments without real pages yet.
 export default function DepartmentStubPage() {
   const { key } = useParams<{ key: string }>();
   const [searchParams] = useSearchParams();
   const deptKey = (key || '').toUpperCase() as DeptKey;
-  const group = DEPARTMENT_MENUS[deptKey];
+  const entry = DEPARTMENT_MENUS[deptKey];
+  const groups = entry ? (Array.isArray(entry) ? entry : [entry]) : [];
   const moduleId = searchParams.get('m');
-  const moduleLabel = group?.items.find((i) => i.id === moduleId)?.label;
+  const moduleLabel = groups.flatMap((g) => g.items).find((i) => i.id === moduleId)?.label;
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">

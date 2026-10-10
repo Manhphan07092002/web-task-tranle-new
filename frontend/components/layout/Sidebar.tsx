@@ -23,10 +23,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ isMobileMenuOpen, setIsMobileM
   const level = user?.managementLevel ?? 10;
   // Department -> menu config -> render. Only ONE department module renders.
   const deptKey = resolveDeptKey(user, departments || []);
-  const deptGroup: NavGroup | null = deptKey ? (DEPARTMENT_MENUS[deptKey] ?? null) : null;
-  const NAV_GROUPS: NavGroup[] = deptGroup
-    ? [...COMMON_TOP_GROUPS, deptGroup, SYSTEM_GROUP]
-    : [...COMMON_TOP_GROUPS, SYSTEM_GROUP];
+  const deptGroups: NavGroup[] = (() => {
+    if (!deptKey) return [];
+    const entry = DEPARTMENT_MENUS[deptKey];
+    if (!entry) return [];
+    return Array.isArray(entry) ? entry : [entry];
+  })();
+  const NAV_GROUPS: NavGroup[] = [...COMMON_TOP_GROUPS, ...deptGroups, SYSTEM_GROUP];
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const { t } = useLanguage();
   const [unreadMailCount, setUnreadMailCount] = React.useState(0);
@@ -86,7 +89,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ isMobileMenuOpen, setIsMobileM
   const perms = user?.permissions || [];
   const hasPerm = (p: string) => perms.includes(p);
 
-  const canSeeItem = (permission: string[] | null, minLevel?: number) => {
+  const canSeeItem = (permission: string[] | null, minLevel?: number, maxLevel?: number) => {
+    if (maxLevel !== undefined && level > maxLevel) return false;
     if (permission && permission.some(p => hasPerm(p))) return true;
     if (minLevel !== undefined && level !== 99 && level >= minLevel) return true;
     if (!permission && minLevel === undefined) return true;
@@ -134,7 +138,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isMobileMenuOpen, setIsMobileM
           {/* Nav Groups */}
           <nav className="flex-1 px-3 py-2 overflow-y-auto space-y-4">
             {NAV_GROUPS.map(group => {
-              const visibleItems = group.items.filter(item => canSeeItem(item.permission, item.minLevel));
+              const visibleItems = group.items.filter(item => canSeeItem(item.permission, item.minLevel, item.maxLevel));
               if (visibleItems.length === 0) return null;
               return (
                 <div key={group.label}>

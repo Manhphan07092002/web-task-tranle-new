@@ -16,6 +16,25 @@ import ContractsPage from './pages/Contracts/index';
 import RevenuePage from './pages/Revenue/index';
 import ProductsPage from './pages/Products/index';
 import DepartmentStubPage from './pages/DepartmentStubPage';
+import StockProductsPage from './pages/Warehouse/StockProductsPage';
+import StockWarehousesPage from './pages/Warehouse/StockWarehousesPage';
+import StockReceiptsPage from './pages/Warehouse/StockReceiptsPage';
+import StockIssuesPage from './pages/Warehouse/StockIssuesPage';
+import StockTransfersPage from './pages/Warehouse/StockTransfersPage';
+import StockReservationsPage from './pages/Warehouse/StockReservationsPage';
+import StockMyTasksPage from './pages/Warehouse/StockMyTasksPage';
+import StockMyHistoryPage from './pages/Warehouse/StockMyHistoryPage';
+import StockApprovalsPage from './pages/Warehouse/StockApprovalsPage';
+import StockVariancesPage from './pages/Warehouse/StockVariancesPage';
+import StockAdjustmentsPage from './pages/Warehouse/StockAdjustmentsPage';
+import StockScanPage from './pages/Warehouse/StockScanPage';
+import StockBundlesPage from './pages/Warehouse/StockBundlesPage';
+import StockReportsPage from './pages/Warehouse/StockReportsPage';
+import StockAlertsPage from './pages/Warehouse/StockAlertsPage';
+import StockCountsPage from './pages/Warehouse/StockCountsPage';
+import StockSerialsPage from './pages/Warehouse/StockSerialsPage';
+import StockInventoryPage from './pages/Warehouse/StockInventoryPage';
+import WarehouseOverviewPage from './pages/Warehouse/WarehouseOverviewPage';
 import ForgotPasswordPage from './pages/ForgotPassword/index';
 import ResetPasswordPage from './pages/ResetPassword/index';
 import NotificationsPage from './pages/Notifications/index';
@@ -436,6 +455,25 @@ export default function TranLeTaskApp() {
               <Route path="/contracts" element={<ContractsPage />} />
               <Route path="/products" element={<ProductsPage />} />
               <Route path="/dept/:key" element={<DepartmentStubPage />} />
+              <Route path="/warehouse/products" element={<StockProductsPage />} />
+              <Route path="/warehouse/locations" element={<StockWarehousesPage />} />
+              <Route path="/warehouse/receipts" element={<StockReceiptsPage />} />
+              <Route path="/warehouse/overview" element={<WarehouseOverviewPage />} />
+              <Route path="/warehouse/issues" element={<StockIssuesPage />} />
+              <Route path="/warehouse/stock" element={<StockInventoryPage />} />
+              <Route path="/warehouse/transfers" element={<StockTransfersPage />} />
+              <Route path="/warehouse/reservations" element={<StockReservationsPage />} />
+              <Route path="/warehouse/my-tasks" element={<StockMyTasksPage />} />
+              <Route path="/warehouse/my-history" element={<StockMyHistoryPage />} />
+              <Route path="/warehouse/approvals" element={<StockApprovalsPage />} />
+              <Route path="/warehouse/variances" element={<StockVariancesPage />} />
+              <Route path="/warehouse/adjustments" element={<StockAdjustmentsPage />} />
+              <Route path="/warehouse/scan" element={<StockScanPage />} />
+              <Route path="/warehouse/bundles" element={<StockBundlesPage />} />
+              <Route path="/warehouse/reports" element={<StockReportsPage />} />
+              <Route path="/warehouse/alerts" element={<StockAlertsPage />} />
+              <Route path="/warehouse/counts" element={<StockCountsPage />} />
+              <Route path="/warehouse/serials" element={<StockSerialsPage />} />
               <Route path="/revenue" element={<RevenuePage />} />
               <Route path="/notifications" element={<NotificationsPage />} />
               <Route path="/documents" element={<DocumentsPage />} />

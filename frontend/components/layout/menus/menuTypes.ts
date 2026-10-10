@@ -28,6 +28,8 @@ export interface NavItem {
   permission: string[] | null;
   /** Visible when managementLevel >= minLevel (except Admin 99). OR-combined with permission. */
   minLevel?: number;
+  /** Visible when managementLevel <= maxLevel. AND-combined (e.g. staff-only items). */
+  maxLevel?: number;
   children?: NavChild[];
 }
 
