@@ -16,6 +16,19 @@ import ContractsPage from './pages/Contracts/index';
 import RevenuePage from './pages/Revenue/index';
 import ProductsPage from './pages/Products/index';
 import WarehousePage from './pages/Warehouse/index';
+import WarehouseDashboardPage from './pages/Warehouse/dashboard/WarehouseDashboardPage';
+import WarehouseLocationsPage from './pages/Warehouse/WarehouseLocationsPage';
+import WarehousePickListPage from './pages/Warehouse/WarehousePickListPage';
+import WarehouseAlertsPage from './pages/Warehouse/WarehouseAlertsPage';
+import WarehouseReportsPage from './pages/Warehouse/WarehouseReportsPage';
+import WarehouseCountPeriodsPage from './pages/Warehouse/WarehouseCountPeriodsPage';
+import WarehouseVariancePage from './pages/Warehouse/WarehouseVariancePage';
+import DepartmentStubPage from './pages/DepartmentStubPage';
+import { resolveDeptKey } from './components/layout/menus/resolveDepartment';
+import WarehouseStockInquiryPage from './pages/Warehouse/WarehouseStockInquiryPage';
+import WarehouseInboundPage from './pages/Warehouse/WarehouseInboundPage';
+import WarehouseDocCreatePage from './pages/Warehouse/WarehouseDocCreatePage';
+import WarehouseTransfersPage from './pages/Warehouse/WarehouseTransfersPage';
 import ForgotPasswordPage from './pages/ForgotPassword/index';
 import ResetPasswordPage from './pages/ResetPassword/index';
 import NotificationsPage from './pages/Notifications/index';
@@ -53,7 +66,7 @@ const getNextDate = (dateStr: string, type: RecurrenceType): string => {
 export default function TranLeTaskApp() {
   const { t } = useLanguage();
   const { user, isLoading: isAuthLoading } = useAuth();
-  const { tasks, notes, users, reports, contracts, isLoading: isDataLoading, saveTask, deleteTask, saveNote, deleteNote, saveUser, deleteUser } = useData();
+  const { tasks, notes, users, reports, contracts, departments, isLoading: isDataLoading, saveTask, deleteTask, saveNote, deleteNote, saveUser, deleteUser } = useData();
   const { setNotes, pushLocalNotification } = useNotifications();
 
   useEffect(() => {
@@ -131,6 +144,14 @@ export default function TranLeTaskApp() {
       return false;
     });
   }, [tasks, user]);
+
+  // Department-driven landing: warehouse members see the Warehouse dashboard
+  // at `/` instead of the generic dashboard. Resolved by department code,
+  // never by hard-coded job title.
+  const isWarehouseUser = useMemo(
+    () => resolveDeptKey(user, departments || []) === 'WAREHOUSE',
+    [user, departments]
+  );
 
   const rawTodaysTasks = useMemo(() => {
     const today = new Date().toISOString().split('T')[0];
@@ -366,13 +387,17 @@ export default function TranLeTaskApp() {
           <div className="w-full flex-1 space-y-8">
             <Routes>
               <Route path="/" element={
+                isWarehouseUser ? (
+                  <WarehouseDashboardPage />
+                ) : (
                  <DashboardPage
                  roleBasedTasks={roleBasedTasks} filteredTasks={filteredTasks} filteredNotes={filteredNotes} 
                  notes={notes} users={users} user={user} reports={reports} contracts={contracts} searchQuery={searchQuery} 
                  openCreateModal={openCreateModal} openEditModal={openEditModal} 
                  handleStatusToggle={handleStatusToggle} handleDeleteTask={handleDeleteTask} 
                  checkPermission={checkPermission}
-               />
+                />
+                )
               } />
               
               <Route path="/tasks" element={
@@ -435,7 +460,22 @@ export default function TranLeTaskApp() {
               <Route path="/project-reports" element={<ProjectReportsPage />} />
               <Route path="/contracts" element={<ContractsPage />} />
               <Route path="/products" element={<ProductsPage />} />
+              <Route path="/warehouse/dashboard" element={<WarehouseDashboardPage />} />
               <Route path="/warehouse" element={<WarehousePage />} />
+              <Route path="/warehouse/inbound" element={<WarehouseInboundPage />} />
+              <Route path="/warehouse/inbound/new" element={<WarehouseDocCreatePage presetType="IN" title="Phiếu nhập kho mới" subtitle="Tạo phiếu nhập hàng mới vào kho." successTo="/warehouse/inbound" />} />
+              <Route path="/warehouse/outbound/new" element={<WarehouseDocCreatePage presetType="OUT" title="Phiếu xuất kho thi công" subtitle="Tạo phiếu xuất hàng cho công trình thi công." successTo="/warehouse/inbound" toLocationLabel="Công trình / vị trí nhận" />} />
+              <Route path="/warehouse/transfers" element={<WarehouseTransfersPage scope="all" />} />
+              <Route path="/warehouse/transfers/internal" element={<WarehouseTransfersPage scope="internal" />} />
+              <Route path="/warehouse/transfers/site" element={<WarehouseTransfersPage scope="site" />} />
+              <Route path="/warehouse/locations" element={<WarehouseLocationsPage />} />
+              <Route path="/warehouse/pick-list" element={<WarehousePickListPage />} />
+              <Route path="/warehouse/alerts" element={<WarehouseAlertsPage />} />
+              <Route path="/warehouse/count-period" element={<WarehouseCountPeriodsPage />} />
+              <Route path="/warehouse/count-report" element={<WarehouseVariancePage />} />
+              <Route path="/warehouse/inquiry" element={<WarehouseStockInquiryPage />} />
+              <Route path="/warehouse/reports" element={<WarehouseReportsPage />} />
+              <Route path="/dept/:key" element={<DepartmentStubPage />} />
               <Route path="/revenue" element={<RevenuePage />} />
               <Route path="/notifications" element={<NotificationsPage />} />
               <Route path="/documents" element={<DocumentsPage />} />

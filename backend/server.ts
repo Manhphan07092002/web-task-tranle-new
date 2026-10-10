@@ -134,7 +134,10 @@ async function startServer() {
 
   // Database: MySQL (duy nhất)
   const db = await initDbMysql();
-  app.use((_req, _res, next) => db.runWithRequestContext(next));
+  app.use((req, _res, next) => {
+    (req as any).db = db; // RBAC middleware (requireDepartmentScope/requireApprovalAuthority) reads req.db
+    db.runWithRequestContext(next);
+  });
   const requireAuth = createRequireAuth(db);
   initSocket(httpServer, db);
 

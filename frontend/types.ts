@@ -146,6 +146,7 @@ export interface Role {
 export interface Department {
   id: string;
   name: string;
+  code?: string;
   description?: string;
   color: string;
   managerId?: string;

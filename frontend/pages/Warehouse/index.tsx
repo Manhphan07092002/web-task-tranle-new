@@ -1,17 +1,79 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Package, ClipboardList, Check, X } from 'lucide-react';
 import { Card } from '../../components/UI';
 import { useRBAC } from '../../hooks/useRBAC';
+import { useData } from '../../contexts/DataContext';
 import * as warehouseService from '../../services/warehouseService';
 import type { InventoryItem, WarehouseTransaction } from '../../services/warehouseService';
+import { WarehouseDocumentBadge } from './dashboard/WarehouseDocumentBadge';
+import { WarehouseStatusBadge } from './dashboard/WarehouseStatusBadge';
+import { formatDate } from './dashboard/warehouseLabels';
+
+const TX_TABS: { value: string; label: string }[] = [
+  { value: 'ALL', label: 'Tất cả' },
+  { value: 'IN', label: 'Nhập kho' },
+  { value: 'OUT', label: 'Xuất kho' },
+  { value: 'TRANSFER', label: 'Điều chuyển' },
+  { value: 'RETURN', label: 'Trả hàng' },
+  { value: 'ADJUST', label: 'Kiểm kê' },
+];
+
+const EMPTY_CREATE_FORM = {
+  type: 'IN',
+  productCode: '',
+  productName: '',
+  quantity: '1',
+  toLocation: '',
+  notes: '',
+  assignedTo: '',
+  dueDate: '',
+  priority: 'normal',
+};
 
 export default function WarehousePage() {
   const { canApprove } = useRBAC();
+  const { users } = useData();
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [transactions, setTransactions] = useState<WarehouseTransaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [typeTab, setTypeTab] = useState('ALL');
   const [actionError, setActionError] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Deep-link support from sidebar: ?type=IN|OUT|TRANSFER|RETURN|ADJUST, ?create=1
+  useEffect(() => {
+    const typeParam = searchParams.get('type');
+    if (typeParam && TX_TABS.some((tab) => tab.value === typeParam)) {
+      setTypeTab(typeParam);
+    }
+    if (searchParams.get('create') === '1') {
+      setShowCreateForm(true);
+    }
+    const preCode = searchParams.get('productCode');
+    const preName = searchParams.get('productName');
+    if (preCode || preName) {
+      setCreateForm((prev) => ({
+        ...prev,
+        productCode: preCode || prev.productCode,
+        productName: preName || prev.productName,
+      }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  const handleTabChange = (value: string) => {
+    setTypeTab(value);
+    const next = new URLSearchParams(searchParams);
+    if (value === 'ALL') {
+      next.delete('type');
+    } else {
+      next.set('type', value);
+    }
+    next.delete('create');
+    setSearchParams(next, { replace: true });
+  };
 
   const loadData = async () => {
     try {
@@ -61,14 +123,7 @@ export default function WarehousePage() {
   );
 
   const [showCreateForm, setShowCreateForm] = useState(false);
-  const [createForm, setCreateForm] = useState({
-    type: 'IN',
-    productCode: '',
-    productName: '',
-    quantity: '1',
-    toLocation: '',
-    notes: '',
-  });
+  const [createForm, setCreateForm] = useState({ ...EMPTY_CREATE_FORM });
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -90,14 +145,24 @@ export default function WarehousePage() {
         quantity: qty,
         toLocation: createForm.toLocation.trim() || undefined,
         notes: createForm.notes.trim() || undefined,
+        assignedTo: createForm.assignedTo || undefined,
+        dueDate: createForm.dueDate || undefined,
+        priority: createForm.priority,
       });
-      setCreateForm({ type: 'IN', productCode: '', productName: '', quantity: '1', toLocation: '', notes: '' });
+      setCreateForm({ ...EMPTY_CREATE_FORM });
       setShowCreateForm(false);
       await loadData();
     } catch (error: unknown) {
       setActionError(error instanceof Error ? error.message : 'Tạo phiếu thất bại');
     }
   };
+
+  const visibleTransactions = transactions.filter((t) =>
+    (typeTab === 'ALL' || t.type === typeTab) &&
+    (t.productName.toLowerCase().includes(search.toLowerCase()) ||
+      t.productCode.toLowerCase().includes(search.toLowerCase()) ||
+      t.transactionCode.toLowerCase().includes(search.toLowerCase()))
+  );
 
   const canApproveWarehouse = canApprove('warehouse');
   const pendingCount = transactions.filter((t) => t.status === 'pending').length;
@@ -134,8 +199,9 @@ export default function WarehousePage() {
               >
                 <option value="IN">Nhập kho (IN)</option>
                 <option value="OUT">Xuất kho (OUT)</option>
-                <option value="ADJUST">Điều chỉnh (ADJUST)</option>
-                <option value="TRANSFER">Chuyển kho (TRANSFER)</option>
+                <option value="TRANSFER">Điều chuyển (TRANSFER)</option>
+                <option value="RETURN">Trả hàng (RETURN)</option>
+                <option value="ADJUST">Kiểm kê (ADJUST)</option>
               </select>
             </label>
             <label className="flex flex-col gap-1 text-sm font-medium text-gray-600 dark:text-slate-300">
@@ -184,6 +250,41 @@ export default function WarehousePage() {
                 placeholder="Ghi chú thêm..."
                 className="px-3 py-2 border border-gray-200 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100"
               />
+            </label>
+            <label className="flex flex-col gap-1 text-sm font-medium text-gray-600 dark:text-slate-300">
+              Người xử lý
+              <select
+                value={createForm.assignedTo}
+                onChange={(e) => setCreateForm({ ...createForm, assignedTo: e.target.value })}
+                className="px-3 py-2 border border-gray-200 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100"
+              >
+                <option value="">-- Tự xử lý --</option>
+                {users.map((u) => (
+                  <option key={u.id} value={u.id}>{u.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-sm font-medium text-gray-600 dark:text-slate-300">
+              Hạn xử lý
+              <input
+                type="date"
+                value={createForm.dueDate}
+                onChange={(e) => setCreateForm({ ...createForm, dueDate: e.target.value })}
+                className="px-3 py-2 border border-gray-200 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm font-medium text-gray-600 dark:text-slate-300">
+              Ưu tiên
+              <select
+                value={createForm.priority}
+                onChange={(e) => setCreateForm({ ...createForm, priority: e.target.value })}
+                className="px-3 py-2 border border-gray-200 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100"
+              >
+                <option value="low">Thấp</option>
+                <option value="normal">Bình thường</option>
+                <option value="high">Cao</option>
+                <option value="urgent">Khẩn</option>
+              </select>
             </label>
             <div className="md:col-span-3 flex justify-end gap-2">
               <button
@@ -268,33 +369,50 @@ export default function WarehousePage() {
       <Card className="overflow-hidden">
         <div className="p-4 border-b border-gray-100 dark:border-slate-700 flex items-center gap-2">
           <ClipboardList size={16} className="text-blue-600" />
-          <h2 className="font-bold text-gray-800 dark:text-slate-100">Phiếu xuất / nhập kho ({transactions.length})</h2>
+          <h2 className="font-bold text-gray-800 dark:text-slate-100">Phiếu kho ({visibleTransactions.length})</h2>
+        </div>
+        <div className="px-4 pt-3 flex flex-wrap gap-2">
+          {TX_TABS.map((tab) => (
+            <button
+              key={tab.value}
+              onClick={() => handleTabChange(tab.value)}
+              className={`px-3 py-1.5 rounded-xl font-bold text-xs transition-all ${
+                typeTab === tab.value
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'bg-white dark:bg-slate-800 text-gray-600 dark:text-slate-300 hover:bg-gray-50 border border-gray-200 dark:border-slate-700'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[800px]">
+          <table className="w-full text-left border-collapse min-w-[900px]">
             <thead>
               <tr className="bg-gray-50 dark:bg-slate-700/50 border-b border-gray-100 dark:border-slate-700">
+                <th className="p-3 text-xs font-bold text-gray-500 uppercase">Mã phiếu</th>
                 <th className="p-3 text-xs font-bold text-gray-500 uppercase">Loại</th>
-                <th className="p-3 text-xs font-bold text-gray-500 uppercase">Mã SP</th>
+                <th className="p-3 text-xs font-bold text-gray-500 uppercase">Hàng hóa</th>
                 <th className="p-3 text-xs font-bold text-gray-500 uppercase text-center">SL</th>
+                <th className="p-3 text-xs font-bold text-gray-500 uppercase">Người xử lý</th>
+                <th className="p-3 text-xs font-bold text-gray-500 uppercase">Hạn xử lý</th>
                 <th className="p-3 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
                 <th className="p-3 text-xs font-bold text-gray-500 uppercase text-center">Hành động</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50 dark:divide-slate-700/50">
-              {transactions.length === 0 ? (
-                <tr><td colSpan={5} className="p-8 text-center text-gray-400">Chưa có phiếu kho nào.</td></tr>
+              {visibleTransactions.length === 0 ? (
+                <tr><td colSpan={8} className="p-8 text-center text-gray-400">Chưa có phiếu kho nào.</td></tr>
               ) : (
-                transactions.map((trans) => (
+                visibleTransactions.map((trans) => (
                   <tr key={trans.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/30">
-                    <td className="p-3 text-sm font-bold">{trans.type}</td>
-                    <td className="p-3 text-sm">{trans.productCode}</td>
+                    <td className="p-3 text-sm font-bold" title={trans.transactionCode}>{trans.transactionCode}</td>
+                    <td className="p-3"><WarehouseDocumentBadge type={trans.type} /></td>
+                    <td className="p-3 text-sm" title={trans.productCode}>{trans.productName}</td>
                     <td className="p-3 text-sm text-center">{Number(trans.quantity).toLocaleString('vi-VN')}</td>
-                    <td className="p-3 text-sm">
-                      <span className={`px-2 py-1 rounded font-bold text-xs ${trans.status === 'pending' ? 'bg-amber-100 text-amber-700' : trans.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600'}`}>
-                        {trans.status}
-                      </span>
-                    </td>
+                    <td className="p-3 text-sm text-gray-600 dark:text-slate-300">{trans.assignedToName || trans.requestedByName || '-'}</td>
+                    <td className="p-3 text-sm text-gray-600 dark:text-slate-300">{formatDate(trans.dueDate)}</td>
+                    <td className="p-3"><WarehouseStatusBadge status={trans.status} /></td>
                     <td className="p-3 text-center">
                       {trans.status === 'pending' && canApproveWarehouse ? (
                         <div className="flex justify-center gap-2">

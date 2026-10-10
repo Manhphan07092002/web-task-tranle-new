@@ -26,6 +26,31 @@ async function runMigrations() {
   await conn.query(migration007);
   console.log('✓ Migration 007 completed');
 
+  console.log('Running migration 008...');
+  const migration008 = fs.readFileSync(path.join(__dirname, 'migrations/008_warehouse_assign.sql'), 'utf8');
+  await conn.query(migration008);
+  console.log('✓ Migration 008 completed');
+
+  console.log('Running migration 009...');
+  const migration009 = fs.readFileSync(path.join(__dirname, 'migrations/009_warehouse_counts.sql'), 'utf8');
+  await conn.query(migration009);
+  console.log('✓ Migration 009 completed');
+
+  console.log('Running migration 010...');
+  const migration010 = fs.readFileSync(path.join(__dirname, 'migrations/010_warehouse_transfer_scope.sql'), 'utf8');
+  await conn.query(migration010);
+  console.log('✓ Migration 010 completed');
+
+  console.log('Running migration 011...');
+  const migration011 = fs.readFileSync(path.join(__dirname, 'migrations/011_warehouse_locations.sql'), 'utf8');
+  await conn.query(migration011);
+  console.log('✓ Migration 011 completed');
+
+  console.log('Running migration 012...');
+  const migration012 = fs.readFileSync(path.join(__dirname, 'migrations/012_stock_inquiry.sql'), 'utf8');
+  await conn.query(migration012);
+  console.log('✓ Migration 012 completed');
+
   await conn.end();
   console.log('✓ All migrations executed successfully');
 }

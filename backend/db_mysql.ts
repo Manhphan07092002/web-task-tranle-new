@@ -607,6 +607,204 @@ export async function initDbMysql(): Promise<MysqlDb> {
           ('inv-005', 'CONNECTOR-MC4', 'Đầu nối MC4', 500.00, 'pcs', 'Khu C-Giá 07', 100.00, 1000.00, 'dept-kho')
         `);
       });
+
+      await runVersionedMigration(db, 8, 'warehouse_assignment_fields', async () => {
+        await ensureColumn('warehouse_transactions', 'assignedTo', '`assignedTo` VARCHAR(36) NULL');
+        await ensureColumn('warehouse_transactions', 'dueDate', '`dueDate` DATETIME NULL');
+        await ensureColumn('warehouse_transactions', 'priority', '`priority` VARCHAR(20) DEFAULT \'normal\'');
+        // Extend document types with RETURN (Trả hàng)
+        await db.run(`
+          ALTER TABLE warehouse_transactions
+          MODIFY COLUMN type ENUM('IN', 'OUT', 'ADJUST', 'TRANSFER', 'RETURN') NOT NULL
+        `);
+        const ensureIndex = async (indexName: string, columns: string) => {
+          const existing = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+            ['warehouse_transactions', indexName]
+          );
+          if (!existing || Number(existing.count) === 0) {
+            await db.run(`CREATE INDEX \`${indexName}\` ON warehouse_transactions (${columns})`);
+          }
+        };
+        await ensureIndex('idx_wh_trans_assigned', '`assignedTo`');
+        await ensureIndex('idx_wh_trans_duedate', '`dueDate`');
+      });
+
+      await runVersionedMigration(db, 9, 'department_rbac_columns_backfill', async () => {
+        // Backfill Phase-0 RBAC columns for databases created before migration 006
+        await ensureColumn('departments', 'code', '`code` VARCHAR(50) NULL UNIQUE');
+        await ensureColumn('departments', 'parentId', '`parentId` VARCHAR(191) NULL');
+        await ensureColumn('departments', 'level', '`level` INT DEFAULT 2');
+        await ensureColumn('departments', 'isActive', '`isActive` TINYINT DEFAULT 1');
+        await ensureColumn('users', 'managementLevel', '`managementLevel` INT DEFAULT 10');
+        await ensureColumn('users', 'primaryDepartmentId', '`primaryDepartmentId` VARCHAR(36) NULL');
+        await ensureColumn('users', 'employeeCode', '`employeeCode` VARCHAR(50) NULL');
+      });
+
+      await runVersionedMigration(db, 10, 'management_scopes_scope_type', async () => {
+        // management_scopes created by older DDL lacks scopeType/createdAt
+        await ensureColumn('management_scopes', 'scopeType', "`scopeType` VARCHAR(50) NOT NULL DEFAULT 'FULL'");
+        await ensureColumn('management_scopes', 'createdAt', '`createdAt` DATETIME DEFAULT CURRENT_TIMESTAMP');
+      });
+
+      await runVersionedMigration(db, 11, 'warehouse_stock_counts', async () => {
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS stock_count_periods (
+            id VARCHAR(36) PRIMARY KEY,
+            code VARCHAR(50) UNIQUE NOT NULL,
+            month VARCHAR(7) NOT NULL,
+            location VARCHAR(100),
+            status ENUM('planned', 'in_progress', 'completed', 'cancelled') DEFAULT 'planned',
+            assignedTo VARCHAR(36),
+            departmentId VARCHAR(36) DEFAULT 'dept-kho',
+            notes TEXT,
+            createdBy VARCHAR(36) NOT NULL,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (departmentId) REFERENCES departments(id) ON DELETE SET NULL,
+            FOREIGN KEY (assignedTo) REFERENCES users(id) ON DELETE SET NULL,
+            FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE CASCADE,
+            INDEX idx_scp_month (month),
+            INDEX idx_scp_status (status),
+            INDEX idx_scp_dept (departmentId),
+            INDEX idx_scp_assigned (assignedTo)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS stock_count_items (
+            id VARCHAR(36) PRIMARY KEY,
+            periodId VARCHAR(36) NOT NULL,
+            productCode VARCHAR(50) NOT NULL,
+            productName VARCHAR(255) NOT NULL,
+            systemQty DECIMAL(10,2) NOT NULL DEFAULT 0,
+            countedQty DECIMAL(10,2) NULL,
+            unit VARCHAR(20) DEFAULT 'pcs',
+            status ENUM('pending', 'counted', 'resolved') DEFAULT 'pending',
+            resolution TEXT,
+            resolvedBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (periodId) REFERENCES stock_count_periods(id) ON DELETE CASCADE,
+            FOREIGN KEY (resolvedBy) REFERENCES users(id) ON DELETE SET NULL,
+            INDEX idx_sci_period (periodId),
+            INDEX idx_sci_status (status),
+            INDEX idx_sci_product (productCode)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
+      await runVersionedMigration(db, 12, 'warehouse_transfer_scope', async () => {
+        await ensureColumn('warehouse_transactions', 'transferScope', '`transferScope` VARCHAR(20) NULL');
+        const existing = await db.get(
+          'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+          ['warehouse_transactions', 'idx_wh_trans_scope']
+        );
+        if (!existing || Number(existing.count) === 0) {
+          await db.run('CREATE INDEX `idx_wh_trans_scope` ON warehouse_transactions (`transferScope`)');
+        }
+        // Existing TRANSFER rows predate the column: treat as internal transfers
+        await db.run(
+          `UPDATE warehouse_transactions SET transferScope = 'internal' WHERE type = 'TRANSFER' AND transferScope IS NULL`
+        );
+      });
+
+      await runVersionedMigration(db, 13, 'warehouse_location_master', async () => {
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS warehouse_locations (
+            id VARCHAR(36) PRIMARY KEY,
+            code VARCHAR(50) NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            type VARCHAR(20) DEFAULT 'zone',
+            parentId VARCHAR(36),
+            departmentId VARCHAR(36) DEFAULT 'dept-kho',
+            notes TEXT,
+            isActive TINYINT DEFAULT 1,
+            createdBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_location_code (code),
+            FOREIGN KEY (parentId) REFERENCES warehouse_locations(id) ON DELETE SET NULL,
+            FOREIGN KEY (departmentId) REFERENCES departments(id) ON DELETE SET NULL,
+            FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE SET NULL,
+            INDEX idx_whloc_parent (parentId),
+            INDEX idx_whloc_dept (departmentId),
+            INDEX idx_whloc_code (code)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
+      await runVersionedMigration(db, 14, 'warehouse_stock_inquiry', async () => {
+        await ensureColumn('inventory', 'category', '`category` VARCHAR(100) NULL');
+        await ensureColumn('inventory', 'specCode', '`specCode` VARCHAR(100) NULL');
+        await ensureColumn('warehouse_transactions', 'category', '`category` VARCHAR(100) NULL');
+        await ensureColumn('warehouse_transactions', 'specCode', '`specCode` VARCHAR(100) NULL');
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS inventory_lots (
+            id VARCHAR(36) PRIMARY KEY,
+            productCode VARCHAR(50) NOT NULL,
+            productName VARCHAR(255) NOT NULL,
+            lotCode VARCHAR(100) NOT NULL,
+            expiryDate DATE NULL,
+            quantity DECIMAL(10,2) NOT NULL DEFAULT 0,
+            unit VARCHAR(20) DEFAULT 'pcs',
+            locationCode VARCHAR(50),
+            departmentId VARCHAR(36) DEFAULT 'dept-kho',
+            notes TEXT,
+            createdBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (departmentId) REFERENCES departments(id) ON DELETE SET NULL,
+            FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE SET NULL,
+            INDEX idx_lots_product (productCode),
+            INDEX idx_lots_lot (lotCode),
+            INDEX idx_lots_expiry (expiryDate),
+            INDEX idx_lots_location (locationCode),
+            INDEX idx_lots_dept (departmentId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS product_combos (
+            id VARCHAR(36) PRIMARY KEY,
+            code VARCHAR(50) NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            unit VARCHAR(20) DEFAULT 'set',
+            departmentId VARCHAR(36) DEFAULT 'dept-kho',
+            notes TEXT,
+            isActive TINYINT DEFAULT 1,
+            createdBy VARCHAR(36),
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_combo_code (code),
+            FOREIGN KEY (departmentId) REFERENCES departments(id) ON DELETE SET NULL,
+            FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE SET NULL,
+            INDEX idx_combo_dept (departmentId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS product_combo_items (
+            id VARCHAR(36) PRIMARY KEY,
+            comboId VARCHAR(36) NOT NULL,
+            productCode VARCHAR(50) NOT NULL,
+            productName VARCHAR(255) NOT NULL,
+            quantity DECIMAL(10,2) NOT NULL DEFAULT 1,
+            unit VARCHAR(20) DEFAULT 'pcs',
+            FOREIGN KEY (comboId) REFERENCES product_combos(id) ON DELETE CASCADE,
+            INDEX idx_combo_items_combo (comboId),
+            INDEX idx_combo_items_product (productCode)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        const ensureWhIndex = async (table: string, indexName: string, columns: string) => {
+          const existing = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+            [table, indexName]
+          );
+          if (!existing || Number(existing.count) === 0) {
+            await db.run(`CREATE INDEX \`${indexName}\` ON \`${table}\` (${columns})`);
+          }
+        };
+        await ensureWhIndex('inventory', 'idx_inventory_category', '`category`');
+        await ensureWhIndex('inventory', 'idx_inventory_spec', '`specCode`');
+      });
     }, () => seedInitialData(db));
     await migrateMailCredentials(db);
   });

@@ -1,10 +1,15 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { PlusCircle, LogOut, LayoutDashboard, CheckSquare, Calendar, StickyNote, Users, Settings, Video, FileText, Bell, Shield, Mail, DollarSign, Briefcase, Package, FolderOpen, ChevronDown, ChevronUp, ArrowUpRight, ArrowDownLeft, History, Link, CreditCard } from 'lucide-react';
+import { PlusCircle, LogOut, Shield, ChevronDown, ChevronUp } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { useData } from '../../contexts/DataContext';
 import { useLanguage } from '../../contexts/LanguageContext';
 import { Button, Avatar } from '../UI';
 import { apiFetch } from '../../services/api';
+import { COMMON_TOP_GROUPS, SYSTEM_GROUP } from './menus/commonMenus';
+import { DEPARTMENT_MENUS } from './menus/departmentMenus';
+import { resolveDeptKey, roleLabel, roleSubtitle } from './menus/resolveDepartment';
+import type { NavGroup } from './menus/menuTypes';
 
 interface SidebarProps {
   isMobileMenuOpen: boolean;
@@ -12,73 +17,17 @@ interface SidebarProps {
   openCreateModal: () => void;
 }
 
-// Grouped nav structure
-const NAV_GROUPS = [
-  {
-    label: 'Tổng quan',
-    items: [
-      { id: 'dashboard', icon: LayoutDashboard, path: '/', permission: null },
-    ],
-  },
-  {
-    label: 'Công việc',
-    items: [
-      { id: 'tasks',    icon: CheckSquare, path: '/tasks',    permission: ['view_all_tasks', 'manage_dept_tasks', 'view_own_tasks'] },
-      { id: 'calendar', icon: Calendar,    path: '/calendar', permission: ['view_all_tasks', 'manage_dept_tasks', 'view_own_tasks'] },
-      { id: 'reports',  icon: FileText,    path: '/reports',  permission: ['view_all_reports', 'approve_dept_reports', 'create_report', 'director_feedback'] },
-      { id: 'documents', icon: FolderOpen,  path: '/documents', permission: null },
-    ],
-  },
-  {
-    label: 'Giao tiếp',
-    items: [
-      { id: 'mail',          icon: Mail,   path: '/mail',          permission: null },
-      { id: 'meetings',      icon: Video,  path: '/meetings',      permission: null },
-      { id: 'notes',         icon: StickyNote, path: '/notes',     permission: null },
-      { id: 'notifications', icon: Bell,   path: '/notifications', permission: null },
-    ],
-  },
-  {
-    label: 'Kinh doanh',
-    items: [
-      { id: 'projects', icon: Briefcase, path: '/projects', permission: null },
-      { id: 'contracts', icon: Briefcase, path: '/contracts', permission: null },
-      { id: 'products', icon: Package, path: '/products', permission: null },
-      { id: 'warehouse', icon: Package, path: '/warehouse', permission: null },
-      { id: 'revenue',   icon: DollarSign, path: '/revenue',  permission: ['create_revenue_report', 'approve_dept_revenue', 'approve_all_revenue', 'view_all_reports', 'director_feedback'] },
-    ],
-  },
-  {
-    label: 'Hệ thống',
-    items: [
-      { id: 'team',     icon: Users,    path: '/team',     permission: ['view_dept_users', 'manage_users'] },
-      { id: 'settings', icon: Settings, path: '/settings', permission: null },
-    ],
-  },
-];
-
-const NAV_LABELS: Record<string, string> = {
-  dashboard:     'Tổng quan',
-  tasks:         'Công việc',
-  calendar:      'Lịch',
-  reports:       'Báo cáo CV',
-  documents:     'Tài liệu',
-  project_reports: 'Báo cáo DA',
-  projects:      'Dự án',
-  contracts:     'Hợp đồng',
-  products:      'Kho hàng',
-  warehouse:     'Kho vận',
-  revenue:       'Doanh thu',
-  mail:          'Hộp thư',
-  meetings:      'Cuộc họp',
-  notes:         'Ghi chú',
-  notifications: 'Thông báo',
-  team:          'Đội ngũ',
-  settings:      'Cài đặt',
-};
-
 export const Sidebar: React.FC<SidebarProps> = ({ isMobileMenuOpen, setIsMobileMenuOpen, openCreateModal }) => {
   const { user, logout } = useAuth();
+  const { departments } = useData();
+  const level = user?.managementLevel ?? 10;
+  // Department -> menu config -> render. Only ONE department module renders.
+  const deptKey = resolveDeptKey(user, departments || []);
+  const deptGroup: NavGroup | null = deptKey ? DEPARTMENT_MENUS[deptKey] : null;
+  const NAV_GROUPS: NavGroup[] = deptGroup
+    ? [...COMMON_TOP_GROUPS, deptGroup, SYSTEM_GROUP]
+    : [...COMMON_TOP_GROUPS, SYSTEM_GROUP];
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const { t } = useLanguage();
   const [unreadMailCount, setUnreadMailCount] = React.useState(0);
   const location = useLocation();
@@ -96,26 +45,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ isMobileMenuOpen, setIsMobileM
     }
     touchStartX.current = null;
   };
-  const [isContractsExpanded, setIsContractsExpanded] = React.useState(() => {
-    return location.pathname.startsWith('/contracts');
-  });
-
-  const [isRevenueExpanded, setIsRevenueExpanded] = React.useState(() => {
-    return location.pathname.startsWith('/revenue');
-  });
-
-  React.useEffect(() => {
-    if (location.pathname.startsWith('/contracts')) {
-      setIsContractsExpanded(true);
-    }
-  }, [location.pathname]);
-
-  React.useEffect(() => {
-    if (location.pathname.startsWith('/revenue')) {
-      setIsRevenueExpanded(true);
-    }
-  }, [location.pathname]);
-
 
   // Fetch unread mail count periodically
   React.useEffect(() => {
@@ -157,9 +86,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ isMobileMenuOpen, setIsMobileM
   const perms = user?.permissions || [];
   const hasPerm = (p: string) => perms.includes(p);
 
-  const canSeeItem = (permission: string[] | null) => {
-    if (!permission) return true;
-    return permission.some(p => hasPerm(p));
+  const canSeeItem = (permission: string[] | null, minLevel?: number) => {
+    if (permission && permission.some(p => hasPerm(p))) return true;
+    if (minLevel !== undefined && level !== 99 && level >= minLevel) return true;
+    if (!permission && minLevel === undefined) return true;
+    return false;
   };
 
   return (
@@ -203,229 +134,82 @@ export const Sidebar: React.FC<SidebarProps> = ({ isMobileMenuOpen, setIsMobileM
           {/* Nav Groups */}
           <nav className="flex-1 px-3 py-2 overflow-y-auto space-y-4">
             {NAV_GROUPS.map(group => {
-              const visibleItems = group.items.filter(item => canSeeItem(item.permission));
+              const visibleItems = group.items.filter(item => canSeeItem(item.permission, item.minLevel));
               if (visibleItems.length === 0) return null;
               return (
                 <div key={group.label}>
-                  <p className="px-3 text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">
+                  <p className="px-3 text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1 flex items-center gap-2">
                     {group.label}
+                    {group.scopeBadge && (
+                      <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-blue-600 text-white tracking-normal">
+                        {roleLabel(level)}
+                      </span>
+                    )}
                   </p>
                   <div className="space-y-0.5">
                     {visibleItems.map(item => {
-                      if (item.id === 'contracts') {
-                        const isParentActive = location.pathname.startsWith('/contracts');
-                        const currentTab = new URLSearchParams(location.search).get('tab') || 'output';
-                        
+                      if (item.children) {
+                        const isChildActive = (to: string) => {
+                          const [childPath, childQuery] = to.split('?');
+                          if (location.pathname !== childPath) return false;
+                          const current = new URLSearchParams(location.search);
+                          if (!childQuery) return !current.get('type') && !current.get('view');
+                          const expected = new URLSearchParams(childQuery);
+                          for (const [key, value] of expected) {
+                            if (current.get(key) !== value) return false;
+                          }
+                          return true;
+                        };
+                        const anyChildActive = item.children.some(child => isChildActive(child.to));
+                        const isOpen = expandedGroups[item.id] ?? anyChildActive;
                         return (
                           <div key={item.id} className="space-y-0.5">
-                            {/* Parent Dropdown Toggle */}
                             <button
                               type="button"
-                              onClick={() => setIsContractsExpanded(prev => !prev)}
+                              onClick={() => setExpandedGroups(prev => ({ ...prev, [item.id]: !isOpen }))}
                               className={`
                                 w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-xl transition-all
-                                ${isParentActive
+                                ${anyChildActive
                                   ? 'bg-brand-50/60 text-brand-700 border border-brand-100/50 shadow-sm'
                                   : 'text-gray-600 hover:bg-gray-100/80 hover:text-gray-900'
                                 }
                               `}
                             >
                               <item.icon size={17} className="flex-shrink-0" />
-                              <span className="flex-1 text-left truncate">{NAV_LABELS[item.id] || t(item.id)}</span>
-                              {isContractsExpanded ? (
+                              <span className="flex-1 text-left truncate">{item.label || t(item.id)}</span>
+                              {isOpen ? (
                                 <ChevronUp size={15} className="text-gray-400" />
                               ) : (
                                 <ChevronDown size={15} className="text-gray-400" />
                               )}
                             </button>
-
-                            {/* Collapsible Submenu */}
-                            {isContractsExpanded && (
-                              <div className="pl-6 pr-1 py-1 space-y-1 border-l-2 border-brand-100/50 ml-5 animate-in slide-in-from-top duration-200">
-                                {/* HĐ Bán ra */}
-                                <NavLink
-                                  to="/contracts?tab=output"
-                                  onClick={() => setIsMobileMenuOpen(false)}
-                                  className={`
-                                    w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all
-                                    ${isParentActive && currentTab === 'output'
-                                      ? 'bg-brand-50 text-brand-700 shadow-sm border border-brand-100'
-                                      : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
-                                    }
-                                  `}
-                                >
-                                  <ArrowUpRight size={14} className="flex-shrink-0" />
-                                  <span className="flex-1 truncate">HĐ Bán ra</span>
-                                </NavLink>
-
-                                {/* HĐ Mua vào */}
-                                <NavLink
-                                  to="/contracts?tab=input"
-                                  onClick={() => setIsMobileMenuOpen(false)}
-                                  className={`
-                                    w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all
-                                    ${isParentActive && currentTab === 'input'
-                                      ? 'bg-brand-50 text-brand-700 shadow-sm border border-brand-100'
-                                      : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
-                                    }
-                                  `}
-                                >
-                                  <ArrowDownLeft size={14} className="flex-shrink-0" />
-                                  <span className="flex-1 truncate">HĐ Mua vào</span>
-                                </NavLink>
-
-                                {/* Lịch sử HĐ */}
-                                <NavLink
-                                  to="/contracts?tab=history"
-                                  onClick={() => setIsMobileMenuOpen(false)}
-                                  className={`
-                                    w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all
-                                    ${isParentActive && currentTab === 'history'
-                                      ? 'bg-brand-50 text-brand-700 shadow-sm border border-brand-100'
-                                      : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
-                                    }
-                                  `}
-                                >
-                                  <History size={14} className="flex-shrink-0" />
-                                  <span className="flex-1 truncate">Lịch sử HĐ</span>
-                                </NavLink>
-
-                                {/* Liên kết */}
-                                <NavLink
-                                  to="/contracts?tab=links"
-                                  onClick={() => setIsMobileMenuOpen(false)}
-                                  className={`
-                                    w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all
-                                    ${isParentActive && currentTab === 'links'
-                                      ? 'bg-brand-50 text-brand-700 shadow-sm border border-brand-100'
-                                      : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
-                                    }
-                                  `}
-                                >
-                                  <Link size={14} className="flex-shrink-0" />
-                                  <span className="flex-1 truncate">Liên kết</span>
-                                </NavLink>
-
-                                {/* Công nợ */}
-                                <NavLink
-                                  to="/contracts?tab=debts"
-                                  onClick={() => setIsMobileMenuOpen(false)}
-                                  className={`
-                                    w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all
-                                    ${isParentActive && currentTab === 'debts'
-                                      ? 'bg-brand-50 text-brand-700 shadow-sm border border-brand-100'
-                                      : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
-                                    }
-                                  `}
-                                >
-                                  <CreditCard size={14} className="flex-shrink-0" />
-                                  <span className="flex-1 truncate">Công nợ</span>
-                                </NavLink>
+                            {isOpen && (
+                              <div className="pl-6 pr-1 py-1 space-y-1 border-l-2 border-brand-100/50 ml-5">
+                                {item.children.map(child => {
+                                  const active = isChildActive(child.to);
+                                  return (
+                                    <NavLink
+                                      key={child.id}
+                                      to={child.to}
+                                      onClick={() => setIsMobileMenuOpen(false)}
+                                      className={`
+                                        w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg transition-all
+                                        ${active
+                                          ? 'bg-brand-50 text-brand-700 shadow-sm border border-brand-100'
+                                          : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
+                                        }
+                                      `}
+                                    >
+                                      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${active ? 'bg-brand-600' : 'bg-gray-300'}`} />
+                                      <span className="flex-1 truncate">{child.label}</span>
+                                    </NavLink>
+                                  );
+                                })}
                               </div>
                             )}
                           </div>
                         );
                       }
-
-                      if (item.id === 'revenue') {
-                        const isParentActive = location.pathname.startsWith('/revenue');
-                        const currentTab = new URLSearchParams(location.search).get('tab') || 'list';
-                        
-                        return (
-                          <div key={item.id} className="space-y-0.5">
-                            {/* Parent Dropdown Toggle */}
-                            <button
-                              type="button"
-                              onClick={() => setIsRevenueExpanded(prev => !prev)}
-                              className={`
-                                w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-xl transition-all
-                                ${isParentActive
-                                  ? 'bg-brand-50/60 text-brand-700 border border-brand-100/50 shadow-sm'
-                                  : 'text-gray-600 hover:bg-gray-100/80 hover:text-gray-900'
-                                }
-                              `}
-                            >
-                              <item.icon size={17} className="flex-shrink-0" />
-                              <span className="flex-1 text-left truncate">{NAV_LABELS[item.id] || t(item.id)}</span>
-                              {isRevenueExpanded ? (
-                                <ChevronUp size={15} className="text-gray-400" />
-                              ) : (
-                                <ChevronDown size={15} className="text-gray-400" />
-                              )}
-                            </button>
-
-                            {/* Collapsible Submenu */}
-                            {isRevenueExpanded && (
-                              <div className="pl-6 pr-1 py-1 space-y-1 border-l-2 border-brand-100/50 ml-5 animate-in slide-in-from-top duration-200">
-                                {/* Báo cáo doanh thu */}
-                                <NavLink
-                                  to="/revenue?tab=list"
-                                  onClick={() => setIsMobileMenuOpen(false)}
-                                  className={`
-                                    w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all
-                                    ${isParentActive && (currentTab === 'list' || currentTab === 'create')
-                                      ? 'bg-brand-50 text-brand-700 shadow-sm border border-brand-100'
-                                      : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
-                                    }
-                                  `}
-                                >
-                                  <FileText size={14} className="flex-shrink-0" />
-                                  <span className="flex-1 truncate">Báo cáo doanh thu</span>
-                                </NavLink>
-
-                                {/* Lịch sử báo cáo */}
-                                <NavLink
-                                  to="/revenue?tab=history"
-                                  onClick={() => setIsMobileMenuOpen(false)}
-                                  className={`
-                                    w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all
-                                    ${isParentActive && currentTab === 'history'
-                                      ? 'bg-brand-50 text-brand-700 shadow-sm border border-brand-100'
-                                      : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
-                                    }
-                                  `}
-                                >
-                                  <History size={14} className="flex-shrink-0" />
-                                  <span className="flex-1 truncate">Lịch sử báo cáo</span>
-                                </NavLink>
-
-                                {/* HĐ đã xuất hóa đơn */}
-                                <NavLink
-                                  to="/revenue?tab=invoiced"
-                                  onClick={() => setIsMobileMenuOpen(false)}
-                                  className={`
-                                    w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all
-                                    ${isParentActive && currentTab === 'invoiced'
-                                      ? 'bg-brand-50 text-brand-700 shadow-sm border border-brand-100'
-                                      : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
-                                    }
-                                  `}
-                                >
-                                  <ArrowUpRight size={14} className="flex-shrink-0" />
-                                  <span className="flex-1 truncate">HĐ đã xuất hóa đơn</span>
-                                </NavLink>
-
-                                {/* Doanh thu theo kỳ */}
-                                <NavLink
-                                  to="/revenue?tab=periodic"
-                                  onClick={() => setIsMobileMenuOpen(false)}
-                                  className={`
-                                    w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all
-                                    ${isParentActive && currentTab === 'periodic'
-                                      ? 'bg-brand-50 text-brand-700 shadow-sm border border-brand-100'
-                                      : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
-                                    }
-                                  `}
-                                >
-                                  <Calendar size={14} className="flex-shrink-0" />
-                                  <span className="flex-1 truncate">Doanh thu theo kỳ</span>
-                                </NavLink>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      }
-
                       return (
                         <NavLink
                           key={item.id}
@@ -440,7 +224,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isMobileMenuOpen, setIsMobileM
                           `}
                         >
                           <item.icon size={17} className="flex-shrink-0" />
-                          <span className="flex-1 truncate">{NAV_LABELS[item.id] || t(item.id)}</span>
+                          <span className="flex-1 truncate">{item.label || t(item.id)}</span>
                           {item.id === 'mail' && unreadMailCount > 0 && (
                             <span className="ml-auto bg-rose-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full flex items-center justify-center min-w-[20px]">
                               {unreadMailCount > 99 ? '99+' : unreadMailCount}
@@ -477,7 +261,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isMobileMenuOpen, setIsMobileM
               <Avatar src={user.avatar} alt={user.name} size={8} />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold text-gray-900 truncate leading-tight">{user.name}</p>
-                <p className="text-[11px] text-gray-400 truncate leading-tight">{user.role}</p>
+                <p className="text-[11px] text-gray-400 truncate leading-tight">{roleSubtitle(user)}</p>
               </div>
               <LogOut size={15} className="text-gray-300 group-hover:text-red-500 transition-colors flex-shrink-0" />
             </div>
