@@ -41,8 +41,8 @@ export function userRoutes(db: any, mailer: any) {
     try {
       const isAdmin = req.user?.role === 'Admin' || req.user?.permissions?.includes('admin_panel') || req.user?.permissions?.includes('manage_users');
       const query = isAdmin
-        ? `SELECT u.id, u.name, u.email, u.role, u.department, u.managementLevel, u.primaryDepartmentId, u.avatar, u.bio, u.phone, u.dob, u.hometown, u.cccd, u.gender, u.preferences, u.isLocked, u.jobTitle, r.permissions, (SELECT GROUP_CONCAT(departmentId) FROM management_scopes WHERE userId = u.id) AS managedDepartments FROM users u LEFT JOIN roles r ON u.role = r.name`
-        : `SELECT u.id, u.name, u.email, u.role, u.department, u.managementLevel, u.primaryDepartmentId, u.avatar FROM users u`;
+        ? `SELECT u.id, u.name, u.email, u.role, u.department, u.managementLevel, u.primaryDepartmentId, u.avatar, u.bio, u.phone, u.dob, u.hometown, u.cccd, u.gender, u.preferences, u.isLocked, u.jobTitle, r.permissions, (SELECT GROUP_CONCAT(departmentId) FROM management_scopes WHERE userId = u.id) AS managedDepartments, (SELECT GROUP_CONCAT(warehouseId) FROM user_warehouse_scopes WHERE userId = u.id) AS warehouseScopeIds FROM users u LEFT JOIN roles r ON u.role = r.name`
+        : `SELECT u.id, u.name, u.email, u.role, u.department, u.managementLevel, u.primaryDepartmentId, u.avatar, r.permissions FROM users u LEFT JOIN roles r ON u.role = r.name`;
       const users = await db.all(query);
       res.json(users.map((u: any) => ({
         ...u,
@@ -51,6 +51,9 @@ export function userRoutes(db: any, mailer: any) {
         preferences: u.preferences ? JSON.parse(u.preferences) : {},
         managedDepartments: typeof u.managedDepartments === 'string' && u.managedDepartments
           ? u.managedDepartments.split(',').filter(Boolean)
+          : [],
+        warehouseScopeIds: typeof (u as any).warehouseScopeIds === 'string' && (u as any).warehouseScopeIds
+          ? (u as any).warehouseScopeIds.split(',').filter(Boolean)
           : [],
       })));
     } catch (e) { console.error('GET /api/users error:', e); res.status(500).json({ error: 'Failed' }); }
@@ -169,6 +172,37 @@ export function userRoutes(db: any, mailer: any) {
     } catch {
       res.json([]);
     }
+  });
+
+  // ─── Warehouse scopes (D9): kho user được thấy ────────────────────────────
+
+  router.get('/:id/warehouse-scopes', requirePermission('manage_users'), async (req, res) => {
+    try {
+      const rows = await db.all('SELECT warehouseId FROM user_warehouse_scopes WHERE userId = ?', [req.params.id]);
+      res.json(rows.map((r: any) => r.warehouseId));
+    } catch (e) { res.status(500).json({ error: 'Failed' }); }
+  });
+
+  router.put('/:id/warehouse-scopes', requirePermission('manage_users'), async (req, res) => {
+    try {
+      const { warehouseIds } = req.body ?? {};
+      if (!Array.isArray(warehouseIds) || warehouseIds.length > 50 || warehouseIds.some((id) => typeof id !== 'string' || !id.trim() || id.length > 191)) {
+        return res.status(400).json({ error: 'warehouseIds must be an array of 0-50 warehouse ids' });
+      }
+      const target = await db.get('SELECT id FROM users WHERE id = ?', [req.params.id]);
+      if (!target) return res.status(404).json({ error: 'User not found' });
+      const unique = [...new Set(warehouseIds.map((id: string) => id.trim()))];
+      for (const whId of unique) {
+        const wh = await db.get('SELECT id FROM warehouses WHERE id = ?', [whId]);
+        if (!wh) return res.status(400).json({ error: `Warehouse not found: ${whId}` });
+      }
+      await db.run('DELETE FROM user_warehouse_scopes WHERE userId = ?', [req.params.id]);
+      for (const whId of unique) {
+        await db.run('INSERT INTO user_warehouse_scopes (id, userId, warehouseId) VALUES (?, ?, ?)', [crypto.randomUUID(), req.params.id, whId]);
+      }
+      await db.run('UPDATE users SET tokenVersion = tokenVersion + 1 WHERE id = ?', [req.params.id]);
+      res.json({ success: true, warehouseIds: unique });
+    } catch (e) { res.status(500).json({ error: 'Failed' }); }
   });
 
   router.put('/:id/scopes', requirePermission('manage_users'), async (req, res) => {

@@ -45,6 +45,26 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           localStorage.removeItem('tranle_user');
           localStorage.removeItem('tranle_token');
         }
+        // Làm mới quyền/level từ server (đổi role có hiệu lực không cần đăng nhập lại).
+        // Thất bại thì giữ session cũ; 401 thì xóa (token bị revoke).
+        fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+          .then(async (res) => {
+            if (res.status === 401) {
+              localStorage.removeItem('tranle_token');
+              localStorage.removeItem('tranle_user');
+              setUser(null);
+              return;
+            }
+            if (!res.ok) return;
+            const data = await res.json().catch(() => ({}));
+            if (data?.user) {
+              setUser(data.user);
+              localStorage.setItem('tranle_user', JSON.stringify(data.user));
+            }
+          })
+          .catch(() => {})
+          .finally(() => setIsLoading(false));
+        return;
       } else {
         localStorage.removeItem('tranle_token');
         localStorage.removeItem('tranle_user');

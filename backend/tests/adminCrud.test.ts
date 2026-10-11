@@ -54,6 +54,17 @@ describe('users CRUD', () => {
     await request(adminApp(userRoutes(d, {}))).put('/ghost').send({ name: 'A', email: 'a@x.vn', role: 'Employee' }).expect(404);
   });
 
+  it('non-admin list still carries parsed permissions (no stale localStorage)', async () => {
+    const rows = [{ id: 'u1', role: 'Manager', isLocked: 0, permissions: '["approve_dept_reports"]', preferences: null }];
+    const d: any = { get: vi.fn(), all: vi.fn().mockResolvedValue(rows), run: vi.fn() };
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { (req as any).user = { id: 'm', role: 'Manager', permissions: ['manage_dept_tasks'], managementLevel: 20 }; next(); });
+    app.use(userRoutes(d, {}));
+    const res = await request(app).get('/').expect(200);
+    expect(res.body[0].permissions).toEqual(['approve_dept_reports']);
+  });
+
   it('DELETE refuses self-deletion', async () => {
     const d = db();
     await request(adminApp(userRoutes(d, {}))).delete('/admin-1').expect(403);
@@ -132,6 +143,57 @@ describe('user management scopes', () => {
 
     const nodb: any = { get: vi.fn(), all: vi.fn().mockRejectedValue(new Error('no table')), run: vi.fn() };
     await request(adminApp(userRoutes(nodb, {}))).get('/u1/assignments').expect(200, []);
+  });
+});
+
+// ─── Warehouse scopes ───────────────────────────────────────────────────────
+
+describe('user warehouse scopes', () => {
+  function db() {
+    return {
+      get: vi.fn(async (sql: string) => {
+        if (String(sql).includes('FROM users')) return { id: 'u1' };
+        if (String(sql).includes('FROM warehouses')) return { id: 'wh-hn' };
+        return undefined;
+      }),
+      all: vi.fn(async () => [{ warehouseId: 'wh-hn' }]),
+      run: vi.fn().mockResolvedValue({ changes: 1 }),
+    };
+  }
+
+  it('GET returns the warehouse id list', async () => {
+    const res = await request(adminApp(userRoutes(db(), {}))).get('/u1/warehouse-scopes').expect(200);
+    expect(res.body).toEqual(['wh-hn']);
+  });
+
+  it('PUT replaces scopes and revokes tokens', async () => {
+    const d = db();
+    const res = await request(adminApp(userRoutes(d, {}))).put('/u1/warehouse-scopes').send({ warehouseIds: ['wh-hn'] }).expect(200);
+    expect(res.body).toEqual({ success: true, warehouseIds: ['wh-hn'] });
+    expect(d.run.mock.calls[0][0]).toBe('DELETE FROM user_warehouse_scopes WHERE userId = ?');
+    expect(d.run.mock.calls.some(([sql]: string[]) => String(sql).includes('tokenVersion = tokenVersion + 1'))).toBe(true);
+  });
+
+  it('PUT rejects unknown warehouses and bad payloads', async () => {
+    const d: any = {
+      get: vi.fn(async (sql: string) => String(sql).includes('FROM users') ? { id: 'u1' } : undefined),
+      all: vi.fn(),
+      run: vi.fn(),
+    };
+    await request(adminApp(userRoutes(d, {}))).put('/u1/warehouse-scopes').send({ warehouseIds: ['ghost'] }).expect(400);
+    await request(adminApp(userRoutes(d, {}))).put('/u1/warehouse-scopes').send({ warehouseIds: 'wh-hn' }).expect(400);
+    expect(d.run).not.toHaveBeenCalled();
+  });
+
+  it('warehouses list returns the master data', async () => {
+    const { warehouseRoutes } = await import('../routes/warehouses.js');
+    const d: any = { all: vi.fn().mockResolvedValue([{ id: 'wh-hn', code: 'HN', name: 'Kho Hà Nội', region: 'Bắc', address: null, isActive: 1 }]) };
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { (req as any).user = { id: 'a', role: 'Admin' }; next(); });
+    app.use(warehouseRoutes(d));
+    const res = await request(app).get('/').expect(200);
+    expect(res.body).toEqual([{ id: 'wh-hn', code: 'HN', name: 'Kho Hà Nội', region: 'Bắc', address: null, isActive: true }]);
   });
 });
 

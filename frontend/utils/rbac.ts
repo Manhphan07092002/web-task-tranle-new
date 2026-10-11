@@ -75,17 +75,19 @@ export function canDeleteTask(user: User | null, task: { createdBy?: string }): 
   return levelOf(user) >= LEVELS.DIRECTOR;
 }
 
-/** Nút duyệt hợp đồng theo hàng: bypass hệ thống + cùng phòng + trong hạn mức. */
+/** Nút duyệt hợp đồng theo hàng: bypass hệ thống + cùng phòng/scope + trong hạn mức. */
 export function canApproveContractValue(
   user: User | null,
   contract: { department?: string; preTaxValue?: number; postTaxValue?: number },
+  deptNames: string[] = [],
 ): boolean {
   if (!user) return false;
   const perms = user.permissions || [];
   if (perms.includes('admin_panel') || perms.includes('director_feedback') || user.role === 'Admin' || user.role === 'Director') return true;
   const level = levelOf(user);
   if (level >= LEVELS.DIRECTOR) return true;
-  const sameDept = !!user.department && !!contract.department && user.department === contract.department;
+  const sameDept = !!user.department && !!contract.department
+    && (user.department === contract.department || deptNames.includes(contract.department));
   if (!sameDept || level < LEVELS.MANAGER) return false;
   return canApprove(user, 'contract', Number(contract.preTaxValue ?? contract.postTaxValue ?? 0) || 0);
 }

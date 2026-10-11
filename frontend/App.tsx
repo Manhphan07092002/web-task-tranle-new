@@ -184,10 +184,10 @@ export default function TranLeTaskApp() {
   }, [rawTodaysTasks]);
 
   useEffect(() => {
-    // Report Reminder: Every Friday at >= 16:00
+    // Report Reminder: Every Saturday at >= 11:00
     const checkReportTime = () => {
       const now = new Date();
-      if (now.getDay() === 5 && now.getHours() >= 16 && user && user.permissions?.includes('create_report')) {
+      if (now.getDay() === 6 && now.getHours() >= 11 && user && user.permissions?.includes('create_report')) {
         const hasFired = localStorage.getItem(`report_reminder_${now.toLocaleDateString()}`);
         if (!hasFired) {
           // Check if user already reported this week
@@ -215,7 +215,7 @@ export default function TranLeTaskApp() {
               userId: user.id,
               type: 'report_reminder',
               title: "⏰ Đã đến giờ làm Báo cáo!",
-              message: "Hôm nay là Thứ 6, đã qua 16h00. Vui lòng nhấp vào đây để tạo và gửi báo cáo công việc tuần này nhé!"
+              message: "Hôm nay là Thứ 7, đã qua 11h00. Vui lòng nhấp vào đây để tạo và gửi báo cáo công việc tuần này nhé!"
             });
           }
           // Mark as fired regardless, so we don't spam if they choose not to report

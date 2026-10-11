@@ -439,4 +439,61 @@ WHERE department IS NOT NULL AND department != '';
 **Next Phase:** Phase 1 will add decisions around route integration patterns  
 **Maintained By:** Development team
 
+---
+
+## Phụ lục A — Bổ sung từ 09_KHO_VAN (2026-10-11, không sửa lịch sử Phase 0)
+
+Nguồn: `new-base/tranle_system_docs/09_KHO_VAN.md` (V8.2 – Warehouse Role-based UI).
+4 doc Phase 0/1 ra đời trước đặc tả kho nên thiếu 4 quyết định sau. Ghi thêm ở
+đây để triển khai kho không phải đoán.
+
+### D9: warehouseScope là chiều scope thứ 4 (ngoài dept/level/permission)
+
+**Decision:** Scope kho vận = `managementLevel + permissions + department + warehouseScope`
+(09_KHO_VAN §6.1, §33). NV (10) chỉ thấy warehouse/location thuộc scope được giao;
+TP (20) thấy toàn bộ warehouse thuộc scope phòng.
+
+**Why:** Nhân viên 2 kho khác nhau không được thấy tồn của nhau dù cùng
+`managementLevel` và cùng phòng ban. Dept scope không đủ mịn.
+
+**Impact:**
+- `rbacService` cần thêm `warehouseScope` (hiện mới có dept scope) — việc còn lại.
+- Sidebar kho đã tách bằng `minLevel` (`departmentMenus.ts` WAREHOUSE) — xong.
+- Không tạo 2 app riêng cho NV/TP (§6.1).
+
+### D10: Stock_move bất biến, balances chỉ là projection (09_KHO_VAN §2)
+
+**Decision:**
+1. Không update trực tiếp `remainingQuantity`; mọi biến động vật lý tạo `stock_move`.
+2. `stock_balances` chỉ để đọc nhanh. 3. UI mặc định ưu tiên `Available
+   (= on_hand − reserved)`, không ưu tiên `On hand`. 4. Hàng
+   `WARRANTY/DAMAGED/DEMO/QUARANTINE` không tính vào tồn khả dụng bán hàng.
+
+**Why:** Tránh âm kho, mất truy vết và lệch đối soát MISA — lỗi phổ biến nhất
+của module kho viết vội.
+
+**Impact:** Mọi API nhập/xuất/điều chuyển/kiểm kê sau này phải sinh move trong
+transaction; frontend chỉ ẩn/disable action, backend enforce thật (§2.10).
+
+### D11: Một codebase cho NV và TP, phân biệt bằng level + permission
+
+**Decision:** Dùng chung route/component (`InventoryPage`, `ReceiptPage`,
+`IssuePage`, `TransferPage`, `StockCountPage`, `SerialPage`, `BundlePage`),
+render theo `managementLevel/permissions/accessibleDepartments/warehouseScope/
+assignedUserId` (09_KHO_VAN §34). Sidebar là nơi thể hiện rõ nhất: NV không thấy
+mục quản trị (danh mục, kho/vị trí, cảnh báo toàn công ty, chờ duyệt, điều chỉnh
+tồn, báo cáo quản trị, đối soát MISA — §5.1).
+
+**Why:** Tránh fork 2 UI rồi lệch nhau sau 3 tháng.
+
+**Impact:** Đã áp dụng: menu kho dùng `minLevel: 20` cho mục TP
+(`departmentMenus.ts`), NV mù các mục đó; TP thấy đầy đủ (§42 acceptance).
+
+### D12: Admin 99 áp dụng cả trong kho
+
+**Decision:** Admin cấu hình hệ thống, không approve exception / duyệt chênh lệch /
+điều chỉnh tồn (nối tiếp D4 + 09_KHO_VAN §33).
+
+---
+
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>

@@ -473,15 +473,16 @@ export default function ReportsPage() {
     return { total: deptEmployees.length, submitted: deptEmployees.filter(u => submittedIds.has(u.id)).length };
   }, [canViewAll, canApprove, user, users, reports, currentWeekStartStr, managerRoleNames]);
 
-  // Countdown to Sunday 23:59 (deadline)
+  // Countdown to Saturday 11:00 (deadline)
   const deadlineCountdown = useMemo(() => {
     const now = new Date();
-    const day = now.getDay();
-    const daysUntilSun = day === 0 ? 0 : 7 - day;
-    const sun = new Date(now);
-    sun.setDate(now.getDate() + daysUntilSun);
-    sun.setHours(23, 59, 59, 999);
-    const diff = sun.getTime() - now.getTime();
+    const deadline = new Date(now);
+    const addDays = now.getDay() === 6 && (now.getHours() > 11 || (now.getHours() === 11 && now.getMinutes() > 0))
+      ? 7 // already past this week's deadline → next Saturday
+      : (6 - now.getDay() + 7) % 7;
+    deadline.setDate(now.getDate() + addDays);
+    deadline.setHours(11, 0, 0, 0);
+    const diff = deadline.getTime() - now.getTime();
     if (diff <= 0) return null;
     const days = Math.floor(diff / (1000 * 60 * 60 * 24));
     const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
@@ -508,8 +509,8 @@ export default function ReportsPage() {
     return activeDepts.filter(d => !submittedDepts.has(d));
   }, [canViewAll, departments, reports, currentWeekStart]);
 
-  // ── Logic: Chỉ báo cáo vào T6, T7, CN và mỗi tuần 1 lần ──
-  const isReportDay = [0, 5, 6].includes(new Date().getDay());
+  // ── Logic: Chỉ báo cáo vào T7, CN và mỗi tuần 1 lần ──
+  const isReportDay = [0, 6].includes(new Date().getDay());
 
 
 
@@ -561,7 +562,7 @@ export default function ReportsPage() {
               <DollarSign size={16} /> Báo cáo Doanh thu
             </button>
           )}
-          {(canCreate || canApprove) && !canViewAll && (
+          {(
             <div className="relative group">
               <button
                 onClick={handleOpenCreate}
@@ -573,7 +574,7 @@ export default function ReportsPage() {
               </button>
               {!canCreateNewReport && (
                 <div className="absolute top-full mt-2 right-0 w-64 p-2 bg-gray-800 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-lg text-center">
-                  {!isReportDay ? 'Hệ thống chỉ mở tính năng báo cáo vào Thứ 6, Thứ 7 và Chủ nhật.' : 'Bạn đã có báo cáo trong tuần này rồi.'}
+                  {!isReportDay ? 'Hệ thống chỉ mở tính năng báo cáo vào Thứ 7 và Chủ nhật.' : 'Bạn đã có báo cáo trong tuần này rồi.'}
                 </div>
               )}
             </div>

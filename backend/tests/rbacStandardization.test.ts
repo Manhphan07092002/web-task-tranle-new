@@ -226,6 +226,25 @@ describe('login managementLevel fallback', () => {
     const res = await request(app).post('/login').send({ email: 'tp@x.vn', password: 'CorrectPassword1' }).expect(200);
     expect(res.body.user).toMatchObject({ managementLevel: 20, primaryDepartmentId: 'd9', permissions: [] });
   });
+
+  it('GET /me refreshes identity from the database', async () => {
+    vi.stubEnv('JWT_SECRET', secret);
+    const token = jwt.sign({ sub: 'u1', tokenVersion: 0 }, secret, { algorithm: 'HS256' });
+    const db = {
+      get: vi.fn(async (sql: string) => {
+        if (String(sql).includes('FROM users')) {
+          return { id: 'u1', name: 'TP', email: 'tp@x.vn', role: 'Manager', department: 'P KT', avatar: '', isLocked: 0, lockedUntil: null, tokenVersion: 0, managementLevel: null, primaryDepartmentId: 'd1', permissions: '["approve_dept_reports"]' };
+        }
+        return { permissions: '["approve_dept_reports"]', managementLevel: 20 };
+      }),
+      all: vi.fn().mockResolvedValue([]),
+      run: vi.fn(),
+    };
+    const app = express(); app.use(express.json()); app.use(authRoutes(db));
+    await request(app).get('/me').expect(401);
+    const res = await request(app).get('/me').set('Authorization', `Bearer ${token}`).expect(200);
+    expect(res.body.user).toMatchObject({ id: 'u1', managementLevel: 20, permissions: ['approve_dept_reports'] });
+  });
 });
 
 // ─── F. Chuẩn hóa DDL/migration (chống regression) ───────────────────────────
@@ -252,6 +271,30 @@ describe('database standardization guardrails', () => {
   it('keeps the level migrations instead of dropping lock columns', () => {
     expect(src).toContain("runVersionedMigration(db, 11, 'standardize_users_rbac_level'");
     expect(src).toContain("runVersionedMigration(db, 12, 'roles_management_level'");
+    expect(src).toContain("runVersionedMigration(db, 13, 'warehouses_and_user_scopes'");
+    expect(src).toContain("runVersionedMigration(db, 14, 'drop_unused_position_tables'");
+    expect(src).toContain("runVersionedMigration(db, 15, 'stock_core_schema'");
+    expect(src).toContain("runVersionedMigration(db, 16, 'stock_minmax_policies'");
+    expect(src).toContain("runVersionedMigration(db, 17, 'stock_reservations'");
+    expect(src).toContain("runVersionedMigration(db, 18, 'stock_serials_and_tracking'");
+    expect(src).toContain("runVersionedMigration(db, 19, 'product_bundles'");
+    expect(src).toContain("runVersionedMigration(db, 20, 'stock_counts'");
+    expect(src).toContain("runVersionedMigration(db, 21, 'bundle_kit_product'");
+    expect(src).toContain("runVersionedMigration(db, 22, 'misa_integration_foundation'");
+    expect(src).toContain('CREATE TABLE IF NOT EXISTS stock_counts');
+    expect(src).toContain('CREATE TABLE IF NOT EXISTS stock_count_lines');
+    expect(src).toContain('CREATE TABLE IF NOT EXISTS product_bundles');
+    expect(src).toContain('CREATE TABLE IF NOT EXISTS product_bundle_items');
+    expect(src).toContain('CREATE TABLE IF NOT EXISTS stock_serials');
+    expect(src).toContain('CREATE TABLE IF NOT EXISTS reservations');
+    expect(src).toContain('CREATE TABLE IF NOT EXISTS product_warehouse_policies');
+    for (const table of ['stock_locations', 'stock_documents', 'stock_document_lines', 'stock_moves', 'stock_balances']) {
+      expect(src).toContain(`CREATE TABLE IF NOT EXISTS ${table}`);
+    }
+    expect(src).toContain('CREATE TABLE IF NOT EXISTS warehouses');
+    expect(src).toContain('CREATE TABLE IF NOT EXISTS user_warehouse_scopes');
+    expect(src).not.toContain('CREATE TABLE IF NOT EXISTS positions');
+    expect(src).not.toContain('CREATE TABLE IF NOT EXISTS user_positions');
     expect(src).not.toMatch(/DROP COLUMN [`'](failedLogins|lockedUntil)/);
   });
 });

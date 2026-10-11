@@ -77,7 +77,18 @@ File này hướng dẫn **developer mới** hoặc **AI assistant** tiếp tụ
    → Đây là TEMPLATE cho tests Phase 1
 ```
 
-**Tổng thời gian đọc:** ~1.5 giờ
+**Tổng thời gian đọc:** ~1.5 giờ (+ 30 phút nếu làm track kho — xem 1.4)
+
+### 1.4. Riêng track Kho vận (30 phút, bổ sung 2026-10-11)
+
+```
+9. new-base/tranle_system_docs/09_KHO_VAN.md   (30 phút)
+   → Sidebar NV/TP theo level (§5-6) — đã xong ở departmentMenus.ts
+   → Dashboard theo cấp (§7-8), nghiệp vụ (§9-23), quản trị TP (§24-28)
+   → RBAC kho: managementLevel + warehouseScope (§33) — service chưa có scope kho
+   → Phase A→D + acceptance §42 (đã chép vào PLAN_TRIEN_KHAI_V7 Phụ lục W)
+   → Quyết định D9–D12 (DECISIONS_PHASE0 Phụ lục A), Pattern 7–8 (PATTERNS_PHASE1)
+```
 
 ---
 
@@ -649,6 +660,14 @@ router.get('/', requireAuth, async (req, res) => {
 
 // Total: ~5-9 tests per route
 ```
+
+### Rule 6: Riêng module kho (từ 09_KHO_VAN, bổ sung 2026-10-11)
+
+- ❌ KHÔNG update trực tiếp số tồn (`remainingQuantity`, balances).
+- ✅ Mọi biến động tồn tạo `stock_move` trong transaction (D10).
+- ✅ UI mặc định hiện `Available`, lọc `purpose = 'SALEABLE'` (Pattern 8).
+- ✅ Mục sidebar quản trị kho luôn `minLevel: 20`, không dùng permission để ẩn (Pattern 7).
+- ✅ Backend enforce quyền thật; frontend chỉ ẩn/disable.
 
 ---
 

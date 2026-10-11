@@ -4,6 +4,7 @@ import { Button, Card, Avatar } from '../../components/UI';
 import { PlusCircle, Edit, Trash2, X, Mail, Phone, MapPin, Calendar, Info, CreditCard, Users } from 'lucide-react';
 import { User } from '../../types';
 import { useData } from '../../contexts/DataContext';
+import { useRBAC } from '../../hooks/useRBAC';
 import { UserProfilePopup } from '../../components/UserProfilePopup';
 import { getSignature } from '../Mail/utils';
 
@@ -20,10 +21,20 @@ export default function TeamPage({
   t, user, users, openCreateUserModal, openEditUserModal, handleDeleteUser
 }: TeamPageProps) {
   const { roles } = useData();
+  const { accessibleDepartments } = useRBAC();
   const perms = user.permissions || [];
   const canViewTeam = perms.includes('view_dept_users') || perms.includes('manage_users');
   const canManageTeam = perms.includes('manage_users');
   const navigate = useNavigate();
+
+  // TP+ thấy cả phòng được giao (tên + FK), không chỉ tên phòng mình
+  const visibleUsers = users.filter(u => {
+    if (canManageTeam) return true;
+    if (u.id === user.id) return true;
+    if (u.department && (u.department === user.department || accessibleDepartments.includes(u.department))) return true;
+    if (u.primaryDepartmentId && user.primaryDepartmentId && u.primaryDepartmentId === user.primaryDepartmentId) return true;
+    return false;
+  });
 
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
 
@@ -45,7 +56,7 @@ export default function TeamPage({
         )}
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {users.filter(u => canManageTeam ? true : u.department === user.department).map(u => (
+        {visibleUsers.map(u => (
           <Card 
             key={u.id} 
             className="p-6 flex items-center gap-4 relative group cursor-pointer hover:shadow-md transition-shadow"
@@ -60,10 +71,15 @@ export default function TeamPage({
                 const roleObj = roles.find(r => r.name === u.role);
                 const roleColor = roleObj?.color || '#3b82f6'; // default blue
                 return (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium border"
-                    style={{ backgroundColor: roleColor + '18', color: roleColor, borderColor: roleColor + '44' }}>
-                    <span className="w-1.5 h-1.5 rounded-full bg-current" />
-                    {u.role}
+                  <span className="inline-flex items-center gap-1">
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium border"
+                      style={{ backgroundColor: roleColor + '18', color: roleColor, borderColor: roleColor + '44' }}>
+                      <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                      {u.role}
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                      LV {u.managementLevel ?? 10}
+                    </span>
                   </span>
                 )
               })()}

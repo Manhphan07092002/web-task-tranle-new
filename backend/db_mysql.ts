@@ -403,29 +403,168 @@ CREATE TABLE IF NOT EXISTS mail_quotas (
   email VARCHAR(255) PRIMARY KEY, quota INT DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS positions (
-  id VARCHAR(191) PRIMARY KEY, code VARCHAR(50) UNIQUE, name VARCHAR(255) NOT NULL,
-  departmentId VARCHAR(191), managementLevel INT NOT NULL DEFAULT 10,
-  description TEXT, isActive TINYINT DEFAULT 1, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-  INDEX idx_pos_dept (departmentId),
-  INDEX idx_pos_level (managementLevel)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS user_positions (
-  id VARCHAR(191) PRIMARY KEY, userId VARCHAR(191) NOT NULL, positionId VARCHAR(191) NOT NULL,
-  isPrimary TINYINT DEFAULT 0, startDate DATE, endDate DATE,
-  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY unique_user_position (userId, positionId),
-  INDEX idx_up_user (userId),
-  INDEX idx_up_position (positionId)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 CREATE TABLE IF NOT EXISTS management_scopes (
   id VARCHAR(191) PRIMARY KEY, userId VARCHAR(191) NOT NULL, departmentId VARCHAR(191) NOT NULL,
   scopeType VARCHAR(50) NOT NULL DEFAULT 'FULL', createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY unique_user_dept_scope (userId, departmentId),
   INDEX idx_ms_user (userId),
   INDEX idx_ms_dept (departmentId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS warehouses (
+  id VARCHAR(191) PRIMARY KEY, code VARCHAR(50) NOT NULL UNIQUE, name VARCHAR(255) NOT NULL,
+  region VARCHAR(100) NULL, address TEXT NULL, isActive TINYINT NOT NULL DEFAULT 1,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_wh_code (code),
+  INDEX idx_wh_active (isActive)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS user_warehouse_scopes (
+  id VARCHAR(191) PRIMARY KEY, userId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_user_warehouse (userId, warehouseId),
+  INDEX idx_uws_user (userId),
+  INDEX idx_uws_warehouse (warehouseId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_locations (
+  id VARCHAR(191) PRIMARY KEY, warehouseId VARCHAR(191) NOT NULL, parentId VARCHAR(191) NULL,
+  code VARCHAR(100) NOT NULL, name VARCHAR(255) NOT NULL,
+  type VARCHAR(32) NOT NULL DEFAULT 'INTERNAL', purpose VARCHAR(32) NOT NULL DEFAULT 'SALEABLE',
+  isActive TINYINT NOT NULL DEFAULT 1, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_warehouse_location (warehouseId, code),
+  INDEX idx_loc_warehouse (warehouseId),
+  INDEX idx_loc_purpose (purpose)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_documents (
+  id VARCHAR(191) PRIMARY KEY, code VARCHAR(100) NULL UNIQUE,
+  docType VARCHAR(32) NOT NULL, status VARCHAR(32) NOT NULL DEFAULT 'DRAFT',
+  warehouseId VARCHAR(191) NULL, sourceWarehouseId VARCHAR(191) NULL, destWarehouseId VARCHAR(191) NULL,
+  referenceType VARCHAR(64) NULL, referenceId VARCHAR(191) NULL,
+  notes TEXT NULL, createdBy VARCHAR(191) NULL, approvedBy VARCHAR(191) NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_sdoc_type_status (docType, status),
+  INDEX idx_sdoc_warehouse (warehouseId),
+  INDEX idx_sdoc_reference (referenceType, referenceId),
+  INDEX idx_sdoc_created (createdAt)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_document_lines (
+  id VARCHAR(191) PRIMARY KEY, documentId VARCHAR(191) NOT NULL, productId VARCHAR(191) NOT NULL,
+  quantity DOUBLE NOT NULL DEFAULT 0, unitPrice DOUBLE NOT NULL DEFAULT 0,
+  locationId VARCHAR(191) NULL, note TEXT NULL,
+  INDEX idx_sdline_document (documentId),
+  INDEX idx_sdline_product (productId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_moves (
+  id VARCHAR(191) PRIMARY KEY, productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
+  locationId VARCHAR(191) NULL, quantity DOUBLE NOT NULL,
+  moveType VARCHAR(32) NOT NULL, referenceType VARCHAR(64) NULL, referenceId VARCHAR(191) NULL,
+  documentLineId VARCHAR(191) NULL, createdBy VARCHAR(191) NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_smove_product (productId),
+  INDEX idx_smove_warehouse (warehouseId),
+  INDEX idx_smove_wh_product (warehouseId, productId),
+  INDEX idx_smove_reference (referenceType, referenceId),
+  INDEX idx_smove_created (createdAt)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_balances (
+  productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL, locationId VARCHAR(191) NOT NULL DEFAULT '',
+  onHand DOUBLE NOT NULL DEFAULT 0, reserved DOUBLE NOT NULL DEFAULT 0,
+  updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (productId, warehouseId, locationId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS product_warehouse_policies (
+  productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
+  minStock DOUBLE NOT NULL DEFAULT 0, maxStock DOUBLE NOT NULL DEFAULT 0,
+  reorderPoint DOUBLE NOT NULL DEFAULT 0, leadTimeDays INT NOT NULL DEFAULT 0,
+  updatedBy VARCHAR(191) NULL, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (productId, warehouseId),
+  INDEX idx_pwp_warehouse (warehouseId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS reservations (
+  id VARCHAR(191) PRIMARY KEY, productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
+  locationId VARCHAR(191) NULL, quantity DOUBLE NOT NULL DEFAULT 0,
+  sourceType VARCHAR(32) NOT NULL DEFAULT 'INTERNAL', sourceId VARCHAR(191) NULL,
+  requestedBy VARCHAR(191) NULL, status VARCHAR(32) NOT NULL DEFAULT 'HELD',
+  expiresAt DATETIME NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_res_wh_product (warehouseId, productId),
+  INDEX idx_res_status (status),
+  INDEX idx_res_source (sourceType, sourceId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_serials (
+  id VARCHAR(191) PRIMARY KEY, productId VARCHAR(191) NOT NULL,
+  serialNumber VARCHAR(191) NULL UNIQUE, lotCode VARCHAR(191) NULL,
+  warehouseId VARCHAR(191) NOT NULL, locationId VARCHAR(191) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'SALEABLE',
+  supplier VARCHAR(300) NULL, receiptId VARCHAR(191) NULL,
+  customerName VARCHAR(300) NULL, projectId VARCHAR(191) NULL,
+  warrantyStart DATE NULL, warrantyMonths INT NOT NULL DEFAULT 0,
+  notes TEXT NULL, createdBy VARCHAR(191) NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_sser_product (productId),
+  INDEX idx_sser_lot (lotCode),
+  INDEX idx_sser_warehouse (warehouseId),
+  INDEX idx_sser_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS product_bundles (
+  id VARCHAR(191) PRIMARY KEY, name VARCHAR(255) NOT NULL, code VARCHAR(100) NULL UNIQUE,
+  bundleType VARCHAR(32) NOT NULL DEFAULT 'VIRTUAL_BUNDLE',
+  kitProductId VARCHAR(191) NULL,
+  description TEXT NULL, isActive TINYINT NOT NULL DEFAULT 1,
+  createdBy VARCHAR(191) NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_bun_active (isActive)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS product_bundle_items (
+  bundleId VARCHAR(191) NOT NULL, productId VARCHAR(191) NOT NULL,
+  qtyPerBundle DOUBLE NOT NULL DEFAULT 1,
+  PRIMARY KEY (bundleId, productId),
+  INDEX idx_bunitem_product (productId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_counts (
+  id VARCHAR(191) PRIMARY KEY, code VARCHAR(100) NULL UNIQUE, warehouseId VARCHAR(191) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'COUNTING',
+  blindCount TINYINT NOT NULL DEFAULT 1,
+  notes TEXT NULL, createdBy VARCHAR(191) NULL, approvedBy VARCHAR(191) NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_scnt_warehouse (warehouseId),
+  INDEX idx_scnt_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_count_lines (
+  id VARCHAR(191) PRIMARY KEY, countId VARCHAR(191) NOT NULL,
+  productId VARCHAR(191) NOT NULL, locationId VARCHAR(191) NOT NULL DEFAULT '',
+  expectedQty DOUBLE NOT NULL DEFAULT 0, actualQty DOUBLE NULL,
+  note TEXT NULL,
+  UNIQUE KEY unique_count_line (countId, productId, locationId),
+  INDEX idx_scline_count (countId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS misa_mappings (
+  id VARCHAR(191) PRIMARY KEY, entityType VARCHAR(64) NOT NULL, entityId VARCHAR(191) NOT NULL,
+  misaCode VARCHAR(191) NOT NULL, misaName VARCHAR(255) NULL,
+  createdBy VARCHAR(191) NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_misa_mapping (entityType, entityId),
+  INDEX idx_misa_code (misaCode)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS misa_sync_logs (
+  id VARCHAR(191) PRIMARY KEY, direction VARCHAR(16) NOT NULL DEFAULT 'PUSH',
+  entityType VARCHAR(64) NOT NULL, entityId VARCHAR(191) NULL,
+  idempotencyKey VARCHAR(191) NOT NULL UNIQUE, status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  payload TEXT NULL, error TEXT NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, finishedAt DATETIME NULL,
+  INDEX idx_misa_log_status (status),
+  INDEX idx_misa_log_entity (entityType, entityId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `;
 
@@ -668,6 +807,264 @@ export async function initDbMysql(): Promise<MysqlDb> {
             SET u.managementLevel = r.managementLevel
             WHERE u.managementLevel = 10 AND r.managementLevel > 10`);
         } catch { /* MySQL JOIN UPDATE fallback: bỏ qua nếu không hỗ trợ */ }
+      });
+
+      await runVersionedMigration(db, 13, 'warehouses_and_user_scopes', async () => {
+        // D9 (09_KHO_VAN §6.1): scope kho là chiều thứ 4, gán tường minh từng user.
+        // Director (40) thấy tất cả, Admin (99) rỗng — xử lý ở service, không seed.
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS warehouses (
+            id VARCHAR(191) PRIMARY KEY, code VARCHAR(50) NOT NULL UNIQUE, name VARCHAR(255) NOT NULL,
+            region VARCHAR(100) NULL, address TEXT NULL, isActive TINYINT NOT NULL DEFAULT 1,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_wh_code (code),
+            INDEX idx_wh_active (isActive)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+          CREATE TABLE IF NOT EXISTS user_warehouse_scopes (
+            id VARCHAR(191) PRIMARY KEY, userId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_user_warehouse (userId, warehouseId),
+            INDEX idx_uws_user (userId),
+            INDEX idx_uws_warehouse (warehouseId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        const WAREHOUSES: [string, string, string, string, string][] = [
+          ['wh-hn', 'HN', 'Kho Hà Nội', 'Bắc', 'Cầu Nhật Tân, Vân Nội, Đông Anh, Hà Nội'],
+          ['wh-hx1', 'HX1', 'Kho Hòa Xuân 1', 'Trung', '275–279 Diên Hồng, Hòa Xuân, Cẩm Lệ, Đà Nẵng'],
+          ['wh-hx2', 'HX2', 'Kho Hòa Xuân 2', 'Trung', 'Võ An Ninh – Phan Triêm, Hòa Xuân, Cẩm Lệ, Đà Nẵng'],
+          ['wh-hcm', 'HCM', 'Kho Hồ Chí Minh', 'Nam', '02 Nguyễn Ảnh Thủ, Trung Mỹ Tây, Quận 12, TP.HCM'],
+          ['wh-vt', 'VT', 'Kho Vũng Tàu', 'Nam', 'Phú Mỹ, Thị xã Phú Mỹ, Bà Rịa – Vũng Tàu'],
+          ['wh-bhdn', 'BHDN', 'Kho Bảo hành Đà Nẵng', 'Trung', 'Hòa Xuân, Cẩm Lệ, Đà Nẵng'],
+        ];
+        for (const [id, code, name, region, address] of WAREHOUSES) {
+          await db.run(
+            'INSERT IGNORE INTO warehouses (id, code, name, region, address) VALUES (?, ?, ?, ?, ?)',
+            [id, code, name, region, address]
+          );
+        }
+        // Bootstrap: nhân sự phòng Kho Vận thấy tất cả kho (admin tỉa lại sau ở UI scope).
+        const khoStaff = await db.all(`SELECT id FROM users WHERE primaryDepartmentId = 'tle-dept-kho' OR department = 'Kho vận'`);
+        const whIds = await db.all('SELECT id FROM warehouses');
+        for (const u of khoStaff) {
+          for (const w of whIds) {
+            await db.run('INSERT IGNORE INTO user_warehouse_scopes (id, userId, warehouseId) VALUES (?, ?, ?)', [`uws-${u.id}-${w.id}`, u.id, w.id]);
+          }
+        }
+      });
+
+      await runVersionedMigration(db, 14, 'drop_unused_position_tables', async () => {
+        // positions/user_positions chưa bao giờ được code query (chức vụ thật nằm ở
+        // user_assignments từ import nhân sự). Chỉ drop khi rỗng; có dữ liệu thì giữ + cảnh báo.
+        for (const table of ['positions', 'user_positions']) {
+          let count = -1;
+          try {
+            const row = await db.get(`SELECT COUNT(*) as count FROM ${table}`);
+            count = Number((row as any)?.count ?? -1);
+          } catch {
+            count = -1; // bảng chưa tồn tại (DB mới) — không cần drop
+          }
+          if (count === 0) {
+            await db.run(`DROP TABLE IF EXISTS \`${table}\``);
+          } else if (count > 0) {
+            console.warn(`[DB] Keeping non-empty legacy table \`${table}\` (${count} rows).`);
+          }
+        }
+      });
+
+      await runVersionedMigration(db, 15, 'stock_core_schema', async () => {
+        // Phase A backend kho (09_KHO_VAN §3, §24): chứng từ chung + moves bất biến (D10).
+        // Balances chỉ là projection đọc nhanh — API tính toán ở bước sau, ở đây chỉ schema.
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS stock_locations (
+            id VARCHAR(191) PRIMARY KEY, warehouseId VARCHAR(191) NOT NULL, parentId VARCHAR(191) NULL,
+            code VARCHAR(100) NOT NULL, name VARCHAR(255) NOT NULL,
+            type VARCHAR(32) NOT NULL DEFAULT 'INTERNAL', purpose VARCHAR(32) NOT NULL DEFAULT 'SALEABLE',
+            isActive TINYINT NOT NULL DEFAULT 1, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_warehouse_location (warehouseId, code),
+            INDEX idx_loc_warehouse (warehouseId),
+            INDEX idx_loc_purpose (purpose)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+          CREATE TABLE IF NOT EXISTS stock_documents (
+            id VARCHAR(191) PRIMARY KEY, code VARCHAR(100) NULL UNIQUE,
+            docType VARCHAR(32) NOT NULL, status VARCHAR(32) NOT NULL DEFAULT 'DRAFT',
+            warehouseId VARCHAR(191) NULL, sourceWarehouseId VARCHAR(191) NULL, destWarehouseId VARCHAR(191) NULL,
+            referenceType VARCHAR(64) NULL, referenceId VARCHAR(191) NULL,
+            notes TEXT NULL, createdBy VARCHAR(191) NULL, approvedBy VARCHAR(191) NULL,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_sdoc_type_status (docType, status),
+            INDEX idx_sdoc_warehouse (warehouseId),
+            INDEX idx_sdoc_reference (referenceType, referenceId),
+            INDEX idx_sdoc_created (createdAt)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+          CREATE TABLE IF NOT EXISTS stock_document_lines (
+            id VARCHAR(191) PRIMARY KEY, documentId VARCHAR(191) NOT NULL, productId VARCHAR(191) NOT NULL,
+            quantity DOUBLE NOT NULL DEFAULT 0, unitPrice DOUBLE NOT NULL DEFAULT 0,
+            locationId VARCHAR(191) NULL, note TEXT NULL,
+            INDEX idx_sdline_document (documentId),
+            INDEX idx_sdline_product (productId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+          CREATE TABLE IF NOT EXISTS stock_moves (
+            id VARCHAR(191) PRIMARY KEY, productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
+            locationId VARCHAR(191) NULL, quantity DOUBLE NOT NULL,
+            moveType VARCHAR(32) NOT NULL, referenceType VARCHAR(64) NULL, referenceId VARCHAR(191) NULL,
+            documentLineId VARCHAR(191) NULL, createdBy VARCHAR(191) NULL,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_smove_product (productId),
+            INDEX idx_smove_warehouse (warehouseId),
+            INDEX idx_smove_wh_product (warehouseId, productId),
+            INDEX idx_smove_reference (referenceType, referenceId),
+            INDEX idx_smove_created (createdAt)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+          CREATE TABLE IF NOT EXISTS stock_balances (
+            productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL, locationId VARCHAR(191) NOT NULL DEFAULT '',
+            onHand DOUBLE NOT NULL DEFAULT 0, reserved DOUBLE NOT NULL DEFAULT 0,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (productId, warehouseId, locationId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        // Seed vị trí mặc định cho từng kho (§24): RECEIVING/SALEABLE/PICKING/WARRANTY/DAMAGED/DEMO/QUARANTINE.
+        const LOCATIONS: [string, string, string][] = [
+          ['RECEIVING', 'Khu nhận hàng', 'RECEIVING'],
+          ['SALEABLE', 'Khu bán hàng', 'SALEABLE'],
+          ['PICKING', 'Khu soạn hàng', 'PICKING'],
+          ['WARRANTY', 'Khu bảo hành', 'WARRANTY'],
+          ['DAMAGED', 'Khu hàng lỗi', 'DAMAGED'],
+          ['DEMO', 'Khu trưng bày', 'DEMO'],
+          ['QUARANTINE', 'Khu cách ly', 'QUARANTINE'],
+        ];
+        const warehouses = await db.all('SELECT id FROM warehouses');
+        for (const w of warehouses) {
+          for (const [code, name, purpose] of LOCATIONS) {
+            await db.run(
+              'INSERT IGNORE INTO stock_locations (id, warehouseId, code, name, type, purpose) VALUES (?, ?, ?, ?, ?, ?)',
+              [`loc-${w.id}-${code}`, w.id, code, name, 'INTERNAL', purpose]
+            );
+          }
+        }
+      });
+
+      await runVersionedMigration(db, 16, 'stock_minmax_policies', async () => {
+        // Cảnh báo tồn theo Product/Warehouse (§26). Không seed ngưỡng — TP đặt tay.
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS product_warehouse_policies (
+            productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
+            minStock DOUBLE NOT NULL DEFAULT 0, maxStock DOUBLE NOT NULL DEFAULT 0,
+            reorderPoint DOUBLE NOT NULL DEFAULT 0, leadTimeDays INT NOT NULL DEFAULT 0,
+            updatedBy VARCHAR(191) NULL, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (productId, warehouseId),
+            INDEX idx_pwp_warehouse (warehouseId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
+      await runVersionedMigration(db, 17, 'stock_reservations', async () => {
+        // Giữ hàng/phân bổ (§21): chỉ reserve từ available + SALEABLE,
+        // release khi hủy/hết hạn, consume khi ISSUE DONE. Reservation không tạo move.
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS reservations (
+            id VARCHAR(191) PRIMARY KEY, productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
+            locationId VARCHAR(191) NULL, quantity DOUBLE NOT NULL DEFAULT 0,
+            sourceType VARCHAR(32) NOT NULL DEFAULT 'INTERNAL', sourceId VARCHAR(191) NULL,
+            requestedBy VARCHAR(191) NULL, status VARCHAR(32) NOT NULL DEFAULT 'HELD',
+            expiresAt DATETIME NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_res_wh_product (warehouseId, productId),
+            INDEX idx_res_status (status),
+            INDEX idx_res_source (sourceType, sourceId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
+      await runVersionedMigration(db, 18, 'stock_serials_and_tracking', async () => {
+        // Serial/Lot Phase B (§22) + cấu hình tracking theo sản phẩm (§25).
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS stock_serials (
+            id VARCHAR(191) PRIMARY KEY, productId VARCHAR(191) NOT NULL,
+            serialNumber VARCHAR(191) NULL UNIQUE, lotCode VARCHAR(191) NULL,
+            warehouseId VARCHAR(191) NOT NULL, locationId VARCHAR(191) NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'SALEABLE',
+            supplier VARCHAR(300) NULL, receiptId VARCHAR(191) NULL,
+            customerName VARCHAR(300) NULL, projectId VARCHAR(191) NULL,
+            warrantyStart DATE NULL, warrantyMonths INT NOT NULL DEFAULT 0,
+            notes TEXT NULL, createdBy VARCHAR(191) NULL,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_sser_product (productId),
+            INDEX idx_sser_lot (lotCode),
+            INDEX idx_sser_warehouse (warehouseId),
+            INDEX idx_sser_status (status)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        await ensureColumn('products', 'tracking', "`tracking` VARCHAR(16) NOT NULL DEFAULT 'NONE'");
+      });
+
+      await runVersionedMigration(db, 19, 'product_bundles', async () => {
+        // Combo solar (§23): VIRTUAL_BUNDLE tính buildable từ available,
+        // STOCKED_KIT lắp/rã qua chứng từ (API lắp/rã để bước sau).
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS product_bundles (
+            id VARCHAR(191) PRIMARY KEY, name VARCHAR(255) NOT NULL, code VARCHAR(100) NULL UNIQUE,
+            bundleType VARCHAR(32) NOT NULL DEFAULT 'VIRTUAL_BUNDLE',
+            description TEXT NULL, isActive TINYINT NOT NULL DEFAULT 1,
+            createdBy VARCHAR(191) NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_bun_active (isActive)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+          CREATE TABLE IF NOT EXISTS product_bundle_items (
+            bundleId VARCHAR(191) NOT NULL, productId VARCHAR(191) NOT NULL,
+            qtyPerBundle DOUBLE NOT NULL DEFAULT 1,
+            PRIMARY KEY (bundleId, productId),
+            INDEX idx_bunitem_product (productId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
+      await runVersionedMigration(db, 20, 'stock_counts', async () => {
+        // Kiểm kê blind-count (§19–20): snapshot → đếm → đối chiếu → duyệt → adjustment.
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS stock_counts (
+            id VARCHAR(191) PRIMARY KEY, code VARCHAR(100) NULL UNIQUE, warehouseId VARCHAR(191) NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'COUNTING',
+            blindCount TINYINT NOT NULL DEFAULT 1,
+            notes TEXT NULL, createdBy VARCHAR(191) NULL, approvedBy VARCHAR(191) NULL,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_scnt_warehouse (warehouseId),
+            INDEX idx_scnt_status (status)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+          CREATE TABLE IF NOT EXISTS stock_count_lines (
+            id VARCHAR(191) PRIMARY KEY, countId VARCHAR(191) NOT NULL,
+            productId VARCHAR(191) NOT NULL, locationId VARCHAR(191) NOT NULL DEFAULT '',
+            expectedQty DOUBLE NOT NULL DEFAULT 0, actualQty DOUBLE NULL,
+            note TEXT NULL,
+            UNIQUE KEY unique_count_line (countId, productId, locationId),
+            INDEX idx_scline_count (countId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
+      await runVersionedMigration(db, 21, 'bundle_kit_product', async () => {
+        // STOCKED_KIT cần 1 mã hàng vật lý để giữ tồn bộ đã lắp (§23).
+        await ensureColumn('product_bundles', 'kitProductId', '`kitProductId` VARCHAR(191) NULL');
+      });
+
+      await runVersionedMigration(db, 22, 'misa_integration_foundation', async () => {
+        // Nền tích hợp MISA (§35): mapping + log idempotent. Chưa sync thật
+        // (không endpoint/field MISA) — UI đối soát ở bước sau.
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS misa_mappings (
+            id VARCHAR(191) PRIMARY KEY, entityType VARCHAR(64) NOT NULL, entityId VARCHAR(191) NOT NULL,
+            misaCode VARCHAR(191) NOT NULL, misaName VARCHAR(255) NULL,
+            createdBy VARCHAR(191) NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_misa_mapping (entityType, entityId),
+            INDEX idx_misa_code (misaCode)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+          CREATE TABLE IF NOT EXISTS misa_sync_logs (
+            id VARCHAR(191) PRIMARY KEY, direction VARCHAR(16) NOT NULL DEFAULT 'PUSH',
+            entityType VARCHAR(64) NOT NULL, entityId VARCHAR(191) NULL,
+            idempotencyKey VARCHAR(191) NOT NULL UNIQUE, status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+            payload TEXT NULL, error TEXT NULL,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, finishedAt DATETIME NULL,
+            INDEX idx_misa_log_status (status),
+            INDEX idx_misa_log_entity (entityType, entityId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
       });
 
 

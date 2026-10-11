@@ -1,6 +1,7 @@
 import React from 'react';
 import { Printer, Pencil, Trash2, X, PlusCircle, Paperclip, FileText, Upload, Save, Package } from 'lucide-react';
 import { Contract, ContractProduct, confirmContractReceipt, approveContract, rejectContract, cancelPendingContract } from '../../services/contractService';
+import { canApproveContractValue } from '../../utils/rbac';
 import { WarehousePickerModal } from './WarehousePickerModal';
 import { Task, User } from '../../types';
 import { CHECKLIST_ITEMS, numToVnText } from './contractUtils';
@@ -144,8 +145,14 @@ export const ContractForm: React.FC<ContractFormProps> = ({
     const userRole = currentUser.role || '';
     const isSystemAdmin = perms.includes('admin_panel') || perms.includes('director_feedback') || userRole === 'Admin' || userRole === 'Director' || userRole === 'Giám đốc';
     const isDeptManager = (userRole === 'Manager' || userRole.startsWith('Trưởng') || userRole.includes('Trưởng')) && currentUser.department === form.department;
-    return isSystemAdmin || isDeptManager;
-  }, [currentUser, form.department]);
+    // Nút gọi endpoint approve (có hạn mức TP <500M / P.GĐ <2B ở backend).
+    if (!isSystemAdmin && !isDeptManager) {
+      const level = currentUser.managementLevel ?? 10;
+      const sameDept = !!currentUser.department && !!form.department && currentUser.department === form.department;
+      if (!(level >= 30 && sameDept)) return false;
+    }
+    return canApproveContractValue(currentUser, { department: form.department, preTaxValue: form.preTaxValue, postTaxValue: form.postTaxValue });
+  }, [currentUser, form.department, form.preTaxValue, form.postTaxValue]);
 
   const isChecklistComplete = React.useMemo(() => {
     return CHECKLIST_ITEMS.every(item => form.documentChecklist?.[item.key]);

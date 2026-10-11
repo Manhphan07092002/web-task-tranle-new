@@ -6,6 +6,7 @@ import {
   getAccessibleDepartments,
   getDepartmentAndChildren,
   getManagedDepartments,
+  getWarehouseScope,
   buildTaskScopeFilter,
   canAccessTask,
   checkApprovalAuthority,
@@ -91,6 +92,44 @@ describe('resolveUserDepartments (dual-column + fallback)', () => {
   });
 });
 
+describe('getWarehouseScope (explicit assignment)', () => {
+  const warehouses = [{ id: 'wh-hn' }, { id: 'wh-hx1' }];
+
+  function db(assigned: string[] = []) {
+    return {
+      all: async (sql: string, params?: any[]) => {
+        if (String(sql).includes('FROM warehouses')) return warehouses;
+        if (String(sql).includes('FROM user_warehouse_scopes')) {
+          if (params?.[0] === 'boom') throw new Error('no table');
+          return assigned.map((warehouseId) => ({ warehouseId }));
+        }
+        return [];
+      },
+    };
+  }
+
+  it('returns only assigned warehouses and dedupes', async () => {
+    const nv = { id: 'nv', managementLevel: 10 };
+    expect(await getWarehouseScope(db(['wh-hn', 'wh-hn', 'wh-hx1']), nv)).toEqual(['wh-hn', 'wh-hx1']);
+    expect(await getWarehouseScope(db([]), nv)).toEqual([]);
+  });
+
+  it('hides everything from Admin and opens everything to Director', async () => {
+    expect(await getWarehouseScope(db(['wh-hn']), { id: 'a', managementLevel: 99 })).toEqual([]);
+    expect(await getWarehouseScope(db(), { id: 'd', managementLevel: 40 })).toEqual(['wh-hn', 'wh-hx1']);
+  });
+
+  it('degrades to [] without a user or without the table', async () => {
+    expect(await getWarehouseScope(db(['wh-hn']), null)).toEqual([]);
+    expect(await getWarehouseScope(db(), { id: 'boom', managementLevel: 10 })).toEqual([]);
+  });
+
+  it('manager without assignment sees no warehouse (must be assigned explicitly)', async () => {
+    expect(await getWarehouseScope(db(['wh-hn']), { id: 'm', managementLevel: 20 })).toEqual(['wh-hn']);
+    expect(await getWarehouseScope(db(), { id: 'm', managementLevel: 20 })).toEqual([]);
+  });
+});
+
 describe('buildTaskScopeFilter (string department + join table)', () => {
   it('bypass stays 1=1 for view_all_tasks', async () => {
     expect(await buildTaskScopeFilter(db(), director)).toEqual({ condition: '1=1', params: [] });
@@ -169,7 +208,7 @@ describe('rbac middleware', () => {
     const a = app(manager);
     a.get('/', requireDepartmentScope('task'), (req: any, res) => res.json({ ctx: req.rbacContext, filter: applyTaskScopeFilter(req) }));
     const res = await request(a).get('/').expect(200);
-    expect(res.body.ctx).toEqual({ deptIds: ['d-kt', 'd-kt-team'], deptNames: ['Phòng Kế Toán', 'Tổ Thu Chi'] });
+    expect(res.body.ctx).toEqual({ deptIds: ['d-kt', 'd-kt-team'], deptNames: ['Phòng Kế Toán', 'Tổ Thu Chi'], warehouseIds: [] });
     expect(res.body.filter.params).toEqual(['Phòng Kế Toán', 'Tổ Thu Chi', 'm', 'm']);
   });
 

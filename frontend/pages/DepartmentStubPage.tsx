@@ -2,6 +2,25 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { Construction, Users, ListTodo, CircleCheck, Timer, LayoutDashboard } from 'lucide-react';
 import { Card, Avatar } from '../components/UI';
 import { DEPARTMENT_MENUS, asGroupList, deptFindItem, deptAllItems, getDeptHomePath } from '../components/layout/menus/departmentMenus';
+import InventoryPage from './Warehouse/InventoryPage';
+import StockDocsPage from './Warehouse/StockDocsPage';
+import WarehouseOverview from './Warehouse/OverviewPage';
+import AlertsPage from './Warehouse/AlertsPage';
+import ExceptionsPage from './Warehouse/ExceptionsPage';
+import SlowStockPage from './Warehouse/SlowStockPage';
+import SerialPage from './Warehouse/SerialPage';
+import ApprovalsPage from './Warehouse/ApprovalsPage';
+import BundlePage from './Warehouse/BundlePage';
+import MyWorkPage from './Warehouse/MyWorkPage';
+import CatalogPage from './Warehouse/CatalogPage';
+import InTransitPage from './Warehouse/InTransitPage';
+import WarehouseReportsPage from './Warehouse/ReportsPage';
+import MovesPage from './Warehouse/MovesPage';
+import MisaPage from './Warehouse/MisaPage';
+import MinMaxPage from './Warehouse/MinMaxPage';
+import CountPage from './Warehouse/CountPage';
+import ReservationsPage from './Warehouse/ReservationsPage';
+import LocationsPage from './Warehouse/LocationsPage';
 import { CODE_MAP, ID_MAP, roleLabel } from '../components/layout/menus/resolveDepartment';
 import { DEPT_LABELS, type DeptKey } from '../components/layout/menus/menuTypes';
 import { useAuth } from '../contexts/AuthContext';
@@ -34,7 +53,34 @@ export default function DepartmentStubPage() {
     );
   }
 
-  if (isOverview) return <DeptOverview deptKey={deptKey} title={moduleLabel || `Tổng quan ${DEPT_LABELS[deptKey]}`} />;
+  if (isOverview) {
+    if (deptKey === 'WAREHOUSE') return <WarehouseOverview deptKey={deptKey} />;
+    return <DeptOverview deptKey={deptKey} title={moduleLabel || `Tổng quan ${DEPT_LABELS[deptKey]}`} />;
+  }
+
+  // Module kho đã có trang thật thì render thật, còn lại giữ placeholder.
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_stock') return <InventoryPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_receipt') return <StockDocsPage deptKey={deptKey} kind="RECEIPT" />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_issue') return <StockDocsPage deptKey={deptKey} kind="ISSUE" />;
+  if (deptKey === 'WAREHOUSE' && (moduleId === 'wh_transfer' || moduleId === 'wh_in_transit')) return <StockDocsPage deptKey={deptKey} kind="TRANSFER" />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_alerts') return <AlertsPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_exceptions') return <ExceptionsPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_slow') return <SlowStockPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_serial') return <SerialPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_approvals') return <ApprovalsPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_bundle') return <BundlePage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_my_tasks') return <MyWorkPage deptKey={deptKey} initialTab="tasks" />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_my_history') return <MyWorkPage deptKey={deptKey} initialTab="history" />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_products') return <CatalogPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_in_transit') return <InTransitPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && (moduleId === 'wh_report_nxt' || moduleId === 'wh_report_warehouse')) return <WarehouseReportsPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_history') return <MovesPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_misa') return <MisaPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_report_minmax') return <MinMaxPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_count') return <CountPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && (moduleId === 'wh_variance' || moduleId === 'wh_adjustment')) return <CountPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_reservation') return <ReservationsPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_locations') return <LocationsPage deptKey={deptKey} />;
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">

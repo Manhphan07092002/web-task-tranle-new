@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { getManagementLevel, MANAGEMENT_LEVELS } from './auth.js';
 import {
   resolveUserDepartments,
+  getWarehouseScope,
   buildTaskScopeFilter,
   canAccessTask,
   checkApprovalAuthority,
@@ -12,12 +13,12 @@ import {
 declare global {
   namespace Express {
     interface Request {
-      rbacContext?: { deptIds: string[]; deptNames: string[] };
+      rbacContext?: { deptIds: string[]; deptNames: string[]; warehouseIds: string[] };
     }
   }
 }
 
-/** Gắn scope phòng ban vào request (chạy sau requireAuth). */
+/** Gắn scope phòng ban + scope kho vào request (chạy sau requireAuth). */
 export function requireDepartmentScope(_resourceType?: string) {
   return async (req: Request, res: Response, next: NextFunction) => {
     if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
@@ -25,7 +26,7 @@ export function requireDepartmentScope(_resourceType?: string) {
     if (!db || typeof db.all !== 'function') return res.status(500).json({ error: 'RBAC requires req.db' });
     try {
       const scope: DeptScope = await resolveUserDepartments(db, req.user);
-      req.rbacContext = { deptIds: scope.ids, deptNames: scope.names };
+      req.rbacContext = { deptIds: scope.ids, deptNames: scope.names, warehouseIds: await getWarehouseScope(db, req.user) };
       next();
     } catch (e) {
       next(e);

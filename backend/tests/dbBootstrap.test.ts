@@ -38,6 +38,7 @@ function database() {
     if (sql.includes('FROM information_schema.columns')) return [[{ count: 1 }]];
     if (sql.includes('FROM information_schema.statistics')) return [[{ count: 0 }]]; // Index checks
     if (sql.startsWith('CREATE INDEX')) return [{ affectedRows: 0 }];
+    if (sql.startsWith('DROP TABLE IF EXISTS')) return [{ affectedRows: 0 }]; // v14 drops empty legacy tables
     if (sql.startsWith('ALTER TABLE') && sql.includes('DROP COLUMN')) return [{ affectedRows: 0 }];
     if (sql.startsWith('ALTER TABLE') && sql.includes('MODIFY COLUMN')) return [{ affectedRows: 0 }];
     if (sql === 'SELECT completed FROM _bootstrap WHERE id = 1') return [[...rows('_bootstrap').values()]];
@@ -47,6 +48,8 @@ function database() {
     }
     const count = sql.match(/^SELECT COUNT\(\*\) as count FROM (\w+)$/i);
     if (count) return [[{ count: rows(count[1]).size }]];
+    const ids = sql.match(/^SELECT id FROM (\w+)/);
+    if (ids) return [[]]; // v13 scope bootstrap: test DB has no Kho staff
     if (sql.startsWith('UPDATE password_reset_tokens')) return [{ affectedRows: 0 }];
     if (/^UPDATE (users|roles)\b/.test(sql)) return [{ affectedRows: 0 }]; // v11/v12 level backfills + role/user syncs
     if (sql === 'UPDATE _bootstrap SET completed = 1 WHERE id = 1') {
@@ -125,7 +128,7 @@ describe('first-install database bootstrap', () => {
     expect(store.rows('tasks').size).toBe(0);
     expect(store.rows('system_config').size).toBe(0);
     expect(store.rows('_bootstrap').get('1')?.completed).toBe(1);
-    expect(store.rows('_migrations').size).toBe(9); // + users level backfill (v11) + roles level (v12)
+    expect(store.rows('_migrations').size).toBe(19); // + v11..v22
   });
 
   it('does not recreate accounts, roles, or config after all application data is deleted', async () => {
@@ -164,5 +167,14 @@ describe('first-install database bootstrap', () => {
     expect(store.rows('_bootstrap').get('1')?.completed).toBe(1);
     expect(store.rows('users').size).toBe(4);
     expect(store.rows('tasks').size).toBe(4);
+  });
+
+  it('drops empty legacy position tables but keeps tables holding data', async () => {
+    const store = database();
+    store.rows('positions').set('pos-1', { id: 'pos-1' });
+    await restart();
+    expect(store.rows('positions').get('pos-1')).toBeDefined();
+    expect(store.query.mock.calls.some(([sql]) => String(sql).includes('DROP TABLE IF EXISTS `positions`'))).toBe(false);
+    expect(store.query.mock.calls.some(([sql]) => String(sql).includes('DROP TABLE IF EXISTS `user_positions`'))).toBe(true);
   });
 });

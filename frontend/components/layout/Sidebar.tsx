@@ -216,13 +216,27 @@ export const Sidebar: React.FC<SidebarProps> = ({ isMobileMenuOpen, setIsMobileM
                           key={item.id}
                           to={item.path}
                           onClick={() => setIsMobileMenuOpen(false)}
-                          className={({ isActive }) => `
+                          className={({ isActive }) => {
+                            // Mục phòng ban (/dept/...?m=...) chung pathname nên NavLink
+                            // báo active cho TẤT CẢ — so cả query, chỉ mục đang xem mới sáng,
+                            // màu trung tính thay vì xanh brand.
+                            const [itemPath, itemQuery] = item.path.split('?');
+                            const isDeptItem = itemPath.startsWith('/dept/');
+                            let active = isActive;
+                            if (isDeptItem) {
+                              active = location.pathname === itemPath
+                                && (location.search || '') === (itemQuery ? `?${itemQuery}` : '');
+                            }
+                            return `
                             w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-xl transition-all
-                            ${isActive
-                              ? 'bg-brand-50 text-brand-700 shadow-sm border border-brand-100'
+                            ${active
+                              ? (isDeptItem
+                                ? 'bg-gray-100 text-gray-900 shadow-sm border border-gray-200'
+                                : 'bg-brand-50 text-brand-700 shadow-sm border border-brand-100')
                               : 'text-gray-600 hover:bg-gray-100/80 hover:text-gray-900'
                             }
-                          `}
+                          `;
+                          }}
                         >
                           <item.icon size={17} className="flex-shrink-0" />
                           <span className="flex-1 truncate">{item.label || t(item.id)}</span>

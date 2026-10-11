@@ -33,6 +33,8 @@ import { clientRoutes } from './routes/clients.js';
 import { productRoutes } from './routes/products.js';
 import { projectRoutes } from './routes/projects.js';
 import { documentRoutes } from './routes/documents.js';
+import { stockRoutes } from './routes/stock.js';
+import { warehouseRoutes } from './routes/warehouses.js';
 import { aiRoutes, invalidateAiKeyCache } from './routes/ai.js';
 
 import { initSocket } from './socket.js';
@@ -44,6 +46,7 @@ import { scheduleNoteReminders } from './schedulers/noteReminder.js';
 import { scheduleDailyTaskReminder } from './schedulers/dailyTaskReminder.js';
 import { initMailScheduler } from './schedulers/mailScheduler.js';
 import { scheduleRevenueAutoSubmit } from './schedulers/revenueAutoSubmit.js';
+import { scheduleReservationExpiry } from './schedulers/reservationExpiry.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -169,12 +172,15 @@ async function startServer() {
   app.use('/api/products', requireAuth, productRoutes(db));
   app.use('/api/projects', requireAuth, projectRoutes(db));
   app.use('/api/documents', requireAuth, documentRoutes(db));
+  app.use('/api/stock', requireAuth, stockRoutes(db));
+  app.use('/api/warehouses', requireAuth, warehouseRoutes(db));
 
   scheduleFridayReminder(db);
   scheduleNoteReminders(db);
   scheduleDailyTaskReminder(db);
   initMailScheduler(db);
   scheduleRevenueAutoSubmit(db);
+  scheduleReservationExpiry(db);
 
   app.use('/api/upload', uploadLimiter, uploadRoutes(db));
 

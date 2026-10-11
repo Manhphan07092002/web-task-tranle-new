@@ -64,9 +64,10 @@ const UserFormModal: React.FC<{
   roles: RoleInfo[];
   departments: string[];
   deptObjs: { id: string; name: string }[];
+  warehouses: { id: string; code: string; name: string }[];
   onClose: () => void;
   onSave: (u: User) => Promise<void>;
-}> = ({ user, roles, departments, deptObjs, onClose, onSave }) => {
+}> = ({ user, roles, departments, deptObjs, warehouses, onClose, onSave }) => {
   const isEdit = !!user;
   // Default role: first available or 'Employee'
   const defaultRole = roles[0]?.name || 'Employee';
@@ -79,6 +80,7 @@ const UserFormModal: React.FC<{
     avatar: user?.avatar || '',
   });
   const [scopes, setScopes] = useState<string[]>(user?.managedDepartments || []);
+  const [whScopes, setWhScopes] = useState<string[]>(user?.warehouseScopeIds || []);
   const [assignments, setAssignments] = useState<NonNullable<User['assignments']>>([]);
   useEffect(() => {
     let cancelled = false;
@@ -93,6 +95,7 @@ const UserFormModal: React.FC<{
   }, [user?.id]);
   const selectedLevel = roles.find(r => r.name === form.role)?.managementLevel ?? 10;
   const showScopes = selectedLevel >= 30;
+  const showWarehouses = warehouses.length > 0 && (selectedLevel >= 20 || (user?.warehouseScopeIds?.length || 0) > 0 || /kho/i.test(form.department));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -125,6 +128,7 @@ const UserFormModal: React.FC<{
         department: form.department,
         avatar: form.avatar || '',
         managedDepartments: showScopes ? scopes : user?.managedDepartments || [],
+        warehouseScopeIds: showWarehouses ? whScopes : user?.warehouseScopeIds || [],
       };
       await onSave(saved);
       onClose();
@@ -282,6 +286,28 @@ const UserFormModal: React.FC<{
               </div>
             )}
 
+            {/* Kho được thấy — scope kho D9 */}
+            {showWarehouses && (
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Kho được thấy</label>
+                <div className="max-h-40 overflow-y-auto border border-gray-200 rounded-xl divide-y divide-gray-50">
+                  {warehouses.map(w => {
+                    const checked = whScopes.includes(w.id);
+                    return (
+                      <label key={w.id} className={`flex items-center gap-3 px-4 py-2 text-sm cursor-pointer hover:bg-gray-50 ${checked ? 'bg-emerald-50/50' : ''}`}>
+                        <input type="checkbox" checked={checked}
+                          onChange={() => setWhScopes(s => checked ? s.filter(x => x !== w.id) : [...s, w.id])}
+                          className="w-4 h-4 rounded border-gray-300 text-emerald-600" />
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${checked ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-400'}`}>{w.code}</span>
+                        <span className={checked ? 'text-gray-800 font-medium' : 'text-gray-500'}>{w.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-gray-400 mt-1">Đã chọn {whScopes.length}/{warehouses.length} kho — NV không scope sẽ mù tồn kho.</p>
+              </div>
+            )}
+
             {/* Phân công kiêm nhiệm (từ import nhân sự, chỉ xem) */}
             {isEdit && assignments.length > 0 && (
               <div>
@@ -393,6 +419,7 @@ export default function AdminUserManagement() {
   const [roles, setRoles]  = useState<RoleInfo[]>([]);
   const [departments, setDepartments] = useState<string[]>([]);
   const [deptObjs, setDeptObjs] = useState<{ id: string; name: string }[]>([]);
+  const [warehouses, setWarehouses] = useState<{ id: string; code: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [resetRequests, setResetRequests] = useState<PasswordResetRequest[]>([]);
@@ -413,8 +440,8 @@ export default function AdminUserManagement() {
   const fetchUsers = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [ur, rr, dr, pr] = await Promise.all([
-        apiFetch('/api/users'), apiFetch('/api/roles'), apiFetch('/api/departments'), apiFetch('/api/admin/password-reset-requests')
+      const [ur, rr, dr, pr, wr] = await Promise.all([
+        apiFetch('/api/users'), apiFetch('/api/roles'), apiFetch('/api/departments'), apiFetch('/api/admin/password-reset-requests'), apiFetch('/api/warehouses')
       ]);
       if (!ur.ok) throw new Error('Không thể tải người dùng');
       setUsers(await ur.json());
@@ -424,6 +451,7 @@ export default function AdminUserManagement() {
         setDepartments(depts.map((d: any) => d.name));
         setDeptObjs(depts.map((d: any) => ({ id: d.id, name: d.name })));
       }
+      if (wr.ok) setWarehouses(await wr.json());
       if (pr.ok) {
         const requests = await pr.json();
         setResetRequests(requests);
@@ -451,6 +479,18 @@ export default function AdminUserManagement() {
         body: JSON.stringify({ departmentIds: u.managedDepartments || [] }),
       });
       if (!sr.ok) { const data = await sr.json().catch(() => ({})); throw new Error(data.error || 'Lưu scope thất bại'); }
+    }
+    // Sync scope kho khi có thay đổi (so với scope hiện tại trong danh sách)
+    const prevWh = users.find(x => x.id === u.id)?.warehouseScopeIds || [];
+    const nextWh = u.warehouseScopeIds || [];
+    const whChanged = prevWh.length !== nextWh.length || nextWh.some(id => !prevWh.includes(id));
+    if (whChanged) {
+      const wr = await apiFetch(`/api/users/${u.id}/warehouse-scopes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ warehouseIds: nextWh }),
+      });
+      if (!wr.ok) { const data = await wr.json().catch(() => ({})); throw new Error(data.error || 'Lưu scope kho thất bại'); }
     }
     showToast(
       isNew ? `Đã thêm ${u.name}` : `Đã cập nhật ${u.name}`,
@@ -707,6 +747,11 @@ export default function AdminUserManagement() {
                             +{u.managedDepartments!.length} phòng
                           </span>
                         )}
+                        {(u.warehouseScopeIds?.length || 0) > 0 && (
+                          <span className="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200" title="Kho được thấy">
+                            +{u.warehouseScopeIds!.length} kho
+                          </span>
+                        )}
                       </td>
                       <td className="py-3.5 px-4 text-gray-500">{u.department}</td>
                       <td className="py-3.5 px-5">
@@ -746,6 +791,7 @@ export default function AdminUserManagement() {
           roles={roles}
           departments={departments}
           deptObjs={deptObjs}
+          warehouses={warehouses}
           onClose={() => setEditingUser(undefined)}
           onSave={handleSave}
         />

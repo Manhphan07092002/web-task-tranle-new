@@ -95,9 +95,10 @@ export const ContractTable: React.FC<ContractTableProps> = ({
             
             const perms = currentUser?.permissions || [];
             const isSystemAdmin = perms.includes('admin_panel') || perms.includes('director_feedback') || currentUser?.role === 'Admin' || currentUser?.role === 'Director';
-            const level = currentUser?.managementLevel ?? 10;
-            const isDeptManager = ((currentUser?.role === 'Manager' || currentUser?.role?.startsWith('Trưởng') || currentUser?.role?.includes('Trưởng') || level >= 20)) && currentUser?.department === c.department;
-            // Ẩn quyền duyệt khi vượt hạn mức (backend vẫn chặn 403 nếu cố tình gọi).
+            const isDeptManager = (currentUser?.role === 'Manager' || currentUser?.role?.startsWith('Trưởng') || currentUser?.role?.includes('Trưởng')) && currentUser?.department === c.department;
+            // Dropdown đổi trạng thái đi qua PUT (gate role-string, không hạn mức):
+            // ẩn lựa chọn duyệt khi vượt hạn mức approve để khỏi bấm rồi 403.
+            // Phó GĐ/phòng được giao duyệt bằng endpoint approve riêng.
             const canApproveThis = (isSystemAdmin || isDeptManager) && canApproveContractValue(currentUser, c);
             return (
               <tr key={c.id} 

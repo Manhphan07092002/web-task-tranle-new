@@ -94,6 +94,7 @@ export interface User {
   primaryDepartmentId?: string;
   managementLevel?: number;
   managedDepartments?: string[];
+  warehouseScopeIds?: string[];
   assignments?: {
     id: string;
     departmentId: string;

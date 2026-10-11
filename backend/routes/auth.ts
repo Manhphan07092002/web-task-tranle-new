@@ -108,6 +108,34 @@ export function authRoutes(db: any) {
     } catch (e) { console.error('CHANGE PASSWORD ROUTE EXCEPTION:', e); res.status(500).json({ error: 'Failed' }); }
   });
 
+  // Phiên hiện tại làm mới từ DB (quyền/level mới sau đổi role có hiệu lực không cần đăng nhập lại).
+  router.get('/me', createRequireAuth(db), async (req, res) => {
+    try {
+      if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+      const role = await db.get('SELECT permissions, managementLevel FROM roles WHERE name = ?', [req.user.role]);
+      let managedDepartments: string[] = [];
+      try {
+        const scopes = await db.all('SELECT departmentId FROM management_scopes WHERE userId = ?', [req.user.id]);
+        managedDepartments = scopes.map((s: { departmentId: string }) => s.departmentId);
+      } catch { managedDepartments = []; }
+      // Đọc raw (middleware đã normalize NULL→10 nên không dùng req.user ở đây).
+      const fresh = await db.get('SELECT managementLevel, primaryDepartmentId FROM users WHERE id = ?', [req.user.id]);
+      const managementLevel = normalizeManagementLevel(
+        fresh?.managementLevel,
+        normalizeManagementLevel((role as any)?.managementLevel, 10),
+      );
+      return res.json({
+        user: {
+          id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role,
+          department: req.user.department, avatar: req.user.avatar,
+          managementLevel, primaryDepartmentId: fresh?.primaryDepartmentId ?? req.user.primaryDepartmentId ?? null,
+          managedDepartments,
+          permissions: role?.permissions ? JSON.parse(role.permissions) : [],
+        },
+      });
+    } catch (e) { res.status(500).json({ error: 'Failed' }); }
+  });
+
 
   return router;
 }

@@ -388,4 +388,41 @@ This Phase 0 implementation is **production-ready** and can be deployed independ
 **Next Action:** Review this plan → Approve Phase 1 scope → Begin route integration  
 **Estimated Start Date for Phase 1:** 2026-10-10
 
+---
+
+## Phụ lục W — Track Kho vận từ 09_KHO_VAN (bổ sung 2026-10-11)
+
+Nguồn: `new-base/tranle_system_docs/09_KHO_VAN.md` (V8.2). Roadmap 12 phase gốc
+chưa có track kho. Không sửa các phase đã chốt, thêm track song song:
+
+### Trạng thái hiện tại (đối chiếu code)
+- ✅ Sidebar NV/TP theo level (`frontend/.../departmentMenus.ts` WAREHOUSE,
+  mục TP `minLevel: 20`) — tương đương 09_KHO_VAN §5–6 + Phase A (sidebar).
+- ✅ Landing tổng quát phòng (`DeptOverview`) — bản rút gọn của §7–8.
+- ❌ Backend kho API: chưa có moves/balances writer, reservation, serial/lot, combo, Min/Max, MISA mapping.
+  (Schema xong ở migration v15: stock_locations/documents/lines/moves/balances + 42 vị trí mặc định.)
+- ❌ `warehouseScope` trong RBAC service (mới có dept scope) — xem D9.
+
+### Phase A — Core vận hành (làm trước)
+Sidebar (xong) → Dashboard NV/TP (§7–8) → Tồn kho (§9–11) → Receipt (§13–14) →
+Issue (§15–16) → Transfer (§17–18) → Product Drawer (§12) → Reservation cơ bản (§21).
+
+### Phase B — Truy vết và kiểm soát
+Serial/Lot (§22) → Stock Count blind-count (§19–20) → Warranty/Quarantine/
+Damaged (§27) → Min/Max (§26) → Tồn lâu → Kho & Vị trí (§24).
+
+### Phase C — Solar optimization
+Combo `VIRTUAL_BUNDLE/STOCKED_KIT` + buildable qty (§23) → QR/barcode →
+thiếu hàng theo SO/Project → đề xuất điều chuyển.
+
+### Phase D — Integration
+MISA mapping + sync idempotent + reconciliation (§35, §30.6). Nguyên tắc:
+không tự tạo mapping mơ hồ, không adjust chỉ để khớp MISA.
+
+### Acceptance (09_KHO_VAN §42, bắt buộc trước khi nhận Phase A)
+- Login NV chỉ thấy sidebar NV, dashboard chỉ việc thuộc user/scope, không nút
+  adjustment/approve/config, không xem warehouse ngoài scope.
+- Login TP thấy sidebar quản trị đầy đủ, KPI toàn phòng/scope, phân công +
+  duyệt exception + variance, báo cáo + reconciliation, drill-down KPI.
+
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>

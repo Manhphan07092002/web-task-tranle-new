@@ -1,6 +1,6 @@
 import { notificationDedupeKey } from '../utils/notificationDedupe.js';
 
-// ===== FRIDAY 16:00 REPORT REMINDER SCHEDULER =====
+// ===== SATURDAY 11:00 REPORT REMINDER SCHEDULER =====
 export function scheduleFridayReminder(db: any) {
   const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
 
@@ -9,7 +9,7 @@ export function scheduleFridayReminder(db: any) {
     const dayOfWeek = nowVN.getUTCDay();
     const hours = nowVN.getUTCHours();
     const minutes = nowVN.getUTCMinutes();
-    if (dayOfWeek !== 5 || hours !== 16 || minutes !== 0) return;
+    if (dayOfWeek !== 6 || hours !== 11 || minutes !== 0) return;
 
     try {
       const allUsers = await db.all('SELECT u.id, u.role FROM users u');
@@ -34,16 +34,16 @@ export function scheduleFridayReminder(db: any) {
         const id = crypto.randomUUID();
         await db.run(
           `INSERT IGNORE INTO notifications (id, userId, type, title, message, relatedId, dedupeKey, isRead, createdAt) VALUES (?, ?, 'report_reminder', ?, ?, NULL, ?, 0, ?)`,
-          [id, u.id, '📋 Nhắc nhở: Nộp báo cáo công việc', 'Đã 16:00 Thứ 6 — Hãy hoàn thành và nộp báo cáo công việc tuần này trước khi kết thúc ngày.', notificationDedupeKey(u.id, 'report_reminder', todayIso), new Date().toISOString()]
+          [id, u.id, '📋 Nhắc nhở: Nộp báo cáo công việc', 'Đã 11:00 Thứ 7 — Hãy hoàn thành và nộp báo cáo công việc tuần này trước 11h00.', notificationDedupeKey(u.id, 'report_reminder', todayIso), new Date().toISOString()]
         );
         notified++;
       }
-      console.log(`[Scheduler] Sent Friday report reminders to ${notified} eligible users.`);
+      console.log(`[Scheduler] Sent Saturday report reminders to ${notified} eligible users.`);
     } catch (err) {
       console.error('[Scheduler] Friday reminder error:', err);
     }
   };
 
   setInterval(checkAndNotify, 60_000);
-  console.log('[Scheduler] Friday 16:00 report reminder scheduler started.');
+  console.log('[Scheduler] Saturday 11:00 report reminder scheduler started.');
 }

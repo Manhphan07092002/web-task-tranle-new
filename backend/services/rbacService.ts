@@ -27,7 +27,28 @@ const asArray = (v: unknown): any[] => (Array.isArray(v) ? v : []);
 export async function getManagedDepartments(db: Db, userId: string): Promise<string[]> {
   try {
     const rows = await db.all('SELECT departmentId FROM management_scopes WHERE userId = ?', [userId]);
-    return asArray(rows).map((r: any) => r.departmentId).filter(Boolean);
+    return [...new Set(asArray(rows).map((r: any) => r.departmentId).filter(Boolean))];
+  } catch {
+    return [];
+  }
+}
+
+// ─── Warehouse scope (D9): gán tường minh, Director thấy tất cả, Admin rỗng ──
+
+export async function getWarehouseScope(db: Db, user: any): Promise<string[]> {
+  const level = normalizeManagementLevel(user?.managementLevel);
+  if (level === MANAGEMENT_LEVELS.ADMIN) return [];
+  if (level >= MANAGEMENT_LEVELS.DIRECTOR) {
+    try {
+      return asArray(await db.all('SELECT id FROM warehouses WHERE isActive IS NULL OR isActive = 1')).map((w: any) => w.id).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+  if (!user?.id) return [];
+  try {
+    const rows = await db.all('SELECT warehouseId FROM user_warehouse_scopes WHERE userId = ?', [user.id]);
+    return [...new Set(asArray(rows).map((r: any) => r.warehouseId).filter(Boolean))];
   } catch {
     return [];
   }

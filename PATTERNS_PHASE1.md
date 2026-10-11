@@ -893,4 +893,46 @@ When updating a route with RBAC, follow this checklist:
 4. revenue.ts
 5. clients.ts, projects.ts, documents.ts, notes.ts, quotes.ts, payments.ts
 
+---
+
+## Pattern 7–8 — Bổ sung từ 09_KHO_VAN (2026-10-11)
+
+6 pattern trên lọc theo `departmentId` FK. Kho vận không có FK đó (tồn theo
+warehouse/location, xem `Available` thay vì `On hand`) nên thêm 2 pattern.
+Đã áp dụng 1 phần ở `departmentMenus.ts` WAREHOUSE.
+
+### Pattern 7: Sidebar phân cấp bằng minLevel (đã áp dụng)
+
+```typescript
+// frontend/components/layout/menus/departmentMenus.ts
+WAREHOUSE: [
+  { label: 'Kho vận', items: [
+    { id: 'wh_overview', ... , permission: null },              // NV + TP
+  ]},
+  { label: 'Vận hành', items: [
+    { id: 'wh_stock', ... , permission: null },                 // NV + TP
+    { id: 'wh_reservation', ... , permission: null, minLevel: 20 }, // TP+
+  ]},
+  { label: 'Kiểm soát', items: [
+    { id: 'wh_alerts', ... , permission: null, minLevel: 20 },  // TP+
+  ]},
+]
+// Sidebar bỏ qua group không còn item visible → NV tự động mù các mục TP.
+// Admin (99) cũng bị ẩn mục minLevel (D4/D12) — cố ý, không phải bug.
+```
+
+Checklist: mục quản trị luôn có `minLevel: 20`; đừng dùng permission `manage_warehouse`
+để ẩn vì role Employee seed sẵn đã có permission đó.
+
+### Pattern 8: Lọc tồn kho (dùng khi làm backend kho Phase A)
+
+```typescript
+// WHERE mẫu cho trang Tồn kho — ưu tiên Available, chỉ hàng bán được
+WHERE warehouseId IN (<scope>)            // warehouseScope, không phải dept
+  AND purpose = 'SALEABLE'                // loại WARRANTY/DAMAGED/DEMO/QUARANTINE
+  AND (on_hand - reserved) > 0            // hiển thị Available nổi bật
+// NV: thêm AND warehouseId IN (<scope của user>)
+// TP: toàn scope phòng. Tuyệt đối không UPDATE balances trực tiếp (D10).
+```
+
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
