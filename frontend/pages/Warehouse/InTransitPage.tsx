@@ -1,3 +1,4 @@
+import { ReceiveTransferButton } from './ReceiveTransferButton';
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Truck, RefreshCw, AlertCircle, PackageCheck } from 'lucide-react';
@@ -11,7 +12,6 @@ export default function InTransitPage({ deptKey }: { deptKey: DeptKey }) {
   const [rows, setRows] = useState<StockDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [actingId, setActingId] = useState<string | null>(null);
 
   const fetchAll = async () => {
     setLoading(true); setError(null);
@@ -25,18 +25,6 @@ export default function InTransitPage({ deptKey }: { deptKey: DeptKey }) {
   };
 
   useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/await-in-effect */ }, []);
-
-  const act = async (id: string) => {
-    setActingId(id); setError(null);
-    try {
-      await advanceTransfer(id, 'receive');
-      await fetchAll();
-    } catch (e: any) {
-      setError(e.message || 'Nhận hàng thất bại');
-    } finally {
-      setActingId(null);
-    }
-  };
 
   return (
     <div className="max-w-6xl mx-auto space-y-5">
@@ -79,10 +67,7 @@ export default function InTransitPage({ deptKey }: { deptKey: DeptKey }) {
                     <td className="py-3 px-5 font-mono font-bold text-gray-800 text-[13px]">{d.code || d.id.slice(0, 8)}</td>
                     <td className="py-3 px-4 text-xs text-gray-400">{d.createdAt ? new Date(d.createdAt).toLocaleString('vi-VN') : ''}</td>
                     <td className="py-3 px-5 text-right">
-                      <button disabled={actingId === d.id} onClick={() => act(d.id)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold disabled:opacity-60">
-                        {actingId === d.id ? <RefreshCw size={13} className="animate-spin" /> : <PackageCheck size={13} />}Xác nhận nhận
-                      </button>
+                      <ReceiveTransferButton id={d.id} warehouseId={d.destWarehouseId!} onDone={fetchAll} />
                     </td>
                   </tr>
                 ))}

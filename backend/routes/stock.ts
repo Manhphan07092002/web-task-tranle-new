@@ -3,6 +3,8 @@ import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { normalizeManagementLevel, MANAGEMENT_LEVELS } from '../middleware/auth.js';
+import { beginStockTransaction } from '../utils/stockTransaction.js';
+import { stockReportRoutes } from './stockReports.js';
 import { getWarehouseScope } from '../services/rbacService.js';
 
 // Phase A backend kho (09_KHO_VAN §3, §13–18 + D10).
@@ -10,6 +12,7 @@ import { getWarehouseScope } from '../services/rbacService.js';
 // - Không bao giờ UPDATE số tồn trực tiếp. Serial/lot + kiểm kê ở Phase B.
 export function stockRoutes(db: any) {
   const router = Router();
+  router.use(stockReportRoutes(db));
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -32,8 +35,14 @@ export function stockRoutes(db: any) {
 
   async function assertLocation(warehouseId: string, locationId: string | null | undefined): Promise<boolean> {
     if (!locationId) return true;
-    const loc = await db.get('SELECT warehouseId, isActive FROM stock_locations WHERE id = ?', [locationId]);
+    const loc = await db.get('SELECT warehouseId, isActive, purpose FROM stock_locations WHERE id = ?', [locationId]);
     return !!loc && loc.warehouseId === warehouseId && (loc.isActive === 1 || loc.isActive === true);
+  }
+
+  async function isSaleableLocation(warehouseId: string, locationId: string): Promise<boolean> {
+    if (!locationId) return true;
+    const location = await db.get('SELECT warehouseId, isActive, purpose FROM stock_locations WHERE id = ?', [locationId]);
+    return !!location && location.warehouseId === warehouseId && Boolean(location.isActive) && location.purpose === 'SALEABLE';
   }
 
   async function availableOf(productId: string, warehouseId: string, locationId: string): Promise<number> {
@@ -44,11 +53,17 @@ export function stockRoutes(db: any) {
     return Number(row?.onHand ?? 0) - Number(row?.reserved ?? 0);
   }
 
+  async function assertNotCounting(warehouseId: string) {
+    const active = await db.get("SELECT id FROM stock_counts WHERE warehouseId = ? AND status = 'COUNTING' LIMIT 1", [warehouseId]);
+    if (active) throw Object.assign(new Error('Kho đang kiểm kê; hoàn tất kiểm kê trước khi ghi sổ.'), { status: 409 });
+  }
+
   async function postMove(run: (sql: string, params?: any[]) => Promise<unknown>, args: {
     productId: string; warehouseId: string; locationId: string; quantity: number;
     moveType: string; referenceType: string | null; referenceId: string;
     documentLineId: string | null; createdBy: string;
   }): Promise<void> {
+    await assertNotCounting(args.warehouseId);
     const now = new Date().toISOString();
     await run(
       `INSERT INTO stock_moves (id, productId, warehouseId, locationId, quantity, moveType, referenceType, referenceId, documentLineId, createdBy, createdAt)
@@ -86,7 +101,7 @@ export function stockRoutes(db: any) {
         if (!warehouseId && scope.length === 0) return res.json([]);
       }
       let query = `SELECT b.productId, b.warehouseId, b.locationId, b.onHand, b.reserved,
-          (b.onHand - b.reserved) AS available,
+          CASE WHEN b.locationId = '' OR (l.isActive = 1 AND l.purpose = 'SALEABLE') THEN b.onHand - b.reserved ELSE 0 END AS available,
           p.name AS productName, w.code AS warehouseCode, w.name AS warehouseName,
           l.code AS locationCode, l.purpose AS locationPurpose
         FROM stock_balances b
@@ -101,7 +116,7 @@ export function stockRoutes(db: any) {
       if (purpose?.trim()) { query += ' AND l.purpose = ?'; params.push(purpose.trim()); }
       query += ' ORDER BY w.name ASC, p.name ASC';
       res.json(await db.all(query, params));
-    } catch (e) { res.status(500).json({ error: 'Failed to fetch stock balances' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch stock balances' }); }
   });
 
   // ── Chứng từ: danh sách ─────────────────────────────────────────────────────
@@ -130,7 +145,7 @@ export function stockRoutes(db: any) {
       }
       query += ' ORDER BY d.createdAt DESC';
       res.json(await db.all(query, params));
-    } catch (e) { res.status(500).json({ error: 'Failed to fetch stock documents' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch stock documents' }); }
   });
 
   // ── Chứng từ: tạo ─────────────────────────────────────────────────────────
@@ -159,6 +174,10 @@ export function stockRoutes(db: any) {
   async function createDocument(docType: string, code: string, warehouses: { warehouseId?: string | null; sourceWarehouseId?: string | null; destWarehouseId?: string | null }, body: any, user: any) {
     const now = new Date().toISOString();
     const id = randomUUID();
+    await beginStockTransaction(db);
+    try {
+    const validationError = await validateLines(body.lines, warehouses.warehouseId || warehouses.sourceWarehouseId || '');
+    if (validationError) throw Object.assign(new Error(validationError), { status: 400 });
     await db.run(
       `INSERT INTO stock_documents (id, code, docType, status, warehouseId, sourceWarehouseId, destWarehouseId, referenceType, referenceId, notes, createdBy, createdAt, updatedAt)
        VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -171,7 +190,12 @@ export function stockRoutes(db: any) {
         [randomUUID(), id, line.productId, line.quantity, line.unitPrice ?? 0, line.locationId ?? null, line.note ?? null]
       );
     }
+    await db.run('COMMIT');
     return { id, code };
+    } catch (error) {
+      await db.run('ROLLBACK');
+      throw error;
+    }
   }
 
   router.post('/receipts', validate(ReceiptSchema), async (req, res) => {
@@ -181,7 +205,7 @@ export function stockRoutes(db: any) {
       const access = await requireWarehouse(user, req.body.warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       res.status(201).json(await createDocument('RECEIPT', docCode('PNK'), { warehouseId: req.body.warehouseId }, req.body, user));
-    } catch (e) { res.status(500).json({ error: 'Failed to create receipt' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to create receipt' }); }
   });
 
   router.post('/issues', validate(ReceiptSchema), async (req, res) => {
@@ -191,7 +215,7 @@ export function stockRoutes(db: any) {
       const access = await requireWarehouse(user, req.body.warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       res.status(201).json(await createDocument('ISSUE', docCode('PXK'), { warehouseId: req.body.warehouseId }, req.body, user));
-    } catch (e) { res.status(500).json({ error: 'Failed to create issue' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to create issue' }); }
   });
 
   router.post('/transfers', validate(TransferSchema), async (req, res) => {
@@ -207,7 +231,7 @@ export function stockRoutes(db: any) {
       res.status(201).json(await createDocument('TRANSFER', docCode('DCK'), {
         sourceWarehouseId: req.body.sourceWarehouseId, destWarehouseId: req.body.destWarehouseId,
       }, req.body, user));
-    } catch (e) { res.status(500).json({ error: 'Failed to create transfer' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to create transfer' }); }
   });
 
   // ── Chứng từ: hoàn tất (sinh moves + balances, transaction) ────────────────
@@ -219,11 +243,22 @@ export function stockRoutes(db: any) {
     return { doc, lines };
   }
 
+  function aggregateLines(lines: any[]): any[] {
+    const totals = new Map<string, any>();
+    for (const line of lines) {
+      const key = JSON.stringify([line.productId, line.locationId || '']);
+      const previous = totals.get(key);
+      totals.set(key, { ...line, quantity: Number(line.quantity) + Number(previous?.quantity || 0) });
+    }
+    return [...totals.values()];
+  }
+
   async function validateLines(lines: any[], warehouseId: string): Promise<string | null> {
+    if (lines.length === 0) return 'Document has no lines';
     for (const line of lines) {
       const product = await db.get('SELECT id FROM products WHERE id = ?', [line.productId]);
       if (!product) return `Unknown product: ${line.productId}`;
-      if (!(Number(line.quantity) > 0)) return `Invalid quantity for product: ${line.productId}`;
+      if (!Number.isFinite(Number(line.quantity)) || !(Number(line.quantity) > 0)) return `Invalid quantity for product: ${line.productId}`;
       if (!(await assertLocation(warehouseId, line.locationId))) return `Invalid location for product: ${line.productId}`;
     }
     return null;
@@ -232,7 +267,10 @@ export function stockRoutes(db: any) {
   router.post('/receipts/:id/complete', async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    let transactionOpen = false;
     try {
+      await beginStockTransaction(db);
+      transactionOpen = true;
       const loaded = await loadDocument(String(req.params.id));
       if (!loaded || loaded.doc.docType !== 'RECEIPT') return res.status(404).json({ error: 'Receipt not found' });
       if (loaded.doc.status !== 'DRAFT') return res.status(400).json({ error: 'Only draft receipts can be completed' });
@@ -241,7 +279,6 @@ export function stockRoutes(db: any) {
       const err = await validateLines(loaded.lines, loaded.doc.warehouseId);
       if (err) return res.status(400).json({ error: err });
 
-      await db.run('START TRANSACTION');
       try {
         for (const line of loaded.lines) {
           await postMove(db.run.bind(db), {
@@ -252,19 +289,24 @@ export function stockRoutes(db: any) {
           });
         }
         await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['DONE', new Date().toISOString(), loaded.doc.id]);
-        await db.run('COMMIT');
+        await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
-        await db.run('ROLLBACK');
+        await db.run('ROLLBACK'); transactionOpen = false;
         throw e;
       }
       res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed to complete receipt' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to complete receipt' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
   });
 
   router.post('/issues/:id/complete', async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    let transactionOpen = false;
     try {
+      await beginStockTransaction(db);
+      transactionOpen = true;
       const loaded = await loadDocument(String(req.params.id));
       if (!loaded || loaded.doc.docType !== 'ISSUE') return res.status(404).json({ error: 'Issue not found' });
       if (loaded.doc.status !== 'DRAFT') return res.status(400).json({ error: 'Only draft issues can be completed' });
@@ -272,14 +314,14 @@ export function stockRoutes(db: any) {
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       const err = await validateLines(loaded.lines, loaded.doc.warehouseId);
       if (err) return res.status(400).json({ error: err });
-      for (const line of loaded.lines) {
+      for (const line of aggregateLines(loaded.lines)) {
+        if (!(await isSaleableLocation(loaded.doc.warehouseId, line.locationId || ''))) return res.status(400).json({ error: 'Only saleable stock can be issued' });
         const available = await availableOf(line.productId, loaded.doc.warehouseId, line.locationId || '');
         if (available < Number(line.quantity)) {
           return res.status(400).json({ error: `Insufficient available stock for product: ${line.productId}` });
         }
       }
 
-      await db.run('START TRANSACTION');
       try {
         for (const line of loaded.lines) {
           await postMove(db.run.bind(db), {
@@ -290,19 +332,24 @@ export function stockRoutes(db: any) {
           });
         }
         await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['DONE', new Date().toISOString(), loaded.doc.id]);
-        await db.run('COMMIT');
+        await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
-        await db.run('ROLLBACK');
+        await db.run('ROLLBACK'); transactionOpen = false;
         throw e;
       }
       res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed to complete issue' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to complete issue' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
   });
 
   router.post('/transfers/:id/ship', async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    let transactionOpen = false;
     try {
+      await beginStockTransaction(db);
+      transactionOpen = true;
       const loaded = await loadDocument(String(req.params.id));
       if (!loaded || loaded.doc.docType !== 'TRANSFER') return res.status(404).json({ error: 'Transfer not found' });
       if (loaded.doc.status !== 'DRAFT') return res.status(400).json({ error: 'Only draft transfers can be shipped' });
@@ -311,14 +358,13 @@ export function stockRoutes(db: any) {
       if (!from.ok || !to.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       const err = await validateLines(loaded.lines, loaded.doc.sourceWarehouseId);
       if (err) return res.status(400).json({ error: err });
-      for (const line of loaded.lines) {
+      for (const line of aggregateLines(loaded.lines)) {
         const available = await availableOf(line.productId, loaded.doc.sourceWarehouseId, line.locationId || '');
         if (available < Number(line.quantity)) {
           return res.status(400).json({ error: `Insufficient available stock for product: ${line.productId}` });
         }
       }
 
-      await db.run('START TRANSACTION');
       try {
         for (const line of loaded.lines) {
           await postMove(db.run.bind(db), {
@@ -329,43 +375,51 @@ export function stockRoutes(db: any) {
           });
         }
         await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['IN_TRANSIT', new Date().toISOString(), loaded.doc.id]);
-        await db.run('COMMIT');
+        await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
-        await db.run('ROLLBACK');
+        await db.run('ROLLBACK'); transactionOpen = false;
         throw e;
       }
       res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed to ship transfer' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to ship transfer' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
   });
 
-  router.post('/transfers/:id/receive', async (req, res) => {
+  router.post('/transfers/:id/receive', validate(z.object({ locationId: z.string().trim().max(191).nullable().optional() })), async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    let transactionOpen = false;
     try {
+      await beginStockTransaction(db);
+      transactionOpen = true;
       const loaded = await loadDocument(String(req.params.id));
       if (!loaded || loaded.doc.docType !== 'TRANSFER') return res.status(404).json({ error: 'Transfer not found' });
       if (loaded.doc.status !== 'IN_TRANSIT') return res.status(400).json({ error: 'Only in-transit transfers can be received' });
+      const destinationLocation = req.body.locationId || '';
+      if (!(await assertLocation(loaded.doc.destWarehouseId, destinationLocation))) return res.status(400).json({ error: 'Invalid destination location' });
       const to = await requireWarehouse(user, loaded.doc.destWarehouseId);
       if (!to.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
 
-      await db.run('START TRANSACTION');
       try {
         for (const line of loaded.lines) {
           await postMove(db.run.bind(db), {
-            productId: line.productId, warehouseId: loaded.doc.destWarehouseId, locationId: line.locationId || '',
+            productId: line.productId, warehouseId: loaded.doc.destWarehouseId, locationId: destinationLocation,
             quantity: Number(line.quantity), moveType: 'TRANSFER_IN',
             referenceType: 'TRANSFER', referenceId: loaded.doc.id,
             documentLineId: line.id, createdBy: user.id,
           });
         }
         await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['DONE', new Date().toISOString(), loaded.doc.id]);
-        await db.run('COMMIT');
+        await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
-        await db.run('ROLLBACK');
+        await db.run('ROLLBACK'); transactionOpen = false;
         throw e;
       }
       res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed to receive transfer' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to receive transfer' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
   });
 
   // ── Cảnh báo tồn theo chính sách Min/Max (§26, TP+) ──────────────────────────
@@ -384,13 +438,14 @@ export function stockRoutes(db: any) {
       }
       let query = `SELECT b.productId, b.warehouseId,
           SUM(b.onHand) AS onHand, SUM(b.reserved) AS reserved,
-          SUM(b.onHand - b.reserved) AS available,
+          SUM(CASE WHEN b.locationId = '' OR (l.isActive = 1 AND l.purpose = 'SALEABLE') THEN b.onHand - b.reserved ELSE 0 END) AS available,
           p.name AS productName, w.code AS warehouseCode, w.name AS warehouseName,
           pol.minStock, pol.maxStock, pol.reorderPoint
         FROM stock_balances b
         LEFT JOIN products p ON p.id = b.productId
         LEFT JOIN warehouses w ON w.id = b.warehouseId
         LEFT JOIN product_warehouse_policies pol ON pol.productId = b.productId AND pol.warehouseId = b.warehouseId
+        LEFT JOIN stock_locations l ON l.id = b.locationId AND l.warehouseId = b.warehouseId
         WHERE 1=1`;
       const params: any[] = [];
       if (warehouseId) { query += ' AND b.warehouseId = ?'; params.push(warehouseId); }
@@ -402,7 +457,7 @@ export function stockRoutes(db: any) {
           OR (pol.maxStock IS NOT NULL AND pol.maxStock > 0 AND onHand > pol.maxStock)
         ORDER BY available ASC`;
       res.json(await db.all(query, params));
-    } catch (e) { res.status(500).json({ error: 'Failed to fetch stock alerts' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch stock alerts' }); }
   });
 
   const PolicySchema = z.object({
@@ -441,7 +496,7 @@ export function stockRoutes(db: any) {
         [productId, warehouseId, minStock, maxStock, reorderPoint, leadTimeDays, user.id, now]
       );
       res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed to save stock policy' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to save stock policy' }); }
   });
 
   // ── Tồn lâu: có tồn nhưng quá hạn không di chuyển (§26) ──────────────────────
@@ -478,7 +533,7 @@ export function stockRoutes(db: any) {
         ORDER BY lastMoveAt ASC`;
       params.push(cutoff);
       res.json(await db.all(query, params));
-    } catch (e) { res.status(500).json({ error: 'Failed to fetch slow-moving stock' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch slow-moving stock' }); }
   });
 
   // ── Giữ hàng / phân bổ (§21: hold/release/consume, TP+NV trong scope) ─────────
@@ -507,7 +562,7 @@ export function stockRoutes(db: any) {
       if (status?.trim()) { query += ' AND r.status = ?'; params.push(status.trim()); }
       query += ' ORDER BY r.createdAt DESC';
       res.json(await db.all(query, params));
-    } catch (e) { res.status(500).json({ error: 'Failed to fetch reservations' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch reservations' }); }
   });
 
   const ReservationSchema = z.object({
@@ -521,9 +576,13 @@ export function stockRoutes(db: any) {
   });
 
   router.post('/reservations', validate(ReservationSchema), async (req, res) => {
+    let transactionOpen = false;
     try {
+      await beginStockTransaction(db);
+      transactionOpen = true;
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      if (!requireWarehouseManager(user)) return res.status(403).json({ error: 'Warehouse manager access required' });
       const { productId, warehouseId, locationId, quantity, sourceType, sourceId, expiresAt } = req.body;
       const access = await requireWarehouse(user, warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
@@ -532,6 +591,7 @@ export function stockRoutes(db: any) {
       if (!(await assertLocation(warehouseId, locationId ?? null))) {
         return res.status(400).json({ error: 'Invalid location for this warehouse' });
       }
+      if (!(await isSaleableLocation(warehouseId, locationId || ''))) return res.status(400).json({ error: 'Only saleable stock can be reserved' });
       // Chỉ giữ từ available (D10/§21) — không giữ hàng đã giữ.
       const available = await availableOf(productId, warehouseId, locationId || '');
       if (available < Number(quantity)) {
@@ -539,7 +599,6 @@ export function stockRoutes(db: any) {
       }
       const now = new Date().toISOString();
       const id = randomUUID();
-      await db.run('START TRANSACTION');
       try {
         await db.run(
           `INSERT INTO reservations (id, productId, warehouseId, locationId, quantity, sourceType, sourceId, requestedBy, status, expiresAt, createdAt)
@@ -552,34 +611,40 @@ export function stockRoutes(db: any) {
            ON DUPLICATE KEY UPDATE reserved = reserved + VALUES(reserved), updatedAt = VALUES(updatedAt)`,
           [productId, warehouseId, locationId || '', quantity, now]
         );
-        await db.run('COMMIT');
+        await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
-        await db.run('ROLLBACK');
+        await db.run('ROLLBACK'); transactionOpen = false;
         throw e;
       }
       res.status(201).json({ id });
-    } catch (e) { res.status(500).json({ error: 'Failed to hold stock' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to hold stock' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
   });
 
   async function settleReservation(req: any, res: any, toStatus: 'RELEASED' | 'CONSUMED') {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      if (!requireWarehouseManager(user)) return res.status(403).json({ error: 'Warehouse manager access required' });
+    let transactionOpen = false;
     try {
+      await beginStockTransaction(db);
+      transactionOpen = true;
       const r = await db.get('SELECT * FROM reservations WHERE id = ?', [String(req.params.id)]);
       if (!r) return res.status(404).json({ error: 'Reservation not found' });
       if (r.status !== 'HELD') return res.status(400).json({ error: 'Only held reservations can be settled' });
       const access = await requireWarehouse(user, r.warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       const now = new Date().toISOString();
-      await db.run('START TRANSACTION');
       try {
         if (toStatus === 'CONSUMED') {
+          await assertNotCounting(r.warehouseId);
           const bal = await db.get(
             'SELECT onHand FROM stock_balances WHERE productId = ? AND warehouseId = ? AND locationId = ?',
             [r.productId, r.warehouseId, r.locationId || '']
           );
           if (Number(bal?.onHand ?? 0) < Number(r.quantity)) {
-            await db.run('ROLLBACK');
+            await db.run('ROLLBACK'); transactionOpen = false;
             return res.status(400).json({ error: 'Insufficient on-hand stock to consume' });
           }
           await db.run(
@@ -598,13 +663,15 @@ export function stockRoutes(db: any) {
           );
         }
         await db.run('UPDATE reservations SET status = ? WHERE id = ?', [toStatus, r.id]);
-        await db.run('COMMIT');
+        await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
-        await db.run('ROLLBACK');
+        await db.run('ROLLBACK'); transactionOpen = false;
         throw e;
       }
       res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed to settle reservation' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to settle reservation' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
   }
 
   router.post('/reservations/:id/release', async (req, res) => { await settleReservation(req, res, 'RELEASED'); });
@@ -631,7 +698,7 @@ export function stockRoutes(db: any) {
       else if (!isDirector(user)) { query += ` AND l.warehouseId IN (${scope.map(() => '?').join(', ')})`; params.push(...scope); }
       query += ' ORDER BY w.name ASC, l.code ASC';
       res.json((await db.all(query, params)).map((r: any) => ({ ...r, isActive: Boolean(r.isActive) })));
-    } catch (e) { res.status(500).json({ error: 'Failed to fetch locations' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch locations' }); }
   });
 
   const LocationSchema = z.object({
@@ -668,7 +735,7 @@ export function stockRoutes(db: any) {
         throw e;
       }
       res.status(201).json({ id });
-    } catch (e) { res.status(500).json({ error: 'Failed to create location' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to create location' }); }
   });
 
   router.put('/locations/:id', validate(LocationSchema.partial()), async (req, res) => {
@@ -694,7 +761,7 @@ export function stockRoutes(db: any) {
         throw e;
       }
       res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed to update location' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to update location' }); }
   });
 
   // ── Serial / Lô Phase B (§22: đăng ký + truy vết cơ bản) ──────────────────────
@@ -727,7 +794,7 @@ export function stockRoutes(db: any) {
       if (q?.trim()) { query += ' AND (s.serialNumber LIKE ? OR s.lotCode LIKE ? OR p.name LIKE ?)'; params.push(`%${q.trim()}%`, `%${q.trim()}%`, `%${q.trim()}%`); }
       query += ' ORDER BY s.createdAt DESC';
       res.json(await db.all(query, params));
-    } catch (e) { res.status(500).json({ error: 'Failed to fetch serials' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch serials' }); }
   });
 
   const SerialSchema = z.object({
@@ -776,7 +843,7 @@ export function stockRoutes(db: any) {
         throw e;
       }
       res.status(201).json({ id });
-    } catch (e) { res.status(500).json({ error: 'Failed to register serial' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to register serial' }); }
   });
 
   router.put('/serials/:id', validate(SerialSchema.partial()), async (req, res) => {
@@ -809,7 +876,7 @@ export function stockRoutes(db: any) {
           new Date().toISOString(), existing.id]
       );
       res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed to update serial' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to update serial' }); }
   });
 
   // ── Combo / bộ sản phẩm (§23: buildable từ available) ─────────────────────────
@@ -833,8 +900,11 @@ export function stockRoutes(db: any) {
       const bundles = await db.all(`SELECT * FROM product_bundles WHERE isActive IS NULL OR isActive = 1 ORDER BY name ASC`);
       const items = await db.all('SELECT bi.bundleId, bi.productId, bi.qtyPerBundle, p.name AS productName FROM product_bundle_items bi LEFT JOIN products p ON p.id = bi.productId');
       const avail = warehouses.length > 0 ? await db.all(
-        `SELECT productId, warehouseId, SUM(onHand - reserved) AS available FROM stock_balances
-         WHERE warehouseId IN (${warehouses.map(() => '?').join(', ')}) GROUP BY productId, warehouseId`,
+        `SELECT b.productId, b.warehouseId, SUM(b.onHand - b.reserved) AS available FROM stock_balances b
+         LEFT JOIN stock_locations l ON l.id = b.locationId AND l.warehouseId = b.warehouseId
+         WHERE b.warehouseId IN (${warehouses.map(() => '?').join(', ')})
+           AND (b.locationId = '' OR (l.isActive = 1 AND l.purpose = 'SALEABLE'))
+         GROUP BY b.productId, b.warehouseId`,
         warehouses
       ) : [];
       const availByProduct = new Map<string, number>();
@@ -851,7 +921,7 @@ export function stockRoutes(db: any) {
         const limiting = parts.find((p: any) => p.buildable === buildable)?.productId ?? null;
         return { ...b, isActive: Boolean(b.isActive), items: parts, buildable, limitingProductId: limiting };
       }));
-    } catch (e) { res.status(500).json({ error: 'Failed to fetch bundles' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch bundles' }); }
   });
 
   const BundleSchema = z.object({
@@ -868,6 +938,9 @@ export function stockRoutes(db: any) {
 
   async function writeBundle(id: string | null, body: any, user: any) {
     const { name, code, bundleType, kitProductId, description, items } = body;
+    if (new Set(items.map((item: any) => item.productId)).size !== items.length || items.some((item: any) => item.productId === kitProductId)) {
+      throw Object.assign(new Error('Components must be distinct and cannot contain the kit itself'), { status: 400 });
+    }
     for (const item of items) {
       const product = await db.get('SELECT id FROM products WHERE id = ?', [item.productId]);
       if (!product) throw Object.assign(new Error(`Unknown product: ${item.productId}`), { status: 400 });
@@ -921,7 +994,7 @@ export function stockRoutes(db: any) {
         if (e.message?.includes('Duplicate')) return res.status(409).json({ error: 'Bundle code already exists' });
         throw e;
       }
-    } catch (e) { res.status(500).json({ error: 'Failed to create bundle' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to create bundle' }); }
   });
 
   router.put('/bundles/:id', validate(BundleSchema), async (req, res) => {
@@ -939,7 +1012,7 @@ export function stockRoutes(db: any) {
         throw e;
       }
       res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed to update bundle' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to update bundle' }); }
   });
 
   // Lắp/rã STOCKED_KIT (§23): trừ linh kiện + cộng bộ (lắp), ngược lại khi rã.
@@ -947,7 +1020,10 @@ export function stockRoutes(db: any) {
   async function settleKit(req: any, res: any, direction: 1 | -1) {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    let transactionOpen = false;
     try {
+      await beginStockTransaction(db);
+      transactionOpen = true;
       if (!requireBundleManager(user)) return res.status(403).json({ error: 'Only warehouse managers can assemble kits' });
       const { warehouseId, quantity } = req.body ?? {};
       const qty = Number(quantity);
@@ -974,14 +1050,13 @@ export function stockRoutes(db: any) {
         }
       } else {
         const kit = await db.get(
-          'SELECT onHand FROM stock_balances WHERE productId = ? AND warehouseId = ? AND locationId = ?',
+          'SELECT onHand, reserved FROM stock_balances WHERE productId = ? AND warehouseId = ? AND locationId = ?',
           [bundle.kitProductId, warehouseId, '']
         );
-        if (Number(kit?.onHand ?? 0) < qty) {
+        if (Number(kit?.onHand ?? 0) - Number(kit?.reserved ?? 0) < qty) {
           return res.status(400).json({ error: 'Insufficient assembled kits to disassemble' });
         }
       }
-      await db.run('START TRANSACTION');
       try {
         for (const item of items) {
           const delta = direction * Number(item.qtyPerBundle) * qty;
@@ -998,13 +1073,15 @@ export function stockRoutes(db: any) {
           referenceType: 'KIT', referenceId: bundle.id,
           documentLineId: null, createdBy: user.id,
         });
-        await db.run('COMMIT');
+        await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
-        await db.run('ROLLBACK');
+        await db.run('ROLLBACK'); transactionOpen = false;
         throw e;
       }
       res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed to settle kit' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to settle kit' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
   }
 
   router.post('/bundles/:id/assemble', async (req, res) => { await settleKit(req, res, 1); });
@@ -1038,7 +1115,7 @@ export function stockRoutes(db: any) {
       if (moveType?.trim()) { query += ' AND m.moveType = ?'; params.push(moveType.trim()); }
       query += ' ORDER BY m.createdAt DESC LIMIT 500';
       res.json(await db.all(query, params));
-    } catch (e) { res.status(500).json({ error: 'Failed to fetch stock moves' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch stock moves' }); }
   });
 
   router.get('/policies', async (req, res) => {
@@ -1064,7 +1141,7 @@ export function stockRoutes(db: any) {
       else if (!isDirector(user)) { query += ` AND pol.warehouseId IN (${scope.map(() => '?').join(', ')})`; params.push(...scope); }
       query += ' ORDER BY w.name ASC, p.name ASC';
       res.json(await db.all(query, params));
-    } catch (e) { res.status(500).json({ error: 'Failed to fetch stock policies' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch stock policies' }); }
   });
 
   // ── Kiểm kê blind-count (§19–20) ────────────────────────────────────────────
@@ -1095,7 +1172,7 @@ export function stockRoutes(db: any) {
       if (status?.trim()) { query += ' AND c.status = ?'; params.push(status.trim()); }
       query += ' ORDER BY c.createdAt DESC';
       res.json(await db.all(query, params));
-    } catch (e) { res.status(500).json({ error: 'Failed to fetch stock counts' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch stock counts' }); }
   });
 
   router.get('/counts/:id', async (req, res) => {
@@ -1118,7 +1195,7 @@ export function stockRoutes(db: any) {
         blindCount: Boolean(Number(count.blindCount)),
         lines: lines.map((l: any) => blind ? { ...l, expectedQty: null } : l),
       });
-    } catch (e) { res.status(500).json({ error: 'Failed to fetch stock count' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch stock count' }); }
   });
 
   router.post('/counts', validate(z.object({
@@ -1126,13 +1203,17 @@ export function stockRoutes(db: any) {
     blindCount: z.boolean().optional(),
     notes: z.string().max(5000).nullable().optional(),
   })), async (req, res) => {
+    let transactionOpen = false;
     try {
+      await beginStockTransaction(db);
+      transactionOpen = true;
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
       if (!requireCountManager(user)) return res.status(403).json({ error: 'Only warehouse managers can open counts' });
       const { warehouseId, blindCount, notes } = req.body;
       const access = await requireWarehouse(user, warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      await assertNotCounting(warehouseId);
       const snapshot = await db.all(
         'SELECT productId, locationId, onHand FROM stock_balances WHERE warehouseId = ?',
         [warehouseId]
@@ -1141,7 +1222,6 @@ export function stockRoutes(db: any) {
       const id = randomUUID();
       const d = new Date();
       const code = `KK-${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-      await db.run('START TRANSACTION');
       try {
         await db.run(
           'INSERT INTO stock_counts (id, code, warehouseId, status, blindCount, notes, createdBy, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -1153,13 +1233,15 @@ export function stockRoutes(db: any) {
             [randomUUID(), id, row.productId, row.locationId || '', Number(row.onHand) || 0]
           );
         }
-        await db.run('COMMIT');
+        await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
-        await db.run('ROLLBACK');
+        await db.run('ROLLBACK'); transactionOpen = false;
         throw e;
       }
       res.status(201).json({ id, code, lines: snapshot.length });
-    } catch (e) { res.status(500).json({ error: 'Failed to open stock count' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to open stock count' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
   });
 
   router.post('/counts/:id/lines', validate(z.object({
@@ -1170,7 +1252,10 @@ export function stockRoutes(db: any) {
       note: z.string().max(2000).nullable().optional(),
     })).min(1).max(1000),
   })), async (req, res) => {
+    let transactionOpen = false;
     try {
+      await beginStockTransaction(db);
+      transactionOpen = true;
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
       const count = await db.get('SELECT warehouseId, status FROM stock_counts WHERE id = ?', [String(req.params.id)]);
@@ -1178,9 +1263,11 @@ export function stockRoutes(db: any) {
       if (count.status !== 'COUNTING') return res.status(400).json({ error: 'Count is no longer open for entry' });
       const access = await requireWarehouse(user, count.warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
-      await db.run('START TRANSACTION');
       try {
         for (const line of req.body.lines) {
+          if (!(await db.get('SELECT id FROM products WHERE id = ?', [line.productId])) || !(await assertLocation(count.warehouseId, line.locationId))) {
+            return res.status(400).json({ error: 'Invalid product or location for count' });
+          }
           await db.run(
             `INSERT INTO stock_count_lines (id, countId, productId, locationId, expectedQty, actualQty, note)
              VALUES (?, ?, ?, ?, 0, ?, ?)
@@ -1188,19 +1275,24 @@ export function stockRoutes(db: any) {
             [randomUUID(), count.id ?? String(req.params.id), line.productId, line.locationId || '', Number(line.actualQty), line.note ?? null]
           );
         }
-        await db.run('COMMIT');
+        await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
-        await db.run('ROLLBACK');
+        await db.run('ROLLBACK'); transactionOpen = false;
         throw e;
       }
       res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed to submit count lines' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to submit count lines' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
   });
 
   router.post('/counts/:id/recount', validate(z.object({
     lineIds: z.array(z.string().trim().min(1).max(191)).min(1).max(1000),
   })), async (req, res) => {
+    let transactionOpen = false;
     try {
+      await beginStockTransaction(db);
+      transactionOpen = true;
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
       if (!requireCountManager(user)) return res.status(403).json({ error: 'Only warehouse managers can request recounts' });
@@ -1214,12 +1306,18 @@ export function stockRoutes(db: any) {
         `UPDATE stock_count_lines SET actualQty = NULL, note = NULL WHERE countId = ? AND id IN (${placeholders})`,
         [String(req.params.id), ...req.body.lineIds]
       );
+      await db.run('COMMIT'); transactionOpen = false;
       res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed to request recount' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to request recount' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
   });
 
   router.post('/counts/:id/approve', async (req, res) => {
+    let transactionOpen = false;
     try {
+      await beginStockTransaction(db);
+      transactionOpen = true;
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
       if (!requireCountManager(user)) return res.status(403).json({ error: 'Only warehouse managers can approve counts' });
@@ -1234,9 +1332,11 @@ export function stockRoutes(db: any) {
         return res.status(400).json({ error: `${missing} lines still await counting` });
       }
       const now = new Date().toISOString();
-      await db.run('START TRANSACTION');
       try {
         for (const line of lines) {
+          const balance = await db.get('SELECT onHand, reserved FROM stock_balances WHERE productId = ? AND warehouseId = ? AND locationId = ?', [line.productId, count.warehouseId, line.locationId || '']);
+          if (Number(balance?.onHand ?? 0) !== Number(line.expectedQty)) throw Object.assign(new Error('Tồn đã thay đổi sau khi mở kiểm kê; cần kiểm kê lại.'), { status: 409 });
+          if (Number(line.actualQty) < Number(balance?.reserved ?? 0)) throw Object.assign(new Error('Giải phóng giữ hàng vượt số đếm trước khi duyệt.'), { status: 409 });
           const variance = Number(line.actualQty) - Number(line.expectedQty);
           if (variance === 0) continue;
           await db.run(
@@ -1252,13 +1352,32 @@ export function stockRoutes(db: any) {
           );
         }
         await db.run('UPDATE stock_counts SET status = ?, approvedBy = ?, updatedAt = ? WHERE id = ?', ['DONE', user.id, now, count.id]);
-        await db.run('COMMIT');
+        await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
-        await db.run('ROLLBACK');
+        await db.run('ROLLBACK'); transactionOpen = false;
         throw e;
       }
       res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed to approve count' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to approve count' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
+  });
+
+  router.post('/counts/:id/cancel', async (req, res) => {
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+    if (!requireCountManager(req.user)) return res.status(403).json({ error: 'Warehouse manager access required' });
+    let transactionOpen = false;
+    try {
+      await beginStockTransaction(db); transactionOpen = true;
+      const count = await db.get('SELECT * FROM stock_counts WHERE id = ?', [String(req.params.id)]);
+      if (!count) return res.status(404).json({ error: 'Count not found' });
+      if (!(await requireWarehouse(req.user, count.warehouseId)).ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      if (count.status !== 'COUNTING') return res.status(400).json({ error: 'Only open counts can be cancelled' });
+      await db.run('UPDATE stock_counts SET status = ?, updatedAt = ? WHERE id = ?', ['CANCELLED', new Date().toISOString(), count.id]);
+      await db.run('COMMIT'); transactionOpen = false;
+      res.json({ success: true });
+    } catch { res.status(500).json({ error: 'Failed to cancel count' }); }
+    finally { if (transactionOpen) await db.run('ROLLBACK'); }
   });
 
   // ── MISA: mapping + nhật ký (§35 — quản trị chủ động, sync thật để sau) ──────
@@ -1272,13 +1391,14 @@ export function stockRoutes(db: any) {
     try {
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      if (!requireWarehouseManager(user)) return res.status(403).json({ error: 'Warehouse manager access required' });
       const { entityType } = req.query as Record<string, string | undefined>;
       let query = 'SELECT * FROM misa_mappings WHERE 1=1';
       const params: any[] = [];
       if (entityType?.trim()) { query += ' AND entityType = ?'; params.push(entityType.trim()); }
       query += ' ORDER BY entityType ASC, misaCode ASC';
       res.json(await db.all(query, params));
-    } catch (e) { res.status(500).json({ error: 'Failed to fetch MISA mappings' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch MISA mappings' }); }
   });
 
   const MisaMappingSchema = z.object({
@@ -1305,7 +1425,7 @@ export function stockRoutes(db: any) {
         throw e;
       }
       res.status(201).json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed to create MISA mapping' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to create MISA mapping' }); }
   });
 
   router.delete('/misa-mappings/:id', async (req, res) => {
@@ -1315,13 +1435,14 @@ export function stockRoutes(db: any) {
       if (!requireMisaManager(user)) return res.status(403).json({ error: 'Only warehouse managers can manage MISA mappings' });
       await db.run('DELETE FROM misa_mappings WHERE id = ?', [String(req.params.id)]);
       res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: 'Failed to delete MISA mapping' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to delete MISA mapping' }); }
   });
 
   router.get('/misa-logs', async (req, res) => {
     try {
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      if (!requireWarehouseManager(user)) return res.status(403).json({ error: 'Warehouse manager access required' });
       const { status, entityType } = req.query as Record<string, string | undefined>;
       let query = 'SELECT * FROM misa_sync_logs WHERE 1=1';
       const params: any[] = [];
@@ -1329,7 +1450,7 @@ export function stockRoutes(db: any) {
       if (entityType?.trim()) { query += ' AND entityType = ?'; params.push(entityType.trim()); }
       query += ' ORDER BY createdAt DESC LIMIT 200';
       res.json(await db.all(query, params));
-    } catch (e) { res.status(500).json({ error: 'Failed to fetch MISA sync logs' }); }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch MISA sync logs' }); }
   });
 
   return router;

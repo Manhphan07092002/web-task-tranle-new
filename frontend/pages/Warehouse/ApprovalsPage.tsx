@@ -1,3 +1,4 @@
+import { ReceiveTransferButton } from './ReceiveTransferButton';
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Inbox, RefreshCw, AlertCircle, CheckCircle2, Truck, PackageCheck, ChevronDown } from 'lucide-react';
@@ -141,10 +142,7 @@ export default function ApprovalsPage({ deptKey }: { deptKey: DeptKey }) {
                           </button>
                         )}
                         {d.status === 'IN_TRANSIT' && (
-                          <button disabled={actingId === d.id} onClick={() => act(d.id, () => advanceTransfer(d.id, 'receive'))}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold disabled:opacity-60">
-                            {actingId === d.id ? <RefreshCw size={13} className="animate-spin" /> : <PackageCheck size={13} />}Duyệt nhận
-                          </button>
+                          <ReceiveTransferButton id={d.id} warehouseId={d.destWarehouseId!} onDone={fetchAll} />
                         )}
                       </div>
                     </td>

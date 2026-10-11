@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
+import { useAuth } from '../../contexts/AuthContext';
+import { levelOf, LEVELS } from '../../utils/rbac';
 import { Link } from 'react-router-dom';
 import { ClipboardCheck, PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, RotateCcw } from 'lucide-react';
 import { Card } from '../../components/UI';
 import {
   getStockCounts, getStockCount, openStockCount, submitCountLines,
-  requestRecount, approveCount, getWarehouses,
+  requestRecount, approveCount, cancelCount, getWarehouses,
   type StockCount, type Warehouse,
 } from '../../services/stockService';import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
@@ -12,6 +14,8 @@ import type { DeptKey } from '../../components/layout/menus/menuTypes';
 // Kiểm kê blind-count (§19–20): NV đếm không thấy số hệ thống,
 // TP đối chiếu/duyệt chênh lệch → sinh điều chỉnh tồn.
 export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
+  const { user } = useAuth();
+  const canManage = levelOf(user) >= LEVELS.MANAGER && levelOf(user) !== LEVELS.ADMIN;
   const [counts, setCounts] = useState<StockCount[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [loading, setLoading] = useState(true);
@@ -64,7 +68,7 @@ export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
           <button onClick={fetchAll} className="p-2.5 border border-gray-200 rounded-xl hover:bg-gray-50 text-gray-500 shadow-sm" title="Tải lại">
             <RefreshCw size={16} />
           </button>
-          <button onClick={() => setShowCreate(true)}
+          <button hidden={!canManage} onClick={() => setShowCreate(true)}
             className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-md transition-colors">
             <PlusCircle size={16} /> Mở đợt kiểm kê
           </button>
@@ -95,7 +99,7 @@ export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
                 <div className="flex items-center justify-between mb-1">
                   <span className="font-mono font-bold text-gray-800">{c.code || c.id.slice(0, 8)}</span>
                   <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${c.status === 'DONE' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
-                    {c.status === 'DONE' ? 'Đã đóng' : 'Đang đếm'}
+                    {c.status === 'DONE' ? 'Đã đóng' : c.status === 'CANCELLED' ? 'Đã hủy' : 'Đang đếm'}
                   </span>
                 </div>
                 <p className="text-xs text-gray-400">
@@ -128,6 +132,8 @@ export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
 function CountDetailModal({ count, onClose, onChanged, onError }: {
   count: StockCount; onClose: () => void; onChanged: () => Promise<void>; onError: (m: string) => void;
 }) {
+  const { user } = useAuth();
+  const canManage = levelOf(user) >= LEVELS.MANAGER && levelOf(user) !== LEVELS.ADMIN;
   const [actuals, setActuals] = useState<Record<string, string>>({});
   const [checked, setChecked] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -182,6 +188,13 @@ function CountDetailModal({ count, onClose, onChanged, onError }: {
     } finally {
       setBusy(false);
     }
+  };
+
+  const doCancel = async () => {
+    setBusy(true); setErr('');
+    try { await cancelCount(count.id); await onChanged(); }
+    catch (e: any) { fail(e.message || 'Hủy kiểm kê thất bại.'); }
+    finally { setBusy(false); }
   };
 
   const varianceOf = (l: { expectedQty: number | null; actualQty: number | null }) =>
@@ -254,7 +267,7 @@ function CountDetailModal({ count, onClose, onChanged, onError }: {
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60">
               {busy ? 'Đang gửi...' : 'Gửi số đếm'}
             </button>
-            <button onClick={doRecount} disabled={busy}
+            {canManage && <><button onClick={doRecount} disabled={busy}
               className="px-4 py-2 border border-gray-200 hover:bg-gray-100 rounded-xl font-bold text-sm text-gray-600 disabled:opacity-60 flex items-center gap-1.5">
               <RotateCcw size={14} />Yêu cầu kiểm lại
             </button>
@@ -262,6 +275,7 @@ function CountDetailModal({ count, onClose, onChanged, onError }: {
               className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-sm disabled:opacity-60 flex items-center gap-1.5">
               <CheckCircle2 size={14} />Duyệt chênh lệch
             </button>
+            <button onClick={doCancel} disabled={busy} className="px-4 py-2 border rounded-xl text-red-600">Hủy đợt kiểm kê</button></>}
           </div>
         )}
       </div>

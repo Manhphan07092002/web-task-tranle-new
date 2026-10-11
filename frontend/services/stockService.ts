@@ -90,8 +90,20 @@ export async function advanceDocument(kind: 'receipts' | 'issues', id: string, a
   await postDoc(`/api/stock/${kind}/${id}/${action}`, {});
 }
 
-export async function advanceTransfer(id: string, action: 'ship' | 'receive'): Promise<void> {
-  await postDoc(`/api/stock/transfers/${id}/${action}`, {});
+export async function advanceTransfer(id: string, action: 'ship' | 'receive', locationId?: string): Promise<void> {
+  await postDoc(`/api/stock/transfers/${id}/${action}`, { locationId });
+}
+
+export interface StockReportRow {
+  productId: string; warehouseId: string; productName: string; warehouseName: string; unit: string;
+  opening: number; inbound: number; outbound: number; adjustment: number; closing: number;
+}
+
+export async function getStockReport(from: string, to: string): Promise<StockReportRow[]> {
+  const res = await apiFetch(`/api/stock/reports?${new URLSearchParams({ from, to })}`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Không tải được báo cáo kho');
+  return data;
 }
 
 export interface StockAlertRow {
@@ -405,4 +417,8 @@ export async function approveCount(id: string): Promise<void> {
   const res = await apiFetch(`/api/stock/counts/${id}/approve`, { method: 'POST' });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Duyệt chênh lệch thất bại');
+}
+
+export async function cancelCount(id: string): Promise<void> {
+  await postDoc(`/api/stock/counts/${id}/cancel`, {});
 }

@@ -97,7 +97,7 @@ describe('receipts', () => {
   const line = { id: 'l1', productId: 'p1', quantity: 10, unitPrice: 5, locationId: null };
 
   it('creates a draft receipt inside the scope', async () => {
-    const db = mockDb({ scopes: ['wh-hn'] });
+    const db = mockDbProducts({ scopes: ['wh-hn'], productIds: new Set(['p1']) });
     const res = await request(appFor(nv, db)).post('/receipts')
       .send({ warehouseId: 'wh-hn', lines: [{ productId: 'p1', quantity: 10 }] }).expect(201);
     expect(res.body.code).toMatch(/^PNK-/);
@@ -157,7 +157,7 @@ describe('issues', () => {
       balance: { onHand: 5, reserved: 2 }, // available = 3 < 4
     });
     await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(400);
-    expect(db.run).not.toHaveBeenCalled();
+    expect(db.run.mock.calls.map(([sql]: string[]) => sql)).toEqual(['START TRANSACTION', 'ROLLBACK']);
   });
 
   it('posts negative moves when stock suffices', async () => {
@@ -301,7 +301,7 @@ describe('reservations hold, release and consume', () => {
   it('refuses holds beyond available stock', async () => {
     const d = db({ balance: { onHand: 5, reserved: 2 } }); // available = 3 < 4
     await request(appFor(tp, d)).post('/reservations').send(body).expect(400);
-    expect(d.run).not.toHaveBeenCalled();
+    expect(d.run.mock.calls.map(([sql]: string[]) => sql)).toEqual(['START TRANSACTION', 'ROLLBACK']);
   });
 
   it('releases without touching on-hand, consumes with an issue move', async () => {
@@ -381,7 +381,9 @@ describe('stock counts blind flow', () => {
         if (String(sql).includes('FROM stock_counts')) return [];
         return [];
       }),
-      get: vi.fn(async (sql: string) => {
+      get: vi.fn(async (sql: string, params?: any[]) => {
+        if (String(sql).includes('FROM products')) return { id: params?.[0] };
+        if (String(sql).includes('FROM stock_balances')) return { onHand: opts.lines?.find(line => line.productId === params?.[0])?.expectedQty ?? 0, reserved: 0 };
         if (String(sql).includes('FROM stock_counts')) return opts.count;
         return undefined;
       }),
@@ -511,11 +513,13 @@ describe('misa mappings and logs', () => {
     };
   }
 
-  it('lists mappings and logs for any authenticated user', async () => {
+  it('lists mappings and logs for managers, not staff', async () => {
     const rows = [{ id: 'm1' }];
     const d: any = { ...db(), all: vi.fn().mockResolvedValue(rows) };
-    await request(appFor(nv, d)).get('/misa-mappings').expect(200, rows);
-    await request(appFor(nv, d)).get('/misa-logs').expect(200, rows);
+    await request(appFor(tp, d)).get('/misa-mappings').expect(200, rows);
+    await request(appFor(tp, d)).get('/misa-logs').expect(200, rows);
+    await request(appFor(nv, d)).get('/misa-mappings').expect(403);
+    await request(appFor(nv, d)).get('/misa-logs').expect(403);
   });
 
   it('managers create mappings, staff cannot, duplicates conflict', async () => {

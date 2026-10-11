@@ -1,6 +1,13 @@
+import { beginStockTransaction } from '../utils/stockTransaction.js';
+
 // Tự động giải phóng giữ hàng hết hạn (§21: release khi hủy/hết hạn).
 // Chạy định kỳ, idempotent: chỉ chạm các dòng HELD đã quá expiresAt.
 export async function releaseExpiredReservations(db: any, now = new Date()): Promise<number> {
+  const release = () => releaseExpiredInContext(db, now);
+  return db.runWithRequestContext ? db.runWithRequestContext(release) : release();
+}
+
+async function releaseExpiredInContext(db: any, now: Date): Promise<number> {
   const expired = await db.all(
     `SELECT id, productId, warehouseId, locationId, quantity FROM reservations
      WHERE status = 'HELD' AND expiresAt IS NOT NULL AND expiresAt <= ?`,
@@ -8,9 +15,9 @@ export async function releaseExpiredReservations(db: any, now = new Date()): Pro
   );
   let released = 0;
   for (const r of expired) {
-    await db.run('START TRANSACTION');
+    await beginStockTransaction(db);
     try {
-      const current = await db.get('SELECT status FROM reservations WHERE id = ?', [r.id]);
+      const current = await db.get('SELECT status FROM reservations WHERE id = ? FOR UPDATE', [r.id]);
       if (!current || current.status !== 'HELD') {
         await db.run('ROLLBACK');
         continue;

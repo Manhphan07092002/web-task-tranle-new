@@ -62,7 +62,7 @@ export default function DepartmentStubPage() {
   if (deptKey === 'WAREHOUSE' && moduleId === 'wh_stock') return <InventoryPage deptKey={deptKey} />;
   if (deptKey === 'WAREHOUSE' && moduleId === 'wh_receipt') return <StockDocsPage deptKey={deptKey} kind="RECEIPT" />;
   if (deptKey === 'WAREHOUSE' && moduleId === 'wh_issue') return <StockDocsPage deptKey={deptKey} kind="ISSUE" />;
-  if (deptKey === 'WAREHOUSE' && (moduleId === 'wh_transfer' || moduleId === 'wh_in_transit')) return <StockDocsPage deptKey={deptKey} kind="TRANSFER" />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_transfer') return <StockDocsPage deptKey={deptKey} kind="TRANSFER" />;
   if (deptKey === 'WAREHOUSE' && moduleId === 'wh_alerts') return <AlertsPage deptKey={deptKey} />;
   if (deptKey === 'WAREHOUSE' && moduleId === 'wh_exceptions') return <ExceptionsPage deptKey={deptKey} />;
   if (deptKey === 'WAREHOUSE' && moduleId === 'wh_slow') return <SlowStockPage deptKey={deptKey} />;

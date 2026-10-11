@@ -1,3 +1,5 @@
+import { getStockLocations, type StockLocation } from '../../services/locationService';
+import { ReceiveTransferButton } from './ReceiveTransferButton';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck } from 'lucide-react';
@@ -136,10 +138,7 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                             </button>
                           )}
                           {d.status === 'IN_TRANSIT' && kind === 'TRANSFER' && (
-                            <button disabled={actingId === d.id} onClick={() => act(d.id, () => advanceTransfer(d.id, 'receive'), 'Nhận hàng thất bại')}
-                              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors">
-                              {actingId === d.id ? <RefreshCw size={13} className="animate-spin" /> : <PackageCheck size={13} />}Xác nhận nhận
-                            </button>
+                            <ReceiveTransferButton id={d.id} warehouseId={d.destWarehouseId!} onDone={fetchAll} />
                           )}
                         </div>
                       </td>
@@ -178,6 +177,16 @@ function DocCreateModal({ kind, warehouses, products, onClose, onDone, onError }
   const [lines, setLines] = useState<StockDocLine[]>([{ productId: '', quantity: 1 }]);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
+  const [locations, setLocations] = useState<StockLocation[]>([]);
+  useEffect(() => {
+    let active = true;
+    setLocations([]);
+    setLines(lines => lines.map(line => ({ ...line, locationId: '' })));
+    if (warehouseId) getStockLocations(warehouseId)
+      .then(rows => { if (active) setLocations(rows.filter(row => row.isActive)); })
+      .catch(error => { if (active) setErr(error.message); });
+    return () => { active = false; };
+  }, [warehouseId]);
 
   const setLine = (i: number, patch: Partial<StockDocLine>) =>
     setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
@@ -246,7 +255,11 @@ function DocCreateModal({ kind, warehouses, products, onClose, onDone, onError }
                       <option value="">-- Chọn hàng --</option>
                       {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                     </select>
-                    <input type="number" min={1} step="any" value={l.quantity}
+                    <select aria-label="Vị trí hàng" value={l.locationId || ''} onChange={e => setLine(i, { locationId: e.target.value })} className="min-w-0 w-36 border rounded-xl px-2 text-sm">
+                      <option value="">Chưa phân vị trí</option>
+                      {locations.filter(location => kind !== 'ISSUE' || location.purpose === 'SALEABLE').map(location => <option key={location.id} value={location.id}>{location.code}</option>)}
+                    </select>
+                    <input type="number" min={0.000001} step="any" value={l.quantity}
                       onChange={(e) => setLine(i, { quantity: Number(e.target.value) })}
                       className="w-24 px-3 py-2 border border-gray-200 rounded-xl text-sm outline-none" title="Số lượng" />
                     <button type="button" onClick={() => setLines((ls) => ls.filter((_, j) => j !== i))}

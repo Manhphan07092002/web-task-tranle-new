@@ -106,12 +106,15 @@ class MysqlDb {
         const [rows] = await this.conn.query(normalizedSql, params ?? []);
         return rows;
       } catch (err: any) {
-        // Reconnect once on a dropped connection, then retry.
+        // Restore the connection for subsequent requests, but never replay an
+        // ambiguous statement (especially COMMIT) on a different transaction.
         if (err && (err.code === 'PROTOCOL_CONNECTION_LOST' || err.fatal)) {
           console.warn('[MySQL] Connection lost, reconnecting...');
           this.conn = await mysql.createConnection(this.connectionConfig);
-          const [rows] = await this.conn.query(normalizedSql, params ?? []);
-          return rows;
+          if (!this.transactionGate.isTransactionActive() && /^\s*SELECT\b/i.test(normalizedSql)) {
+            const [rows] = await this.conn.query(normalizedSql, params ?? []);
+            return rows;
+          }
         }
         throw err;
       }

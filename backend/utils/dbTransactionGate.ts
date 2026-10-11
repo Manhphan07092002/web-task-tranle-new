@@ -15,6 +15,10 @@ export class DatabaseTransactionGate {
     return this.requestContext.run(Symbol('database-request'), callback);
   }
 
+  isTransactionActive(): boolean {
+    return this.activeTransaction !== null;
+  }
+
   private async acquireQuerySlot() {
     let release!: () => void;
     const slot = new Promise<void>((resolve) => { release = resolve; });
