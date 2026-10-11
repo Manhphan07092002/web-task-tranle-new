@@ -1,7 +1,5 @@
--- Migration 005: Drop Legacy Authentication Columns
--- Removes unused columns from security audit refactoring (commit 8515ee3)
--- Safe to run: these columns are no longer used by the application
-
--- Drop legacy auto-lock columns (replaced by manual isLocked flag)
-ALTER TABLE users DROP COLUMN IF EXISTS failedLogins;
-ALTER TABLE users DROP COLUMN IF EXISTS lockedUntil;
+-- Migration 005: (SUPERSEDED) Giữ cột lock theo code cũ
+-- Code cũ vẫn dùng failedLogins/lockedUntil ở middleware/auth.ts,
+-- routes/auth.ts, routes/users.ts, socket.ts nên KHÔNG drop nữa.
+-- Chuẩn hóa managementLevel thực hiện ở db_mysql.ts migration v11.
+-- File giữ lại để lịch sử, không thực hiện DROP.

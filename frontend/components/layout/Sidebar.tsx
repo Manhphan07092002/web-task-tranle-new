@@ -7,7 +7,7 @@ import { useLanguage } from '../../contexts/LanguageContext';
 import { Button, Avatar } from '../UI';
 import { apiFetch } from '../../services/api';
 import { COMMON_TOP_GROUPS, SYSTEM_GROUP } from './menus/commonMenus';
-import { DEPARTMENT_MENUS } from './menus/departmentMenus';
+import { DEPARTMENT_MENUS, asGroupList } from './menus/departmentMenus';
 import { resolveDeptKey, roleLabel, roleSubtitle } from './menus/resolveDepartment';
 import type { NavGroup } from './menus/menuTypes';
 
@@ -21,11 +21,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ isMobileMenuOpen, setIsMobileM
   const { user, logout } = useAuth();
   const { departments } = useData();
   const level = user?.managementLevel ?? 10;
-  // Department -> menu config -> render. Only ONE department module renders.
+  // Department -> menu config -> render. Only ONE department module renders
+  // (Kho vận renders multiple groups: Vận hành / Hàng hóa / Kiểm soát...).
   const deptKey = resolveDeptKey(user, departments || []);
-  const deptGroup: NavGroup | null = deptKey ? (DEPARTMENT_MENUS[deptKey] ?? null) : null;
-  const NAV_GROUPS: NavGroup[] = deptGroup
-    ? [...COMMON_TOP_GROUPS, deptGroup, SYSTEM_GROUP]
+  const deptGroups: NavGroup[] = deptKey ? asGroupList(DEPARTMENT_MENUS[deptKey]) : [];
+  const NAV_GROUPS: NavGroup[] = deptGroups.length > 0
+    ? [...COMMON_TOP_GROUPS, ...deptGroups, SYSTEM_GROUP]
     : [...COMMON_TOP_GROUPS, SYSTEM_GROUP];
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const { t } = useLanguage();

@@ -27,7 +27,13 @@ export interface User {
   avatar: string;
   mailPassword?: string;
   isLocked: number;
+  lockedUntil?: string | null;
+  failedLogins?: number;
   tokenVersion: number;
+  // RBAC chuẩn hóa: level số để so sánh >= (10 NV / 20 TP / 30 P.GĐ / 40 GĐ / 99 Admin)
+  managementLevel?: number;
+  primaryDepartmentId?: string | null;
+  employeeCode?: string;
   phone?: string;
   dob?: string;
   hometown?: string;
@@ -173,6 +179,7 @@ export interface Role {
   description?: string;
   color: string;
   permissions: string;
+  managementLevel?: number;
   isSystem: number;
 }
 

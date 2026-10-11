@@ -1,3 +1,11 @@
+export const ROLE_LEVELS = {
+  Admin: 99,
+  Director: 40,
+  'Deputy Director': 30,
+  Manager: 20,
+  Employee: 10,
+};
+
 export function buildPlan(data, users, departments) {
   const codes = new Set(); const emails = new Set(); const claimed = new Set();
   const deptMap = new Map(data.departments.map(d => {
@@ -28,10 +36,12 @@ export function buildPlan(data, users, departments) {
     const role = headedDepartments.some(d => d.id === 'BGD')
       ? 'Director'
       : headedDepartments.length ? 'Manager' : 'Employee';
+    const managementLevel = ROLE_LEVELS[role] ?? 10;
     if (existing?.role === 'Admin' && role !== 'Admin') {
       throw new Error(`Refusing to downgrade Admin account matched to ${e.full_name}`);
     }
-    return { employee: e, id, existing, assignments, role, department: primary.length ? deptMap.get(primary[0].department_id).name : (existing?.department ?? ''), status: primary[0]?.status ?? 'Chưa xác định' };
+    const primaryDeptId = primary.length ? deptMap.get(primary[0].department_id).dbId : (existing?.primaryDepartmentId ?? null);
+    return { employee: e, id, existing, assignments, role, managementLevel, department: primary.length ? deptMap.get(primary[0].department_id).name : (existing?.department ?? ''), primaryDepartmentId: primaryDeptId, status: primary[0]?.status ?? 'Chưa xác định' };
   });
   for (const a of data.employee_assignments) if (!codes.has(a.employee_id)) throw new Error('Unknown employee assignment');
   return { departments: [...deptMap.values()], records };

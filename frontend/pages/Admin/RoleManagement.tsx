@@ -1,4 +1,5 @@
 import { apiFetch } from '../../services/api';
+import { AdminToastBar, AdminDeleteModal, type AdminToastData } from '../../components/admin/AdminFeedback';
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Shield, PlusCircle, Edit2, Trash2, RefreshCw, AlertCircle,
@@ -27,12 +28,24 @@ const ALL_PERMISSIONS = [
 
 const PERM_GROUPS = [...new Set(ALL_PERMISSIONS.map(p => p.group))];
 
+// Cấp quản lý chuẩn hóa: 10 NV / 20 TP / 30 P.GĐ / 40 GĐ / 99 Admin (so sánh >=)
+const MANAGEMENT_LEVELS = [
+  { value: 10, label: 'Nhân viên (10)' },
+  { value: 20, label: 'Trưởng phòng (20)' },
+  { value: 30, label: 'Phó Giám đốc (30)' },
+  { value: 40, label: 'Giám đốc (40)' },
+  { value: 99, label: 'Admin (99)' },
+];
+
+const levelLabel = (v?: number) => MANAGEMENT_LEVELS.find(l => l.value === v)?.label || `Level ${v ?? 10}`;
+
 interface Role {
   id: string;
   name: string;
   description: string;
   color: string;
   permissions: string[];
+  managementLevel?: number;
   isSystem: number;
   userCount: number;
 }
@@ -48,34 +61,39 @@ const ROLE_PRESETS = [
     label: 'Admin',
     name: 'Admin',
     color: '#ef4444',
+    managementLevel: 99,
     desc: 'Toàn quyền hệ thống: quản trị, cấu hình, và xem mọi dữ liệu.',
     perms: ['admin_panel', 'manage_users', 'manage_meetings', 'view_all_tasks', 'manage_dept_tasks', 'view_own_tasks', 'view_all_reports', 'approve_dept_reports', 'director_feedback', 'create_report', 'view_dept_users', 'join_meetings', 'create_revenue_report', 'approve_dept_revenue', 'approve_all_revenue', 'manage_warehouse']
   },
   {
     label: 'Giám đốc',
-    name: 'Giám đốc',
-    color: '#8b5cf6',
+    name: 'Director',
+    color: '#0f172a',
+    managementLevel: 40,
     desc: 'Xem toàn bộ báo cáo, cung cấp phản hồi Giám đốc. Xem tiến độ công việc.',
     perms: ['view_all_reports', 'director_feedback', 'view_all_tasks', 'manage_meetings', 'join_meetings', 'approve_all_revenue', 'manage_warehouse']
   },
   {
     label: 'Phó giám đốc',
-    name: 'Phó giám đốc',
+    name: 'Deputy Director',
     color: '#3b82f6',
-    desc: 'Hỗ trợ giám đốc điều phối các dự án và phòng ban.',
-    perms: ['view_all_reports', 'director_feedback', 'view_all_tasks', 'join_meetings']
+    managementLevel: 30,
+    desc: 'Hỗ trợ giám đốc điều phối các dự án và phòng ban được giao.',
+    perms: ['view_all_reports', 'director_feedback', 'view_all_tasks', 'manage_dept_tasks', 'join_meetings', 'approve_dept_revenue']
   },
   {
     label: 'Trưởng phòng',
-    name: 'Trưởng phòng',
-    color: '#f59e0b',
+    name: 'Manager',
+    color: '#16a34a',
+    managementLevel: 20,
     desc: 'Quản lý nhân viên trong phòng ban, giao việc, duyệt báo cáo phòng ban và doanh thu.',
     perms: ['manage_dept_tasks', 'approve_dept_reports', 'view_dept_users', 'create_report', 'view_own_tasks', 'join_meetings', 'approve_dept_revenue', 'manage_warehouse']
   },
   {
     label: 'Nhân viên',
-    name: 'Nhân viên',
-    color: '#10b981',
+    name: 'Employee',
+    color: '#f59e0b',
+    managementLevel: 10,
     desc: 'Xem và thực hiện công việc được giao, tạo báo cáo tuần và doanh thu của bản thân.',
     perms: ['view_own_tasks', 'create_report', 'join_meetings', 'create_revenue_report']
   }
@@ -88,9 +106,11 @@ const RoleFormModal: React.FC<{
 }> = ({ role, onClose, onSave }) => {
   const isEdit = !!role;
   const isSystem = !!role?.isSystem;
+  const isAdminRole = role?.name === 'Admin';
   const [name, setName]         = useState(role?.name || '');
   const [desc, setDesc]         = useState(role?.description || '');
   const [color, setColor]       = useState(role?.color || '#6366f1');
+  const [level, setLevel]       = useState<number>(role?.managementLevel ?? 10);
   const [perms, setPerms]       = useState<string[]>(role?.permissions || []);
   const [saving, setSaving]     = useState(false);
   const [err, setErr]           = useState('');
@@ -103,7 +123,7 @@ const RoleFormModal: React.FC<{
     if (!isSystem && !name.trim()) { setErr('Tên vai trò không được trống.'); return; }
     setSaving(true); setErr('');
     try {
-      await onSave({ id: role?.id, name: name.trim(), description: desc, color, permissions: perms });
+      await onSave({ id: role?.id, name: name.trim(), description: desc, color, managementLevel: isAdminRole ? 99 : level, permissions: perms });
       onClose();
     } catch (e: any) { setErr(e.message || 'Lưu thất bại.'); }
     finally { setSaving(false); }
@@ -132,7 +152,7 @@ const RoleFormModal: React.FC<{
             {err && <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm"><AlertCircle size={14} />{err}</div>}
             {isSystem && (
               <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-sm">
-                <Lock size={14} />Vai trò hệ thống: không thể đổi tên, nhưng có thể chỉnh sửa mô tả, màu sắc và quyền hạn.
+                <Lock size={14} />Vai trò hệ thống: không thể đổi tên/xóa, nhưng có thể chỉnh sửa mô tả, màu sắc, cấp quản lý và quyền hạn.
               </div>
             )}
 
@@ -150,6 +170,7 @@ const RoleFormModal: React.FC<{
                         setColor(preset.color);
                         setDesc(preset.desc);
                         setPerms(preset.perms);
+                        setLevel(preset.managementLevel);
                       }}
                       className="px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all hover:bg-gray-50 flex items-center gap-1.5"
                       style={{ borderColor: preset.color + '40', color: preset.color, backgroundColor: preset.color + '10' }}
@@ -160,6 +181,22 @@ const RoleFormModal: React.FC<{
                 </div>
               </div>
             )}
+
+            {/* Level */}
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Cấp quản lý (so sánh {' >='})</label>
+              <select value={level} onChange={e => setLevel(Number(e.target.value))} disabled={isAdminRole}
+                className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:ring-2 outline-none text-sm bg-white disabled:bg-gray-50 disabled:text-gray-500">
+                {MANAGEMENT_LEVELS.map(l => (
+                  <option key={l.value} value={l.value}>{l.label}</option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-400 mt-1">
+                {isAdminRole
+                  ? 'Admin cố định 99 (tách quản trị hệ thống/kinh doanh) — không thể đổi.'
+                  : '10 NV · 20 Trưởng phòng · 30 Phó GĐ · 40 Giám đốc · 99 Admin. Gán user theo role sẽ sync level này.'}
+              </p>
+            </div>
 
             {/* Name & Color */}
             <div className="grid grid-cols-3 gap-4">
@@ -265,10 +302,10 @@ export default function AdminRoleManagement() {
   const [editingRole, setEditingRole] = useState<Role | null | undefined>(undefined);
   const [roleToDelete, setRoleToDelete] = useState<Role | null>(null);
   const [deletingId, setDeletingId]   = useState<string | null>(null);
-  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const [toast, setToast] = useState<AdminToastData | null>(null);
 
-  const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
-    setToast({ msg, type }); setTimeout(() => setToast(null), 3500);
+  const showToast = (title: string, msg?: string, type: AdminToastData['type'] = 'success') => {
+    setToast({ title, msg, type }); setTimeout(() => setToast(null), 3500);
   };
 
   const fetchRoles = useCallback(async () => {
@@ -292,7 +329,10 @@ export default function AdminRoleManagement() {
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Lỗi lưu');
-    showToast(isNew ? `Đã tạo vai trò "${data.name}"` : `Đã cập nhật vai trò`);
+    showToast(
+      isNew ? `Đã tạo vai trò "${data.name}"` : `Đã cập nhật vai trò "${data.name || ''}"`,
+      isNew ? 'Vai trò mới sẵn sàng gán cho người dùng.' : 'Màu sắc, cấp quản lý và quyền hạn đã được làm mới.',
+    );
     await fetchRoles();
   };
 
@@ -303,9 +343,9 @@ export default function AdminRoleManagement() {
       const res = await apiFetch(`/api/roles/${roleToDelete.id}`, { method: 'DELETE' });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error);
-      showToast(`Đã xóa vai trò "${roleToDelete.name}"`);
+      showToast(`Đã xóa vai trò "${roleToDelete.name}"`, 'Vai trò tùy chỉnh đã gỡ khỏi hệ thống.');
       await fetchRoles();
-    } catch (e: any) { showToast(e.message || 'Lỗi khi xóa vai trò', 'error'); }
+    } catch (e: any) { showToast('Xóa vai trò thất bại', e.message || 'Vai trò đang có người dùng được gán.', 'error'); }
     finally { 
       setDeletingId(null); 
       setRoleToDelete(null);
@@ -314,12 +354,7 @@ export default function AdminRoleManagement() {
 
   return (
     <div className="space-y-6 pb-8">
-      {toast && (
-        <div className={`fixed top-5 right-5 z-[100] flex items-center gap-2 px-5 py-3 rounded-xl shadow-2xl text-white text-sm font-medium transition-all
-          ${toast.type === 'success' ? 'bg-emerald-500' : 'bg-red-500'}`}>
-          {toast.type === 'success' ? <CheckCircle size={16} /> : <AlertCircle size={16} />} {toast.msg}
-        </div>
-      )}
+      <AdminToastBar toast={toast} onClose={() => setToast(null)} />
 
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -349,7 +384,7 @@ export default function AdminRoleManagement() {
         <Settings size={18} className="flex-shrink-0 mt-0.5" />
         <div>
           <p className="font-bold mb-0.5">Hướng dẫn</p>
-          <p className="text-blue-600">Vai trò <strong>Hệ thống</strong> (Admin, Director, Manager, Employee) không thể đổi tên hoặc xóa. Bạn có thể chỉnh sửa màu sắc, mô tả và phân quyền. Vai trò tùy chỉnh có thể xóa khi chưa có người dùng nào được gán.</p>
+          <p className="text-blue-600">Vai trò <strong>Hệ thống</strong> (Admin 99, Director 40, Deputy Director 30, Manager 20, Employee 10) không thể đổi tên hoặc xóa. Bạn có thể chỉnh sửa màu sắc, mô tả, cấp quản lý và phân quyền. Vai trò tùy chỉnh có thể xóa khi chưa có người dùng nào được gán. Gán user theo role sẽ tự sync cấp quản lý.</p>
         </div>
       </div>
 
@@ -405,38 +440,16 @@ export default function AdminRoleManagement() {
 
       {/* Delete Confirmation Modal */}
       {roleToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all duration-300 scale-100 opacity-100">
-            <div className="p-6">
-              <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center mb-4 mx-auto">
-                <AlertCircle size={24} className="text-red-500" />
-              </div>
-              <h3 className="text-xl font-bold text-gray-900 text-center mb-2">Xác nhận xóa vai trò?</h3>
-              <p className="text-sm text-gray-500 text-center mb-6">
-                Bạn có chắc chắn muốn xóa vai trò <strong className="text-gray-900">"{roleToDelete.name}"</strong> không? Hành động này không thể hoàn tác.
-              </p>
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setRoleToDelete(null)}
-                  className="flex-1 px-4 py-2.5 text-sm font-semibold text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl transition-colors"
-                >
-                  Hủy bỏ
-                </button>
-                <button
-                  onClick={handleDelete}
-                  disabled={deletingId === roleToDelete.id}
-                  className="flex-1 px-4 py-2.5 text-sm font-semibold text-white bg-red-500 hover:bg-red-600 rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-70"
-                >
-                  {deletingId === roleToDelete.id ? (
-                    <><RefreshCw size={16} className="animate-spin" /> Đang xóa...</>
-                  ) : (
-                    <><Trash2 size={16} /> Xóa vai trò</>
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <AdminDeleteModal
+          title="Xóa vai trò?"
+          itemName={roleToDelete.name}
+          itemSub={`${roleToDelete.userCount} người dùng đang mang vai trò này`}
+          warning={roleToDelete.userCount > 0 ? 'Vai trò đang có người dùng — hệ thống sẽ từ chối xóa, hãy gán vai trò khác trước.' : undefined}
+          confirmText="Xóa vai trò"
+          busy={deletingId === roleToDelete.id}
+          onCancel={() => setRoleToDelete(null)}
+          onConfirm={handleDelete}
+        />
       )}
     </div>
   );
@@ -472,10 +485,11 @@ const RoleCard: React.FC<{
                 ) : (
                   <span className="text-[10px] font-bold bg-violet-100 text-violet-600 px-1.5 py-0.5 rounded">TÙY CHỈNH</span>
                 )}
+                <span className="text-[10px] font-bold bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">LV {role.managementLevel ?? 10}</span>
               </div>
               <div className="flex items-center gap-1 mt-0.5">
                 <Users size={11} className="text-gray-400" />
-                <span className="text-xs text-gray-400">{role.userCount} người dùng</span>
+                <span className="text-xs text-gray-400">{role.userCount} người dùng · {levelLabel(role.managementLevel)}</span>
               </div>
             </div>
           </div>

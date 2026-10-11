@@ -2,7 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { z } from 'zod';
-import { requirePermission } from '../middleware/auth.js';
+import { requirePermission, normalizeManagementLevel } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 
 const hashResetToken = (token: string) => crypto.createHash('sha256').update(token).digest('hex');
@@ -58,9 +58,14 @@ export function userRoutes(db: any, mailer: any) {
     try {
       if (!(await canAssignRole(role, req.user))) return res.status(403).json({ error: 'You cannot assign this role' });
       const hashedPassword = password ? await bcrypt.hash(password, 10) : null;
-      await db.run('INSERT INTO users (id, name, email, password, role, department, avatar, bio, phone, dob, hometown, cccd, gender, preferences) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [id, name, email, hashedPassword, role, department, avatar, bio || '', phone || '', dob || '', hometown || '', cccd || '', gender || '', preferences ? JSON.stringify(preferences) : '{}']);
+      const roleRow = await db.get('SELECT managementLevel FROM roles WHERE name = ?', [role]);
+      const level = normalizeManagementLevel(roleRow?.managementLevel);
+      await db.run('INSERT INTO users (id, name, email, password, role, department, managementLevel, avatar, bio, phone, dob, hometown, cccd, gender, preferences) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [id, name, email, hashedPassword, role, department, level, avatar, bio || '', phone || '', dob || '', hometown || '', cccd || '', gender || '', preferences ? JSON.stringify(preferences) : '{}']);
       res.json({ id });
-    } catch (e) { res.status(500).json({ error: 'Failed' }); }
+    } catch (e: any) {
+      if (e.message?.includes('UNIQUE') || e.message?.includes('Duplicate')) return res.status(409).json({ error: 'Email đã tồn tại' });
+      res.status(500).json({ error: 'Failed' });
+    }
   });
 
   router.put('/:id', requirePermission('manage_users'), validate(UserBodySchema.omit({ id: true })), async (req, res) => {
@@ -70,11 +75,13 @@ export function userRoutes(db: any, mailer: any) {
       const existingUser = await db.get('SELECT id, email FROM users WHERE id = ?', [req.params.id]);
       if (!existingUser) return res.status(404).json({ error: 'User not found' });
       const emailChanged = String(existingUser.email || '').trim().toLowerCase() !== email.trim().toLowerCase();
+      const roleRow = await db.get('SELECT managementLevel FROM roles WHERE name = ?', [role]);
+      const level = normalizeManagementLevel(roleRow?.managementLevel);
       if (password) {
         const hashed = await bcrypt.hash(password, 10);
-        await db.run('UPDATE users SET name=?, email=?, password=?, role=?, department=?, avatar=?, bio=?, phone=?, dob=?, hometown=?, cccd=?, gender=?, preferences=?, tokenVersion = tokenVersion + 1 WHERE id=?', [name, email, hashed, role, department, avatar, bio || '', phone || '', dob || '', hometown || '', cccd || '', gender || '', preferences ? JSON.stringify(preferences) : '{}', req.params.id]);
+        await db.run('UPDATE users SET name=?, email=?, password=?, role=?, department=?, managementLevel=?, avatar=?, bio=?, phone=?, dob=?, hometown=?, cccd=?, gender=?, preferences=?, tokenVersion = tokenVersion + 1 WHERE id=?', [name, email, hashed, role, department, level, avatar, bio || '', phone || '', dob || '', hometown || '', cccd || '', gender || '', preferences ? JSON.stringify(preferences) : '{}', req.params.id]);
       } else {
-        await db.run('UPDATE users SET name=?, email=?, role=?, department=?, avatar=?, bio=?, phone=?, dob=?, hometown=?, cccd=?, gender=?, preferences=?, tokenVersion = tokenVersion + 1 WHERE id=?', [name, email, role, department, avatar, bio || '', phone || '', dob || '', hometown || '', cccd || '', gender || '', preferences ? JSON.stringify(preferences) : '{}', req.params.id]);
+        await db.run('UPDATE users SET name=?, email=?, role=?, department=?, managementLevel=?, avatar=?, bio=?, phone=?, dob=?, hometown=?, cccd=?, gender=?, preferences=?, tokenVersion = tokenVersion + 1 WHERE id=?', [name, email, role, department, level, avatar, bio || '', phone || '', dob || '', hometown || '', cccd || '', gender || '', preferences ? JSON.stringify(preferences) : '{}', req.params.id]);
       }
       if (password || emailChanged) {
         await db.run('DELETE FROM password_reset_tokens WHERE userId = ? AND usedAt IS NULL', [req.params.id]);
@@ -85,6 +92,7 @@ export function userRoutes(db: any, mailer: any) {
 
   router.delete('/:id', requirePermission('manage_users'), async (req, res) => {
     try {
+      if (req.params.id === req.user?.id) return res.status(403).json({ error: 'Không thể xóa chính tài khoản của bạn' });
       await db.run('DELETE FROM users WHERE id=?', [req.params.id]);
       res.json({ success: true });
     } catch (e) { res.status(500).json({ error: 'Failed' }); }

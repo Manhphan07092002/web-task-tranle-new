@@ -2,7 +2,7 @@ import type { Department, User } from '../../../types';
 import type { DeptKey } from './menuTypes';
 
 // Database department codes (migration 006) -> stable menu keys.
-const CODE_MAP: Record<string, DeptKey> = {
+export const CODE_MAP: Record<string, DeptKey> = {
   KHO: 'WAREHOUSE',
   KD: 'SALES',
   KT: 'ACCOUNTING',
@@ -15,7 +15,7 @@ const CODE_MAP: Record<string, DeptKey> = {
 };
 
 // Legacy department ids -> menu keys (fallback when code is unavailable).
-const ID_MAP: Record<string, DeptKey> = {
+export const ID_MAP: Record<string, DeptKey> = {
   'dept-kho': 'WAREHOUSE',
   'dept-kinh-doanh': 'SALES',
   'dept-ke-toan': 'ACCOUNTING',
@@ -44,11 +44,23 @@ function matchName(name: string): DeptKey | null {
 // Resolve which department menu to render. Priority: department code,
 // then department id, then display-name matching. Never hard-code titles
 // at call sites — all matching lives here.
+export function keyOfDept(dept: Department | undefined, fallbackName = ''): DeptKey | null {
+  const code = (dept?.code || '').toUpperCase();
+  if (code && CODE_MAP[code]) return CODE_MAP[code];
+  if (dept?.id && ID_MAP[dept.id]) return ID_MAP[dept.id];
+  return matchName(`${fallbackName} ${dept?.name || ''}`);
+}
+
+export function resolveDeptKeyById(deptId: string | null | undefined, departments: Department[] = []): DeptKey | null {
+  if (!deptId) return null;
+  return keyOfDept(departments.find((d) => d.id === deptId));
+}
+
 export function resolveDeptKey(user: User | null, departments: Department[] = []): DeptKey | null {
   if (!user) return null;
   const dept = departments.find((d) => d.id === user.primaryDepartmentId);
-  const code = (dept?.code || '').toUpperCase();
-  if (code && CODE_MAP[code]) return CODE_MAP[code];
+  const byDept = keyOfDept(dept);
+  if (byDept) return byDept;
   if (user.primaryDepartmentId && ID_MAP[user.primaryDepartmentId]) {
     return ID_MAP[user.primaryDepartmentId];
   }

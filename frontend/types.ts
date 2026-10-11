@@ -140,6 +140,7 @@ export interface Role {
   description?: string;
   color: string;
   permissions: string[];
+  managementLevel?: number;
   isSystem: number;
 }
 

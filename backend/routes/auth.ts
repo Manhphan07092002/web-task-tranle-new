@@ -5,7 +5,7 @@ import { z } from 'zod';
 import crypto from 'crypto';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { validate } from '../middleware/validate.js';
-import { createRequireAuth } from '../middleware/auth.js';
+import { createRequireAuth, normalizeManagementLevel } from '../middleware/auth.js';
 import { sanitizeActivityValue } from '../utils/activityPrivacy.js';
 
 const LoginSchema = z.object({
@@ -57,17 +57,21 @@ export function authRoutes(db: any) {
         return res.status(401).json({ error: 'Invalid credentials' });
       }
 
-      const role = await db.get('SELECT permissions FROM roles WHERE name = ?', [user.role]);
+      const role = await db.get('SELECT permissions, managementLevel FROM roles WHERE name = ?', [user.role]);
       let managedDepartments: string[] = [];
       try {
         const scopes = await db.all('SELECT departmentId FROM management_scopes WHERE userId = ?', [user.id]);
         managedDepartments = scopes.map((s: { departmentId: string }) => s.departmentId);
       } catch { managedDepartments = []; }
 
+      const managementLevel = normalizeManagementLevel(
+        (user as any).managementLevel,
+        normalizeManagementLevel((role as any)?.managementLevel, 10),
+      );
       const userClientData = {
         id: user.id, name: user.name, email: user.email, role: user.role,
         department: user.department, avatar: user.avatar,
-        managementLevel: user.managementLevel ?? 10,
+        managementLevel,
         primaryDepartmentId: user.primaryDepartmentId || null,
         managedDepartments,
         permissions: role?.permissions ? JSON.parse(role.permissions) : []

@@ -1,8 +1,9 @@
 import { apiFetch } from '../../services/api';
+import { AdminToastBar, AdminDeleteModal, type AdminToastData } from '../../components/admin/AdminFeedback';
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Building2, PlusCircle, Edit2, Trash2, RefreshCw, AlertCircle,
-  CheckCircle, X, Save, Users, CheckSquare, Crown, ChevronDown
+  X, Save, Users, CheckSquare, Crown, ChevronDown
 } from 'lucide-react';
 
 interface Department {
@@ -11,12 +12,19 @@ interface Department {
   description: string;
   color: string;
   managerId: string | null;
+  code?: string | null;
+  parentId?: string | null;
+  parentName?: string | null;
+  level?: number | null;
+  isActive?: number | null;
   userCount: number;
   taskCount: number;
   manager: { id: string; name: string; avatar: string } | null;
 }
 
-interface UserOption { id: string; name: string; avatar: string; role: string; department: string; }
+interface UserOption { id: string; name: string; avatar: string; role: string; department: string; managementLevel?: number; }
+
+const LEVEL_LABELS: Record<number, string> = { 1: 'Cấp 1 · Ban Giám đốc', 2: 'Cấp 2 · Phòng chính', 3: 'Cấp 3 · Tổ/nhóm' };
 
 const PRESET_COLORS = [
   '#ef4444','#f97316','#eab308','#10b981',
@@ -27,24 +35,34 @@ const PRESET_COLORS = [
 // ---- Form Modal ----
 const DeptFormModal: React.FC<{
   dept: Department | null;
+  depts: Department[];
   users: UserOption[];
   onClose: () => void;
   onSave: (data: Partial<Department>) => Promise<void>;
-}> = ({ dept, users, onClose, onSave }) => {
+}> = ({ dept, depts, users, onClose, onSave }) => {
   const isEdit = !!dept;
   const [name, setName]       = useState(dept?.name || '');
   const [desc, setDesc]       = useState(dept?.description || '');
   const [color, setColor]     = useState(dept?.color || '#3b82f6');
   const [mgr, setMgr]         = useState(dept?.managerId || '');
+  const [code, setCode]       = useState(dept?.code || '');
+  const [parentId, setParentId] = useState(dept?.parentId || '');
+  const [active, setActive]   = useState((dept?.isActive ?? 1) === 1);
   const [saving, setSaving]   = useState(false);
   const [err, setErr]         = useState('');
+
+  // Cấp tự suy từ phòng cha (BGD=1, phòng chính=2, tổ/nhóm=3)
+  const parentLevel = depts.find(d => d.id === parentId)?.level ?? null;
+  const level = !parentId ? 1 : (parentLevel != null ? Math.min(parentLevel + 1, 3) : 2);
+  // Chỉ gợi ý trưởng phòng từ cấp TP trở lên, giữ người đang giữ chức dù không đủ chuẩn
+  const eligibleManagers = users.filter(u => (u.managementLevel ?? 10) >= 20 || u.id === mgr);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) { setErr('Tên phòng ban không được trống.'); return; }
     setSaving(true); setErr('');
     try {
-      await onSave({ id: dept?.id, name: name.trim(), description: desc, color, managerId: mgr || null });
+      await onSave({ id: dept?.id, name: name.trim(), description: desc, color, managerId: mgr || null, code: code.trim().toUpperCase() || null, parentId: parentId || null, level, isActive: active ? 1 : 0 });
       onClose();
     } catch (e: any) { setErr(e.message || 'Lưu thất bại.'); }
     finally { setSaving(false); }
@@ -117,11 +135,50 @@ const DeptFormModal: React.FC<{
               <select value={mgr} onChange={e => setMgr(e.target.value)}
                 className="w-full pl-9 pr-8 py-2.5 border border-gray-200 rounded-xl bg-white text-sm focus:ring-2 focus:ring-blue-200 outline-none appearance-none">
                 <option value="">-- Chưa có trưởng phòng --</option>
-                {users.map(u => (
-                  <option key={u.id} value={u.id}>{u.name} ({u.role})</option>
+                {eligibleManagers.map(u => (
+                  <option key={u.id} value={u.id}>{u.name} ({u.role} · LV {u.managementLevel ?? 10})</option>
                 ))}
               </select>
               <ChevronDown className="absolute right-2.5 top-3 text-gray-400 pointer-events-none" size={13} />
+            </div>
+            <p className="text-xs text-gray-400 mt-1">Chỉ hiện nhân sự cấp TP trở lên (LV ≥ 20).</p>
+          </div>
+
+          {/* Code / Parent / Level / Status */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Mã phòng</label>
+              <input value={code} onChange={e => setCode(e.target.value.toUpperCase())}
+                placeholder="VD: KT, KD, KHO"
+                className="w-full px-4 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-200 outline-none text-sm font-mono" />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Cấp (tự tính)</label>
+              <div className="px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-700">
+                {LEVEL_LABELS[level] || `Cấp ${level}`}
+              </div>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Trực thuộc</label>
+              <div className="relative">
+                <select value={parentId} onChange={e => setParentId(e.target.value)}
+                  className="w-full px-4 pr-8 py-2.5 border border-gray-200 rounded-xl bg-white text-sm focus:ring-2 focus:ring-blue-200 outline-none appearance-none">
+                  <option value="">-- Không (cấp cao nhất) --</option>
+                  {depts.filter(d => d.id !== dept?.id).map(d => (
+                    <option key={d.id} value={d.id}>{d.name}{d.code ? ` (${d.code})` : ''}</option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-2.5 top-3 text-gray-400 pointer-events-none" size={13} />
+              </div>
+            </div>
+            <div className="flex items-end pb-1">
+              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+                <input type="checkbox" checked={active} onChange={e => setActive(e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-300 text-blue-600" />
+                Đang hoạt động
+              </label>
             </div>
           </div>
 
@@ -146,11 +203,12 @@ export default function AdminDepartmentManagement() {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
   const [editing, setEditing] = useState<Department | null | undefined>(undefined);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [toast, setToast]     = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const [deletingDept, setDeletingDept] = useState<Department | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [toast, setToast]     = useState<AdminToastData | null>(null);
 
-  const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
-    setToast({ msg, type }); setTimeout(() => setToast(null), 3500);
+  const showToast = (title: string, msg?: string, type: AdminToastData['type'] = 'success') => {
+    setToast({ title, msg, type }); setTimeout(() => setToast(null), 3500);
   };
 
   const fetchAll = useCallback(async () => {
@@ -175,21 +233,24 @@ export default function AdminDepartmentManagement() {
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Lỗi lưu');
-    showToast(isNew ? `Đã thêm phòng ban "${data.name}"` : `Đã cập nhật "${data.name}"`);
+    showToast(
+      isNew ? `Đã thêm phòng "${data.name}"` : `Đã cập nhật "${data.name}"`,
+      isNew ? 'Cơ cấu tổ chức đã ghi nhận phòng ban mới.' : 'Tên mới đã cascade sang nhân sự, công việc và báo cáo.',
+    );
     await fetchAll();
   };
 
-  const handleDelete = async (dept: Department) => {
-    if (!confirm(`Xóa phòng ban "${dept.name}"?`)) return;
-    setDeletingId(dept.id);
+  const handleDelete = async () => {
+    if (!deletingDept) return;
+    setDeleting(true);
     try {
-      const res = await apiFetch(`/api/departments/${dept.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/departments/${deletingDept.id}`, { method: 'DELETE' });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error);
-      showToast(`Đã xóa phòng ban "${dept.name}"`);
+      showToast(`Đã xóa phòng "${deletingDept.name}"`, 'Cơ cấu tổ chức đã được làm gọn.');
       await fetchAll();
-    } catch (e: any) { showToast(e.message, 'error'); }
-    finally { setDeletingId(null); }
+    } catch (e: any) { showToast('Xóa phòng ban thất bại', e.message || 'Thử lại sau.', 'error'); }
+    finally { setDeleting(false); setDeletingDept(null); }
   };
 
   const totalUsers = depts.reduce((s, d) => s + d.userCount, 0);
@@ -197,12 +258,7 @@ export default function AdminDepartmentManagement() {
 
   return (
     <div className="space-y-6 pb-8">
-      {toast && (
-        <div className={`fixed top-5 right-5 z-50 flex items-center gap-2 px-5 py-3 rounded-xl shadow-2xl text-white text-sm font-medium
-          ${toast.type === 'success' ? 'bg-emerald-500' : 'bg-red-500'}`}>
-          {toast.type === 'success' ? <CheckCircle size={16} /> : <AlertCircle size={16} />} {toast.msg}
-        </div>
-      )}
+      <AdminToastBar toast={toast} onClose={() => setToast(null)} />
 
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -249,15 +305,29 @@ export default function AdminDepartmentManagement() {
           {depts.map(dept => (
             <DeptCard key={dept.id} dept={dept}
               onEdit={() => setEditing(dept)}
-              onDelete={() => handleDelete(dept)}
-              deleting={deletingId === dept.id} />
+              onDelete={() => setDeletingDept(dept)}
+              deleting={deleting && deletingDept?.id === dept.id} />
           ))}
         </div>
       )}
 
       {/* Modal */}
       {editing !== undefined && (
-        <DeptFormModal dept={editing} users={users} onClose={() => setEditing(undefined)} onSave={handleSave} />
+        <DeptFormModal dept={editing} depts={depts} users={users} onClose={() => setEditing(undefined)} onSave={handleSave} />
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deletingDept && (
+        <AdminDeleteModal
+          title="Xóa phòng ban?"
+          itemName={deletingDept.name}
+          itemSub={`${deletingDept.userCount} nhân viên · ${deletingDept.taskCount} công việc`}
+          warning={deletingDept.userCount > 0 ? `Đang có ${deletingDept.userCount} nhân viên — cần di chuyển trước khi xóa.` : 'Công việc gắn tên phòng này sẽ mất liên kết hiển thị.'}
+          confirmText="Xóa phòng ban"
+          busy={deleting}
+          onCancel={() => setDeletingDept(null)}
+          onConfirm={handleDelete}
+        />
       )}
     </div>
   );
@@ -283,11 +353,29 @@ const DeptCard: React.FC<{
             <Building2 size={20} style={{ color: dept.color }} />
           </div>
           <div>
-            <h3 className="font-black text-gray-900 text-base">{dept.name}</h3>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="font-black text-gray-900 text-base">{dept.name}</h3>
+              {dept.code && (
+                <span className="text-[10px] font-bold bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">{dept.code}</span>
+              )}
+              {(dept.isActive ?? 1) === 0 && (
+                <span className="text-[10px] font-bold bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">NGƯNG</span>
+              )}
+            </div>
+            <p className="text-[11px] text-gray-400 mt-0.5">
+              {LEVEL_LABELS[dept.level ?? 2] || `Cấp ${dept.level ?? 2}`}
+              {dept.parentName ? ` · thuộc ${dept.parentName}` : ' · cấp cao nhất'}
+            </p>
             {dept.manager && (
-              <div className="flex items-center gap-1.5 mt-0.5">
+              <div className="flex items-center gap-1.5 mt-1">
                 <Crown size={11} style={{ color: dept.color }} />
-                <img src={dept.manager.avatar} alt="" className="w-4 h-4 rounded-full object-cover" />
+                {dept.manager.avatar ? (
+                  <img src={dept.manager.avatar} alt="" className="w-4 h-4 rounded-full object-cover" />
+                ) : (
+                  <span className="w-4 h-4 rounded-full bg-gray-200 text-gray-500 flex items-center justify-center text-[8px] font-bold">
+                    {dept.manager.name.slice(0, 1).toUpperCase()}
+                  </span>
+                )}
                 <span className="text-xs text-gray-500">{dept.manager.name}</span>
               </div>
             )}

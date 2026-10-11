@@ -381,7 +381,7 @@ describe('ownership boundaries', () => {
     app.use(roleRoutes(db));
 
     await request(app).put('/role-1').send({ name: 'New role' }).expect(200);
-    expect(db.run.mock.calls.some((call: any[]) => String(call[0]).includes('UPDATE users SET role = ?, tokenVersion = tokenVersion + 1') && call[1][0] === 'New role' && call[1][1] === 'Old role')).toBe(true);
+    expect(db.run.mock.calls.some((call: any[]) => String(call[0]).includes('UPDATE users SET role = ?, managementLevel = ?, tokenVersion = tokenVersion + 1') && call[1][0] === 'New role' && call[1][2] === 'Old role')).toBe(true);
   });
 
   it('a user manager cannot assign a role with permissions they do not hold', async () => {

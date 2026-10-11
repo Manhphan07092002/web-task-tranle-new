@@ -1,0 +1,174 @@
+import express from 'express';
+import request from 'supertest';
+import { describe, expect, it, vi } from 'vitest';
+import { userRoutes } from '../routes/users.js';
+import { roleRoutes } from '../routes/roles.js';
+import { departmentRoutes } from '../routes/departments.js';
+
+function adminApp(router: express.Router) {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => { (req as any).user = { id: 'admin-1', role: 'Admin', permissions: ['admin_panel', 'manage_users'], managementLevel: 99 }; next(); });
+  app.use(router);
+  return app;
+}
+
+const dupEntry = () => { const e: any = new Error("Duplicate entry 'X' for key 'roles.name'"); e.code = 'ER_DUP_ENTRY'; return e; };
+
+// ─── Users CRUD ─────────────────────────────────────────────────────────────
+
+describe('users CRUD', () => {
+  function db(roleLevel: number | null = 10) {
+    return {
+      get: vi.fn(async (sql: string) => {
+        if (String(sql).includes('FROM roles')) return { permissions: '[]', managementLevel: roleLevel };
+        if (String(sql).includes('SELECT id, email FROM users')) return { id: 'u1', email: 'a@x.vn' };
+        return undefined;
+      }),
+      all: vi.fn().mockResolvedValue([]),
+      run: vi.fn().mockResolvedValue({ changes: 1 }),
+    };
+  }
+
+  it('POST valid creates with synced level', async () => {
+    const d = db(20);
+    await request(adminApp(userRoutes(d, {}))).post('/').send({ name: 'A', email: 'a@x.vn', password: 'password1', role: 'Manager', department: 'P' }).expect(200);
+    expect(d.run).toHaveBeenCalled();
+  });
+
+  it('POST invalid email/password is rejected', async () => {
+    const d = db();
+    await request(adminApp(userRoutes(d, {}))).post('/').send({ name: '', email: 'not-an-email', role: 'Employee' }).expect(400);
+    expect(d.run).not.toHaveBeenCalled();
+  });
+
+  it('POST duplicate email surfaces conflict, not 500', async () => {
+    const d = db();
+    d.run.mockRejectedValueOnce(dupEntry());
+    await request(adminApp(userRoutes(d, {}))).post('/').send({ name: 'A', email: 'a@x.vn', password: 'password12', role: 'Employee' }).expect(409);
+  });
+
+  it('PUT missing user is 404', async () => {
+    const d: any = { get: vi.fn(async (sql: string) => String(sql).includes('FROM roles') ? { permissions: '[]', managementLevel: 10 } : undefined), all: vi.fn(), run: vi.fn() };
+    await request(adminApp(userRoutes(d, {}))).put('/ghost').send({ name: 'A', email: 'a@x.vn', role: 'Employee' }).expect(404);
+  });
+
+  it('DELETE refuses self-deletion', async () => {
+    const d = db();
+    await request(adminApp(userRoutes(d, {}))).delete('/admin-1').expect(403);
+    expect(d.run).not.toHaveBeenCalled();
+  });
+
+  it('DELETE other user works', async () => {
+    const d = db();
+    await request(adminApp(userRoutes(d, {}))).delete('/u9').expect(200);
+  });
+});
+
+// ─── Roles CRUD ─────────────────────────────────────────────────────────────
+
+describe('roles CRUD', () => {
+  function db(rows: any[] = []) {
+    return {
+      all: vi.fn().mockResolvedValue(rows),
+      get: vi.fn(async (sql: string, params?: any[]) => {
+        if (String(sql).includes('COUNT(*)')) return { count: 0 };
+        return rows.find((r) => r.id === params?.[0]);
+      }),
+      run: vi.fn().mockResolvedValue({ changes: 1 }),
+    };
+  }
+
+  it('POST duplicate name surfaces conflict, not 500', async () => {
+    const d = db();
+    d.run.mockRejectedValueOnce(dupEntry());
+    await request(adminApp(roleRoutes(d))).post('/').send({ name: 'Manager', permissions: [] }).expect(409);
+  });
+
+  it('PUT Admin role keeps level 99 even if a lower level is sent', async () => {
+    const d = db([{ id: 'role-admin', name: 'Admin', permissions: '[]', managementLevel: 99, isSystem: 1 }]);
+    await request(adminApp(roleRoutes(d))).put('/role-admin').send({ name: 'Admin', managementLevel: 10, permissions: [] }).expect(200);
+    const update = d.run.mock.calls.find(([sql]: string[]) => String(sql).startsWith('UPDATE roles SET'));
+    expect(update?.[1]).toContain(99);
+  });
+
+  it('PUT system role never renames', async () => {
+    const d = db([{ id: 'r1', name: 'Director', permissions: '[]', managementLevel: 40, isSystem: 1 }]);
+    await request(adminApp(roleRoutes(d))).put('/r1').send({ name: 'Hacker', permissions: [] }).expect(200);
+    const update = d.run.mock.calls.find(([sql]: string[]) => String(sql).startsWith('UPDATE roles SET'));
+    expect(String(update?.[0])).not.toContain('name = ?');
+  });
+
+  it('DELETE system role is forbidden', async () => {
+    const d = db([{ id: 'r1', name: 'Director', permissions: '[]', managementLevel: 40, isSystem: 1 }]);
+    await request(adminApp(roleRoutes(d))).delete('/r1').expect(403);
+  });
+
+  it('DELETE missing role is 404', async () => {
+    const d = db([]);
+    await request(adminApp(roleRoutes(d))).delete('/ghost').expect(404);
+  });
+});
+
+// ─── Departments CRUD ───────────────────────────────────────────────────────
+
+describe('departments CRUD', () => {
+  function db(depts: any[] = []) {
+    return {
+      all: vi.fn().mockResolvedValue(depts),
+      get: vi.fn(async (sql: string, params?: any[]) => {
+        if (String(sql).includes('COUNT(*)')) return { count: 0 };
+        if (String(sql).includes('SELECT id, name FROM departments')) return depts.find((d) => d.id === params?.[0]);
+        return depts.find((d) => d.id === params?.[0]);
+      }),
+      run: vi.fn().mockResolvedValue({ changes: 1 }),
+    };
+  }
+
+  function app(d: any) {
+    const a = express();
+    a.use(express.json());
+    a.use((req, _res, next) => { (req as any).user = { id: 'a', role: 'Admin', permissions: ['admin_panel'], managementLevel: 99 }; next(); });
+    a.use(departmentRoutes(d));
+    return a;
+  }
+
+  it('POST requires a non-blank name', async () => {
+    const d = db();
+    await request(app(d)).post('/').send({ name: '   ' }).expect(400);
+    expect(d.run).not.toHaveBeenCalled();
+  });
+
+  it('PUT whitespace-only name is rejected, not saved as empty', async () => {
+    const d = db([{ id: 'd1', name: 'Old', managerId: null }]);
+    await request(app(d)).put('/d1').send({ name: '   ' }).expect(400);
+    expect(d.run).not.toHaveBeenCalled();
+  });
+
+  it('PUT missing department is 404', async () => {
+    const d = db([]);
+    await request(app(d)).put('/ghost').send({ name: 'New' }).expect(404);
+  });
+
+  it('DELETE blocked when users attach via primaryDepartmentId', async () => {
+    const d: any = {
+      all: vi.fn(),
+      get: vi.fn(async (sql: string) => String(sql).includes('SELECT * FROM departments') ? { id: 'd1', name: 'P' } : { count: 3 }),
+      run: vi.fn(),
+    };
+    await request(app(d)).delete('/d1').expect(409);
+    expect(d.run).not.toHaveBeenCalled();
+  });
+
+  it('non-admin cannot write departments', async () => {
+    const d = db([]);
+    const a = express();
+    a.use(express.json());
+    a.use((req, _res, next) => { (req as any).user = { id: 'e', role: 'Employee', permissions: [], managementLevel: 10 }; next(); });
+    a.use(departmentRoutes(d));
+    await request(a).post('/').send({ name: 'X' }).expect(403);
+    await request(a).put('/d1').send({ name: 'X' }).expect(403);
+    await request(a).delete('/d1').expect(403);
+    expect(d.run).not.toHaveBeenCalled();
+  });
+});

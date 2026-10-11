@@ -39,3 +39,13 @@ test('repeat import matches stable codes and keeps department IDs',()=>{
 test('department ID collision aborts instead of renaming unrelated department',()=>{
  assert.throws(()=>buildPlan(data,[],[{id:'tle-dept-bgd',name:'Unrelated department'}]),/Department ID collision/);
 });
+test('records carry RBAC level + primary department matching actual schema',()=>{
+ const p=buildPlan(data,[],[]);
+ const byId=id=>p.records.find(r=>r.employee.id===id);
+ assert.equal(byId('TL.GD.001').role,'Director');assert.equal(byId('TL.GD.001').managementLevel,40);
+ for (const id of ['TL.KTT.005','TL.PGD-TPKD.002','TL.TPKTBH.015','TL.TPMKT.021']) {
+  assert.equal(byId(id).role,'Manager');assert.equal(byId(id).managementLevel,20);
+ }
+ assert.equal(byId('TL.GD.001').primaryDepartmentId,'tle-dept-bgd');
+ assert.ok(p.records.filter(r=>r.managementLevel===10).length>=30);
+});

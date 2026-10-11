@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Route, Routes, Navigate } from 'react-router-dom';
+import { Route, Routes, Navigate, useParams } from 'react-router-dom';
 import { Sidebar } from './components/layout/Sidebar';
 import { TopHeader } from './components/layout/TopHeader';
 
@@ -38,6 +38,35 @@ import { AIAssistant, AIAssistantHandle } from './components/AIAssistant';
 import { useLanguage } from './contexts/LanguageContext';
 import { useAuth } from './contexts/AuthContext';
 import { useData } from './contexts/DataContext';
+import { resolveDeptKey, resolveDeptKeyById } from './components/layout/menus/resolveDepartment';
+import { getDeptHomePath, DEPARTMENT_MENUS, asGroupList } from './components/layout/menus/departmentMenus';
+import type { DeptKey } from './components/layout/menus/menuTypes';
+
+// Chặn xem chéo phòng ban qua URL /dept/:key.
+// Admin/admin_panel và Ban Giám đốc (BOARD) xem tất cả;
+// còn lại chỉ phòng mình + phòng được giao (managedDepartments).
+function DeptRouteGuard() {
+  const { user } = useAuth();
+  const { departments } = useData();
+  const { key } = useParams<{ key: string }>();
+  const target = (key || '').toUpperCase() as DeptKey;
+
+  if (!user) return <Navigate to="/" replace />;
+  if (asGroupList(DEPARTMENT_MENUS[target]).length === 0) return <DepartmentStubPage />;
+  const perms = user.permissions || [];
+  if (user.role === 'Admin' || perms.includes('admin_panel')) return <DepartmentStubPage />;
+
+  const ownKey = resolveDeptKey(user, departments || []);
+  if (ownKey === 'BOARD') return <DepartmentStubPage />;
+  const allowed = new Set<DeptKey | null>([
+    ownKey,
+    ...(user.managedDepartments || []).map((id) => resolveDeptKeyById(id, departments || [])),
+  ]);
+  if (allowed.has(target)) return <DepartmentStubPage />;
+
+  const deptHome = getDeptHomePath(ownKey);
+  return <Navigate to={deptHome || '/'} replace />;
+}
 import { useNotifications } from './contexts/NotificationContext';
 import { LoginView } from './components/LoginView';
 import { ConfirmDialog } from './components/ConfirmDialog';
@@ -53,7 +82,7 @@ const getNextDate = (dateStr: string, type: RecurrenceType): string => {
 export default function TranLeTaskApp() {
   const { t } = useLanguage();
   const { user, isLoading: isAuthLoading } = useAuth();
-  const { tasks, notes, users, reports, contracts, isLoading: isDataLoading, saveTask, deleteTask, saveNote, deleteNote, saveUser, deleteUser } = useData();
+  const { tasks, notes, users, reports, contracts, departments, isLoading: isDataLoading, saveTask, deleteTask, saveNote, deleteNote, saveUser, deleteUser } = useData();
   const { setNotes, pushLocalNotification } = useNotifications();
 
   useEffect(() => {
@@ -349,6 +378,11 @@ export default function TranLeTaskApp() {
     );
   }
 
+  // Tổng quát riêng từng phòng ban sau login (không vào chung nữa).
+  // BOARD giữ "/" (dashboard điều hành); các phòng khác về overview của phòng mình.
+  const deptKey = resolveDeptKey(user, departments || []);
+  const deptHome = getDeptHomePath(deptKey);
+
   return (
     <div className="flex h-screen bg-transparent text-gray-800 overflow-hidden font-sans selection:bg-brand-200">
       <Sidebar isMobileMenuOpen={isMobileMenuOpen} setIsMobileMenuOpen={setIsMobileMenuOpen} openCreateModal={openCreateModal} />
@@ -366,6 +400,9 @@ export default function TranLeTaskApp() {
           <div className="w-full flex-1 space-y-8">
             <Routes>
               <Route path="/" element={
+                deptHome ? (
+                  <Navigate to={deptHome} replace />
+                ) : (
                  <DashboardPage
                   roleBasedTasks={roleBasedTasks} filteredTasks={filteredTasks} filteredNotes={filteredNotes}
                   notes={notes} users={users} user={user} reports={reports} contracts={contracts} searchQuery={searchQuery}
@@ -373,6 +410,7 @@ export default function TranLeTaskApp() {
                   handleStatusToggle={handleStatusToggle} handleDeleteTask={handleDeleteTask}
                   checkPermission={checkPermission}
                 />
+                )
               } />
               
               <Route path="/tasks" element={
@@ -435,7 +473,7 @@ export default function TranLeTaskApp() {
               <Route path="/project-reports" element={<ProjectReportsPage />} />
               <Route path="/contracts" element={<ContractsPage />} />
               <Route path="/products" element={<ProductsPage />} />
-              <Route path="/dept/:key" element={<DepartmentStubPage />} />
+              <Route path="/dept/:key" element={<DeptRouteGuard />} />
               <Route path="/revenue" element={<RevenuePage />} />
               <Route path="/notifications" element={<NotificationsPage />} />
               <Route path="/documents" element={<DocumentsPage />} />

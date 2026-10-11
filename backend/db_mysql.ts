@@ -189,17 +189,25 @@ CREATE TABLE IF NOT EXISTS users (
   password TEXT, role VARCHAR(64) NOT NULL, department VARCHAR(191) NOT NULL, avatar TEXT NOT NULL,
   mailPassword TEXT,
   isLocked TINYINT NOT NULL DEFAULT 0,
+  lockedUntil DATETIME NULL,
+  failedLogins INT NOT NULL DEFAULT 0,
   tokenVersion INT NOT NULL DEFAULT 0,
+  managementLevel INT NOT NULL DEFAULT 10,
+  primaryDepartmentId VARCHAR(191) NULL,
+  employeeCode VARCHAR(50) NULL,
+  jobTitle VARCHAR(255) NULL,
   phone TEXT, dob TEXT, hometown TEXT, bio TEXT, cccd TEXT, gender TEXT,
-  preferences TEXT DEFAULT ('{}')
+  preferences TEXT DEFAULT ('{}'),
+  INDEX idx_users_management_level (managementLevel),
+  INDEX idx_users_primary_dept (primaryDepartmentId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS tasks (
   id VARCHAR(191) PRIMARY KEY, title TEXT NOT NULL, description TEXT,
-  startDate TEXT, dueDate TEXT, estimatedEndAt TEXT, priority VARCHAR(64), status VARCHAR(64),
+  startDate VARCHAR(191), dueDate VARCHAR(191), estimatedEndAt VARCHAR(191), priority VARCHAR(64), status VARCHAR(64),
   createdBy VARCHAR(191), department VARCHAR(191), recurrence VARCHAR(64), contractId VARCHAR(191), projectId VARCHAR(191),
   INDEX idx_tasks_dept_status (department, status),
-  INDEX idx_tasks_status_duedate (status, dueDate),
+  INDEX idx_tasks_status_duedate (status, dueDate(191)),
   INDEX idx_tasks_createdby (createdBy)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -226,9 +234,9 @@ CREATE TABLE IF NOT EXISTS task_comments (
 
 CREATE TABLE IF NOT EXISTS notes (
   id VARCHAR(191) PRIMARY KEY, title TEXT NOT NULL, content TEXT,
-  color VARCHAR(64), createdAt TEXT, reminderAt TEXT,
+  color VARCHAR(64), createdAt VARCHAR(191), reminderAt VARCHAR(191),
   userId VARCHAR(191),
-  INDEX idx_notes_user_reminder (userId, reminderAt)
+  INDEX idx_notes_user_reminder (userId, reminderAt(191))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS reports (
@@ -244,6 +252,7 @@ CREATE TABLE IF NOT EXISTS reports (
 CREATE TABLE IF NOT EXISTS roles (
   id VARCHAR(191) PRIMARY KEY, name VARCHAR(191) NOT NULL UNIQUE, description TEXT,
   color VARCHAR(64) NOT NULL DEFAULT '#6366f1', permissions TEXT NOT NULL,
+  managementLevel INT NOT NULL DEFAULT 10,
   isSystem TINYINT NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -270,9 +279,9 @@ CREATE TABLE IF NOT EXISTS system_config (
 CREATE TABLE IF NOT EXISTS notifications (
   id VARCHAR(191) PRIMARY KEY, userId VARCHAR(191) NOT NULL, type VARCHAR(64) NOT NULL,
   title TEXT NOT NULL, message TEXT NOT NULL, relatedId VARCHAR(191),
-  dedupeKey VARCHAR(64) UNIQUE, isRead TINYINT NOT NULL DEFAULT 0, createdAt TEXT NOT NULL,
+  dedupeKey VARCHAR(64) UNIQUE, isRead TINYINT NOT NULL DEFAULT 0, createdAt VARCHAR(191) NOT NULL,
   INDEX idx_notifications_user_read (userId, isRead),
-  INDEX idx_notifications_created (createdAt)
+  INDEX idx_notifications_created (createdAt(191))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS events (
@@ -283,8 +292,8 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE TABLE IF NOT EXISTS activity_logs (
   id VARCHAR(191) PRIMARY KEY, userId VARCHAR(191) NOT NULL, action VARCHAR(191) NOT NULL,
-  entityId VARCHAR(191), entityType VARCHAR(64), metadata TEXT, createdAt TEXT NOT NULL,
-  INDEX idx_activity_user_created (userId, createdAt),
+  entityId VARCHAR(191), entityType VARCHAR(64), metadata TEXT, createdAt VARCHAR(191) NOT NULL,
+  INDEX idx_activity_user_created (userId, createdAt(191)),
   INDEX idx_activity_entity (entityType, entityId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -393,6 +402,31 @@ CREATE TABLE IF NOT EXISTS products (
 CREATE TABLE IF NOT EXISTS mail_quotas (
   email VARCHAR(255) PRIMARY KEY, quota INT DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS positions (
+  id VARCHAR(191) PRIMARY KEY, code VARCHAR(50) UNIQUE, name VARCHAR(255) NOT NULL,
+  departmentId VARCHAR(191), managementLevel INT NOT NULL DEFAULT 10,
+  description TEXT, isActive TINYINT DEFAULT 1, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_pos_dept (departmentId),
+  INDEX idx_pos_level (managementLevel)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS user_positions (
+  id VARCHAR(191) PRIMARY KEY, userId VARCHAR(191) NOT NULL, positionId VARCHAR(191) NOT NULL,
+  isPrimary TINYINT DEFAULT 0, startDate DATE, endDate DATE,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_user_position (userId, positionId),
+  INDEX idx_up_user (userId),
+  INDEX idx_up_position (positionId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS management_scopes (
+  id VARCHAR(191) PRIMARY KEY, userId VARCHAR(191) NOT NULL, departmentId VARCHAR(191) NOT NULL,
+  scopeType VARCHAR(50) NOT NULL DEFAULT 'FULL', createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_user_dept_scope (userId, departmentId),
+  INDEX idx_ms_user (userId),
+  INDEX idx_ms_dept (departmentId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `;
 
 export async function initDbMysql(): Promise<MysqlDb> {
@@ -449,6 +483,11 @@ export async function initDbMysql(): Promise<MysqlDb> {
       `);
 
       const ensureColumn = async (table: string, column: string, definition: string) => {
+        const tbl = await db.get(
+          'SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
+          [table]
+        );
+        if (!tbl || Number(tbl.count) === 0) return;
         const existing = await db.get(
           'SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
           [table, column]
@@ -480,6 +519,11 @@ export async function initDbMysql(): Promise<MysqlDb> {
 
       await runVersionedMigration(db, 4, 'performance_indexes', async () => {
         const ensureIndex = async (table: string, indexName: string, columns: string) => {
+          const tbl = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
+            [table]
+          );
+          if (!tbl || Number(tbl.count) === 0) return;
           const existing = await db.get(
             'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
             [table, indexName]
@@ -489,9 +533,9 @@ export async function initDbMysql(): Promise<MysqlDb> {
           }
         };
 
-        // Tasks indexes
+        // Tasks indexes (prefix length keeps utf8mb4 TEXT/VARCHAR under 3072-byte limit)
         await ensureIndex('tasks', 'idx_tasks_dept_status', 'department, status');
-        await ensureIndex('tasks', 'idx_tasks_status_duedate', 'status, dueDate');
+        await ensureIndex('tasks', 'idx_tasks_status_duedate', 'status, dueDate(191)');
         await ensureIndex('tasks', 'idx_tasks_createdby', 'createdBy');
         await ensureIndex('task_assignees', 'idx_task_assignees_user', 'userId');
 
@@ -501,7 +545,7 @@ export async function initDbMysql(): Promise<MysqlDb> {
         await ensureIndex('contracts', 'idx_contracts_createdby', 'createdBy');
 
         // Notes indexes
-        await ensureIndex('notes', 'idx_notes_user_reminder', 'userId, reminderAt');
+        await ensureIndex('notes', 'idx_notes_user_reminder', 'userId, reminderAt(191)');
 
         // Reports indexes
         await ensureIndex('reports', 'idx_reports_status_deleted', 'status, isDeleted');
@@ -520,27 +564,18 @@ export async function initDbMysql(): Promise<MysqlDb> {
 
         // Notifications indexes
         await ensureIndex('notifications', 'idx_notifications_user_read', 'userId, isRead');
-        await ensureIndex('notifications', 'idx_notifications_created', 'createdAt');
+        await ensureIndex('notifications', 'idx_notifications_created', 'createdAt(191)');
 
         // Activity logs indexes
-        await ensureIndex('activity_logs', 'idx_activity_user_created', 'userId, createdAt');
+        await ensureIndex('activity_logs', 'idx_activity_user_created', 'userId, createdAt(191)');
         await ensureIndex('activity_logs', 'idx_activity_entity', 'entityType, entityId');
       });
 
       await runVersionedMigration(db, 5, 'remove_legacy_columns', async () => {
-        const dropColumnIfExists = async (table: string, column: string) => {
-          const existing = await db.get(
-            'SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
-            [table, column]
-          );
-          if (existing && Number(existing.count) > 0) {
-            await db.run(`ALTER TABLE \`${table}\` DROP COLUMN \`${column}\``);
-          }
-        };
-
-        // Remove unused auto-lock columns from users table
-        await dropColumnIfExists('users', 'failedLogins');
-        await dropColumnIfExists('users', 'lockedUntil');
+        // LEGACY: v5 từng DROP failedLogins/lockedUntil nhưng code cũ
+        // (middleware/auth.ts, routes/auth.ts, routes/users.ts, socket.ts)
+        // vẫn dùng 2 cột này cho auto-lock. Giữ migration rỗng để không
+        // phá DB cũ, việc chuẩn hóa nằm ở v11 bên dưới.
       });
 
 
@@ -557,9 +592,82 @@ export async function initDbMysql(): Promise<MysqlDb> {
       });
 
       await runVersionedMigration(db, 10, 'management_scopes_scope_type', async () => {
-        // management_scopes created by older DDL lacks scopeType/createdAt
+        // Fresh installs never ran 006 SQL, so ensure the table exists first.
+        // DDL already creates it, this is a safety net for interrupted upgrades.
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS management_scopes (
+            id VARCHAR(191) PRIMARY KEY, userId VARCHAR(191) NOT NULL, departmentId VARCHAR(191) NOT NULL,
+            scopeType VARCHAR(50) NOT NULL DEFAULT 'FULL', createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_user_dept_scope (userId, departmentId),
+            INDEX idx_ms_user (userId),
+            INDEX idx_ms_dept (departmentId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
         await ensureColumn('management_scopes', 'scopeType', "`scopeType` VARCHAR(50) NOT NULL DEFAULT 'FULL'");
         await ensureColumn('management_scopes', 'createdAt', '`createdAt` DATETIME DEFAULT CURRENT_TIMESTAMP');
+      });
+
+      await runVersionedMigration(db, 11, 'standardize_users_rbac_level', async () => {
+        // Chuẩn hóa users theo code cũ + thêm managementLevel (10/20/30/40/99).
+        // Code cũ dùng: lockedUntil, failedLogins, jobTitle, managementLevel,
+        // primaryDepartmentId (middleware/auth.ts, routes/auth.ts, routes/users.ts).
+        await ensureColumn('users', 'lockedUntil', '`lockedUntil` DATETIME NULL');
+        await ensureColumn('users', 'failedLogins', '`failedLogins` INT NOT NULL DEFAULT 0');
+        await ensureColumn('users', 'managementLevel', '`managementLevel` INT NOT NULL DEFAULT 10');
+        await ensureColumn('users', 'primaryDepartmentId', '`primaryDepartmentId` VARCHAR(191) NULL');
+        await ensureColumn('users', 'employeeCode', '`employeeCode` VARCHAR(50) NULL');
+        await ensureColumn('users', 'jobTitle', '`jobTitle` VARCHAR(255) NULL');
+        // Backfill NULL -> 10 để so sánh >= an toàn
+        await db.run('UPDATE users SET managementLevel = 10 WHERE managementLevel IS NULL');
+        // Suy ra level từ role cũ khi đang là default 10 nhưng role cao hơn
+        await db.run(`UPDATE users SET managementLevel = CASE role
+          WHEN 'Admin' THEN 99 WHEN 'Director' THEN 40
+          WHEN 'Deputy Director' THEN 30 WHEN 'Manager' THEN 20
+          ELSE managementLevel END
+          WHERE managementLevel = 10 AND role IN ('Admin','Director','Deputy Director','Manager')`);
+        const ensureUserIndex = async (indexName: string, columns: string) => {
+          const tbl = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
+            ['users']
+          );
+          if (!tbl || Number(tbl.count) === 0) return;
+          const existing = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+            ['users', indexName]
+          );
+          if (!existing || Number(existing.count) === 0) {
+            await db.run(`CREATE INDEX ${indexName} ON \`users\` (${columns})`);
+          }
+        };
+        await ensureUserIndex('idx_users_management_level', 'managementLevel');
+        await ensureUserIndex('idx_users_primary_dept', 'primaryDepartmentId');
+      });
+
+      await runVersionedMigration(db, 12, 'roles_management_level', async () => {
+        // Thêm managementLevel vào roles để RoleManagement hiển thị/sửa theo level mới.
+        await ensureColumn('roles', 'managementLevel', '`managementLevel` INT NOT NULL DEFAULT 10');
+        // Backfill level cho 4 role hệ thống cũ (INSERT IGNORE không update hàng đã có)
+        await db.run(`UPDATE roles SET managementLevel = CASE name
+          WHEN 'Admin' THEN 99 WHEN 'Director' THEN 40
+          WHEN 'Deputy Director' THEN 30 WHEN 'Manager' THEN 20
+          ELSE 10 END
+          WHERE name IN ('Admin','Director','Deputy Director','Manager','Employee')`);
+        // Seed role Phó GĐ còn thiếu cho DB cũ (DB mới đã có từ INITIAL_ROLES)
+        await db.run(
+          `INSERT IGNORE INTO roles (id, name, description, color, permissions, managementLevel, isSystem)
+           VALUES (?, ?, ?, ?, ?, ?, 1)`,
+          ['role-deputy', 'Deputy Director',
+           'Phó Giám đốc — Hỗ trợ Giám đốc, điều phối các phòng ban được giao quản lý.',
+           '#3b82f6',
+           JSON.stringify(['view_all_reports', 'director_feedback', 'view_all_tasks', 'manage_dept_tasks', 'join_meetings', 'approve_dept_revenue']),
+           30]
+        );
+        // Đồng bộ users.managementLevel theo roles khi user đang default mà role có level cao hơn
+        try {
+          await db.run(`UPDATE users u JOIN roles r ON u.role = r.name
+            SET u.managementLevel = r.managementLevel
+            WHERE u.managementLevel = 10 AND r.managementLevel > 10`);
+        } catch { /* MySQL JOIN UPDATE fallback: bỏ qua nếu không hỗ trợ */ }
       });
 
 
@@ -667,6 +775,7 @@ async function seedInitialData(db: MysqlDb) {
       name: 'Admin',
       description: 'Toàn quyền quản trị hệ thống Tran Le Electricity.',
       color: '#ef4444',
+      managementLevel: 99,
       permissions: JSON.stringify([
         'admin_panel', 'manage_users', 'manage_meetings', 'view_all_tasks',
         'manage_dept_tasks', 'view_own_tasks', 'view_all_reports', 'approve_dept_reports',
@@ -680,9 +789,22 @@ async function seedInitialData(db: MysqlDb) {
       name: 'Director',
       description: 'Ban Giám đốc — Phê duyệt dự án điện mặt trời, kế hoạch tài chính và chiến lược phát triển.',
       color: '#0f172a', // Design System Dark / Navy
+      managementLevel: 40,
       permissions: JSON.stringify([
         'view_all_reports', 'director_feedback', 'view_all_tasks', 'manage_meetings',
         'join_meetings', 'approve_all_revenue', 'manage_warehouse'
+      ]),
+      isSystem: 1
+    },
+    {
+      id: 'role-deputy',
+      name: 'Deputy Director',
+      description: 'Phó Giám đốc — Hỗ trợ Giám đốc, điều phối các phòng ban được giao quản lý.',
+      color: '#3b82f6',
+      managementLevel: 30,
+      permissions: JSON.stringify([
+        'view_all_reports', 'director_feedback', 'view_all_tasks',
+        'manage_dept_tasks', 'join_meetings', 'approve_dept_revenue'
       ]),
       isSystem: 1
     },
@@ -691,6 +813,7 @@ async function seedInitialData(db: MysqlDb) {
       name: 'Manager',
       description: 'Quản lý khối kỹ thuật/phòng ban, điều phối dự án EPC/O&M, phân công nhiệm vụ và duyệt báo cáo.',
       color: '#16a34a', // Design System Primary Energy Green
+      managementLevel: 20,
       permissions: JSON.stringify([
         'manage_dept_tasks', 'approve_dept_reports', 'view_dept_users', 'manage_meetings',
         'join_meetings', 'create_report', 'create_revenue_report', 'approve_dept_revenue', 'manage_warehouse'
@@ -702,6 +825,7 @@ async function seedInitialData(db: MysqlDb) {
       name: 'Employee',
       description: 'Kỹ sư & nhân viên thực thi dự án, tư vấn thiết kế, thi công lắp đặt, O&M và báo cáo tiến độ.',
       color: '#f59e0b', // Design System Solar Gold
+      managementLevel: 10,
       permissions: JSON.stringify([
         'view_own_tasks', 'create_report', 'join_meetings', 'create_revenue_report'
       ]),
@@ -711,8 +835,8 @@ async function seedInitialData(db: MysqlDb) {
 
   for (const r of INITIAL_ROLES) {
     await db.run(
-      'INSERT IGNORE INTO roles (id, name, description, color, permissions, isSystem) VALUES (?, ?, ?, ?, ?, ?)',
-      [r.id, r.name, r.description, r.color, r.permissions, r.isSystem]
+      'INSERT IGNORE INTO roles (id, name, description, color, permissions, managementLevel, isSystem) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [r.id, r.name, r.description, r.color, r.permissions, r.managementLevel, r.isSystem]
     );
   }
 
@@ -748,18 +872,18 @@ async function seedInitialData(db: MysqlDb) {
     const adminPwd = process.env.ADMIN_DEFAULT_PASSWORD || (process.env.NODE_ENV === 'production' ? '' : 'TranLe@dmin2026!');
     if (!adminPwd) throw new Error('ADMIN_DEFAULT_PASSWORD is required before seeding initial accounts in production.');
     const INITIAL_USERS = [
-      { id: 'u1', name: 'Admin Tran Le', email: 'admin@tranlecorp.com.vn', password: await bcrypt.hash(adminPwd, 10), role: 'Admin', department: 'Ban Lãnh Đạo', avatar: 'https://i.pravatar.cc/150?u=u1', phone: '0939792428', dob: '1990-01-01', hometown: 'Đà Nẵng', bio: 'Quản trị viên hệ thống Tran Le Electricity.' },
-      { id: 'u2', name: 'Nguyễn Văn Đạt', email: 'vandat@tranlecorp.com.vn', password: await bcrypt.hash(adminPwd, 10), role: 'Manager', department: 'Khối Tổng Thầu EPC & Thi Công', avatar: 'https://i.pravatar.cc/150?u=u2', phone: '0987654321', dob: '1985-06-15', hometown: 'Đà Nẵng', bio: 'Chỉ huy trưởng thi công & Quản lý dự án EPC Điện mặt trời.' },
-      { id: 'u3', name: 'Phan Xuân Mạnh', email: 'xuanmanh@tranlecorp.com.vn', password: await bcrypt.hash(adminPwd, 10), role: 'Employee', department: 'Khối Tổng Thầu EPC & Thi Công', avatar: 'https://i.pravatar.cc/150?u=u3', phone: '0123456789', dob: '2002-09-07', hometown: 'Đà Nẵng', bio: 'Kỹ sư giải pháp năng lượng tái tạo & O&M Solar.' },
-      { id: 'u4', name: 'Nguyễn Văn Duy', email: 'vanduy@tranlecorp.com.vn', password: await bcrypt.hash(adminPwd, 10), role: 'Director', department: 'Ban Lãnh Đạo', avatar: 'https://i.pravatar.cc/150?u=u4', phone: '0939792428', dob: '1980-02-20', hometown: 'Đà Nẵng', bio: 'Ban Giám đốc Công ty Cổ phần Tư vấn xây dựng Điện Trần Lê.' },
+      { id: 'u1', name: 'Admin Tran Le', email: 'admin@tranlecorp.com.vn', password: await bcrypt.hash(adminPwd, 10), role: 'Admin', department: 'Ban Lãnh Đạo', managementLevel: 99, avatar: 'https://i.pravatar.cc/150?u=u1', phone: '0939792428', dob: '1990-01-01', hometown: 'Đà Nẵng', bio: 'Quản trị viên hệ thống Tran Le Electricity.' },
+      { id: 'u2', name: 'Nguyễn Văn Đạt', email: 'vandat@tranlecorp.com.vn', password: await bcrypt.hash(adminPwd, 10), role: 'Manager', department: 'Khối Tổng Thầu EPC & Thi Công', managementLevel: 20, avatar: 'https://i.pravatar.cc/150?u=u2', phone: '0987654321', dob: '1985-06-15', hometown: 'Đà Nẵng', bio: 'Chỉ huy trưởng thi công & Quản lý dự án EPC Điện mặt trời.' },
+      { id: 'u3', name: 'Phan Xuân Mạnh', email: 'xuanmanh@tranlecorp.com.vn', password: await bcrypt.hash(adminPwd, 10), role: 'Employee', department: 'Khối Tổng Thầu EPC & Thi Công', managementLevel: 10, avatar: 'https://i.pravatar.cc/150?u=u3', phone: '0123456789', dob: '2002-09-07', hometown: 'Đà Nẵng', bio: 'Kỹ sư giải pháp năng lượng tái tạo & O&M Solar.' },
+      { id: 'u4', name: 'Nguyễn Văn Duy', email: 'vanduy@tranlecorp.com.vn', password: await bcrypt.hash(adminPwd, 10), role: 'Director', department: 'Ban Lãnh Đạo', managementLevel: 40, avatar: 'https://i.pravatar.cc/150?u=u4', phone: '0939792428', dob: '1980-02-20', hometown: 'Đà Nẵng', bio: 'Ban Giám đốc Công ty Cổ phần Tư vấn xây dựng Điện Trần Lê.' },
     ];
     console.log('[SECURITY] Initial accounts seeded. Configure unique credentials immediately after first login.');
     // Production must not create demo employee accounts that share the bootstrap password.
     const usersToSeed = process.env.NODE_ENV === 'production' ? INITIAL_USERS.slice(0, 1) : INITIAL_USERS;
     for (const u of usersToSeed) {
       await db.run(
-        'INSERT INTO users (id, name, email, password, role, department, avatar, phone, dob, hometown, bio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [u.id, u.name, u.email, u.password, u.role, u.department, u.avatar, u.phone, u.dob, u.hometown, u.bio]
+        'INSERT INTO users (id, name, email, password, role, department, managementLevel, avatar, phone, dob, hometown, bio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [u.id, u.name, u.email, u.password, u.role, u.department, u.managementLevel, u.avatar, u.phone, u.dob, u.hometown, u.bio]
       );
     }
   }

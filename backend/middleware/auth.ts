@@ -62,7 +62,7 @@ function verifyBearerToken(req: Request, res: Response, next: NextFunction, db: 
         avatar: user.avatar,
         permissions: user.permissions ? JSON.parse(user.permissions) : [],
         tokenVersion: Number(user.tokenVersion || 0),
-        managementLevel: user.managementLevel,
+        managementLevel: normalizeManagementLevel(user.managementLevel),
         primaryDepartmentId: user.primaryDepartmentId,
       };
       next();
@@ -94,6 +94,44 @@ export function requirePermission(...permissions: string[]) {
     if (req.user.role === 'Admin' || req.user.permissions?.includes('admin_panel')) return next();
     const allowed = permissions.some(permission => req.user?.permissions?.includes(permission));
     if (!allowed) return res.status(403).json({ error: 'Forbidden: insufficient permissions' });
+    next();
+  };
+}
+
+// ─── ManagementLevel chuẩn hóa (Phase 0 D3) ──────────────────────────────
+// 10=NV, 20=Trưởng phòng, 30=Phó GĐ, 40=GĐ, 99=Admin (system, không phải business).
+// Dùng số rời rạc có gap để so sánh >= nhanh và mở rộng sau này.
+export const MANAGEMENT_LEVELS = {
+  EMPLOYEE: 10,
+  MANAGER: 20,
+  DEPUTY: 30,
+  DIRECTOR: 40,
+  ADMIN: 99,
+} as const;
+
+export function getManagementLevel(user?: Pick<JwtPayload, 'managementLevel'> | null): number {
+  return normalizeManagementLevel(user?.managementLevel);
+}
+
+// NULL (hàng cũ) / '' / NaN đều về fallback. Number(null) === 0 nên phải
+// chặn null trước Number() — nếu không legacy NULL thành level 0.
+export function normalizeManagementLevel(value: unknown, fallback: number = MANAGEMENT_LEVELS.EMPLOYEE): number {
+  if (value === null || value === undefined || value === '') return fallback;
+  const level = Number(value);
+  return Number.isSafeInteger(level) ? level : fallback;
+}
+
+export function hasManagementLevel(user: JwtPayload | undefined, minLevel: number): boolean {
+  if (!user) return false;
+  return getManagementLevel(user) >= minLevel;
+}
+
+export function requireManagementLevel(minLevel: number) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+    if (!hasManagementLevel(req.user, minLevel)) {
+      return res.status(403).json({ error: 'Forbidden: insufficient management level' });
+    }
     next();
   };
 }

@@ -6,10 +6,14 @@ import {
   CheckCircle, ChevronDown, Lock, Unlock, ImagePlus, KeyRound, Copy, ExternalLink, Link as LinkIcon
 } from 'lucide-react';
 import { User, UserRole } from '../../types';
+import { AdminToastBar, AdminDeleteModal, type AdminToastData } from '../../components/admin/AdminFeedback';
 
 interface RoleInfo {
-  id: string; name: string; color: string; isSystem: number;
+  id: string; name: string; color: string; isSystem: number; managementLevel?: number;
 }
+
+const LEVEL_LABELS: Record<number, string> = { 10: 'Nhân viên', 20: 'Trưởng phòng', 30: 'Phó Giám đốc', 40: 'Giám đốc', 99: 'Admin' };
+const levelLabel = (v?: number | null) => LEVEL_LABELS[v ?? 10] || `LV ${v ?? 10}`;
 
 interface PasswordResetRequest {
   id: string;
@@ -73,6 +77,7 @@ const UserFormModal: React.FC<{
     department: user?.department || '',
     avatar: user?.avatar || '',
   });
+  const selectedLevel = roles.find(r => r.name === form.role)?.managementLevel ?? 10;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -213,12 +218,13 @@ const UserFormModal: React.FC<{
                   <select value={form.role} onChange={e => handle('role', e.target.value)}
                     className="w-full pl-9 pr-8 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-300 outline-none bg-white text-sm appearance-none">
                     {roles.length > 0
-                      ? roles.map(r => <option key={r.id} value={r.name}>{r.name}</option>)
+                      ? roles.map(r => <option key={r.id} value={r.name}>{r.name} (LV {r.managementLevel ?? 10})</option>)
                       : <option value={form.role}>{form.role}</option>
                     }
                   </select>
                   <ChevronDown className="absolute right-2.5 top-3 text-gray-400 pointer-events-none" size={14} />
                 </div>
+                <p className="text-xs text-gray-400 mt-1">Cấp gán theo vai trò: <strong className="text-gray-600">{levelLabel(selectedLevel)} ({selectedLevel})</strong> — tự sync khi lưu.</p>
               </div>
 
               <div>
@@ -322,58 +328,26 @@ const ResetPasswordModal: React.FC<{
   );
 };
 
-// ----- Confirm Delete Dialog -----
-const ConfirmDeleteModal: React.FC<{
-  user: User;
-  onCancel: () => void;
-  onConfirm: () => Promise<void>;
-}> = ({ user, onCancel, onConfirm }) => {
-  const [deleting, setDeleting] = useState(false);
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center">
-        <div className="w-14 h-14 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-          <Trash2 size={28} className="text-red-500" />
-        </div>
-        <h3 className="text-lg font-bold text-gray-800 mb-2">Xóa người dùng?</h3>
-        <p className="text-sm text-gray-500 mb-1">Bạn sắp xóa tài khoản:</p>
-        <p className="font-bold text-gray-800 mb-1">{user.name}</p>
-        <p className="text-xs text-gray-400 mb-5">{user.email} · {user.role}</p>
-        <p className="text-xs text-red-500 mb-5">Hành động này không thể hoàn tác.</p>
-        <div className="flex gap-3">
-          <button onClick={onCancel} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors">
-            Hủy
-          </button>
-          <button
-            onClick={async () => { setDeleting(true); await onConfirm(); setDeleting(false); }}
-            disabled={deleting}
-            className="flex-1 py-2.5 rounded-xl bg-red-500 text-white text-sm font-bold hover:bg-red-600 transition-colors disabled:opacity-60 flex items-center justify-center gap-2">
-            {deleting ? <><RefreshCw size={14} className="animate-spin" />Đang xóa...</> : 'Xóa ngay'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
 // ----- Main User Management Page -----
 export default function AdminUserManagement() {
   const [users, setUsers]  = useState<User[]>([]);
   const [roles, setRoles]  = useState<RoleInfo[]>([]);
   const [departments, setDepartments] = useState<string[]>([]);
+  const [deptObjs, setDeptObjs] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [resetRequests, setResetRequests] = useState<PasswordResetRequest[]>([]);
   const [search, setSearch] = useState('');
   const [filterRole, setFilterRole] = useState('');
+  const [filterDept, setFilterDept] = useState('');
   const [editingUser, setEditingUser] = useState<User | null | undefined>(undefined);
   const [deletingUser, setDeletingUser] = useState<User | null>(null);
   const [resettingUser, setResettingUser] = useState<User | null>(null);
-  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const [toast, setToast] = useState<AdminToastData | null>(null);
   const [showResetRequests, setShowResetRequests] = useState(false);
 
-  const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
-    setToast({ msg, type });
+  const showToast = (title: string, msg?: string, type: AdminToastData['type'] = 'success') => {
+    setToast({ title, msg, type });
     setTimeout(() => setToast(null), 3500);
   };
 
@@ -389,6 +363,7 @@ export default function AdminUserManagement() {
       if (dr.ok) {
         const depts = await dr.json();
         setDepartments(depts.map((d: any) => d.name));
+        setDeptObjs(depts.map((d: any) => ({ id: d.id, name: d.name })));
       }
       if (pr.ok) {
         const requests = await pr.json();
@@ -408,14 +383,17 @@ export default function AdminUserManagement() {
       body: JSON.stringify(u),
     });
     if (!res.ok) throw new Error('Lỗi lưu');
-    showToast(isNew ? `Đã thêm người dùng ${u.name}` : `Đã cập nhật ${u.name}`);
+    showToast(
+      isNew ? `Đã thêm ${u.name}` : `Đã cập nhật ${u.name}`,
+      isNew ? `Tài khoản ${u.email} đã sẵn sàng sử dụng.` : `Thông tin và phân quyền đã được làm mới.`,
+    );
     await fetchUsers();
   };
 
   const handleDelete = async (u: User) => {
     const res = await apiFetch(`/api/users/${u.id}`, { method: 'DELETE' });
-    if (!res.ok) { showToast('Xóa thất bại', 'error'); return; }
-    showToast(`Đã xóa ${u.name}`);
+    if (!res.ok) { const data = await res.json().catch(() => ({})); showToast('Xóa thất bại', data.error || `Không thể xóa tài khoản ${u.name}.`, 'error'); return; }
+    showToast(`Đã xóa ${u.name}`, `Tài khoản ${u.email} đã gỡ khỏi hệ thống.`);
     setDeletingUser(null);
     await fetchUsers();
   };
@@ -423,8 +401,8 @@ export default function AdminUserManagement() {
   const handleLockToggle = async (u: User, isLocked: boolean) => {
     const action = isLocked ? 'unlock' : 'lock';
     const res = await apiFetch(`/api/users/${u.id}/${action}`, { method: 'PUT' });
-    if (!res.ok) { showToast(isLocked ? 'Mở khóa thất bại' : 'Khóa thất bại', 'error'); return; }
-    showToast(isLocked ? `Đã mở khóa tài khoản ${u.name}` : `Đã khóa tài khoản ${u.name}`);
+    if (!res.ok) { showToast(isLocked ? 'Mở khóa thất bại' : 'Khóa thất bại', `Không thể ${isLocked ? 'mở khóa' : 'khóa'} tài khoản ${u.name}.`, 'error'); return; }
+    showToast(isLocked ? `Đã mở khóa ${u.name}` : `Đã khóa ${u.name}`, isLocked ? 'Tài khoản có thể đăng nhập trở lại.' : 'Tài khoản tạm dừng đăng nhập ngay lập tức.');
     await fetchUsers();
   };
 
@@ -436,13 +414,12 @@ export default function AdminUserManagement() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      showToast(data.error || 'Đặt lại mật khẩu thất bại', 'error');
+      showToast('Đặt lại mật khẩu thất bại', data.error || `Không thể tạo link cho ${u.name}.`, 'error');
       throw new Error('Reset failed');
     }
     showToast(
-      data.emailSent
-        ? `Đã gửi link đặt lại mật khẩu cho ${u.name}`
-        : `Đã tạo link đặt lại mật khẩu cho ${u.name}, nhưng gửi mail chưa thành công`,
+      `Đã gửi link cho ${u.name}`,
+      data.emailSent ? 'Người dùng đã được thông báo qua email.' : 'Đã tạo link nhưng gửi mail chưa thành công — kiểm tra lại SMTP.',
       data.emailSent ? 'success' : 'error'
     );
     await fetchUsers();
@@ -453,23 +430,21 @@ export default function AdminUserManagement() {
   };
 
   const filtered = users.filter(u => {
-    const matchSearch = !search || u.name.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase());
+    const q = search.trim().toLowerCase();
+    const matchSearch = !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q) || (u.department || '').toLowerCase().includes(q);
     const matchRole = !filterRole || u.role === filterRole;
-    return matchSearch && matchRole;
+    // Khớp cả cột department string cũ lẫn primaryDepartmentId FK mới
+    const deptId = deptObjs.find(d => d.name === filterDept)?.id;
+    const matchDept = !filterDept || u.department === filterDept || (deptId != null && u.primaryDepartmentId === deptId);
+    return matchSearch && matchRole && matchDept;
   });
+  const hasFilter = search !== '' || filterRole !== '' || filterDept !== '';
 
   const pendingResetRequests = resetRequests.filter(r => r.status === 'pending');
 
   return (
     <div className="space-y-6 pb-8">
-      {/* Toast */}
-      {toast && (
-        <div className={`fixed top-5 right-5 z-50 flex items-center gap-2.5 px-5 py-3 rounded-xl shadow-2xl text-white text-sm font-medium transition-all
-          ${toast.type === 'success' ? 'bg-emerald-500' : 'bg-red-500'}`}>
-          {toast.type === 'success' ? <CheckCircle size={16} /> : <AlertCircle size={16} />}
-          {toast.msg}
-        </div>
-      )}
+      <AdminToastBar toast={toast} onClose={() => setToast(null)} />
 
       {/* Page Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -538,8 +513,8 @@ export default function AdminUserManagement() {
                       <button
                         onClick={async () => {
                           const res = await apiFetch(`/api/admin/password-reset-requests/${request.id}`, { method: 'DELETE' });
-                          if (!res.ok) { showToast('Xóa request thất bại', 'error'); return; }
-                          showToast('Đã xóa request quên mật khẩu');
+                          if (!res.ok) { showToast('Xóa request thất bại', 'Không thể xóa yêu cầu này, thử lại sau.', 'error'); return; }
+                          showToast('Đã xóa yêu cầu', `Yêu cầu của ${request.email} đã được gỡ.`);
                           await fetchUsers();
                         }}
                         className="px-4 py-2 text-sm font-bold bg-red-500 text-white rounded-xl hover:bg-red-600 transition-colors"
@@ -562,7 +537,7 @@ export default function AdminUserManagement() {
           <input
             type="text" value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Tìm theo tên, email..."
+            placeholder="Tìm theo tên, email, phòng ban..."
             className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-xl bg-white focus:ring-2 focus:ring-orange-200 outline-none text-sm shadow-sm"
           />
         </div>
@@ -572,12 +547,27 @@ export default function AdminUserManagement() {
             className="pl-10 pr-9 py-2.5 border border-gray-200 rounded-xl bg-white text-sm focus:ring-2 focus:ring-orange-200 outline-none shadow-sm appearance-none">
             <option value="">Tất cả vai trò</option>
             {roles.length > 0
-              ? roles.map(r => <option key={r.id} value={r.name}>{r.name}</option>)
-              : ['Admin','Director','Manager','Employee'].map(r => <option key={r} value={r}>{r}</option>)
+              ? roles.map(r => <option key={r.id} value={r.name}>{r.name} (LV {r.managementLevel ?? 10})</option>)
+              : ['Admin','Director','Deputy Director','Manager','Employee'].map(r => <option key={r} value={r}>{r}</option>)
             }
           </select>
           <ChevronDown className="absolute right-2.5 top-3 text-gray-400 pointer-events-none" size={14} />
         </div>
+        <div className="relative">
+          <Briefcase className="absolute left-3.5 top-3 text-gray-400" size={16} />
+          <select value={filterDept} onChange={e => setFilterDept(e.target.value)}
+            className="pl-10 pr-9 py-2.5 border border-gray-200 rounded-xl bg-white text-sm focus:ring-2 focus:ring-orange-200 outline-none shadow-sm appearance-none max-w-[220px]">
+            <option value="">Tất cả phòng ban</option>
+            {departments.map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+          <ChevronDown className="absolute right-2.5 top-3 text-gray-400 pointer-events-none" size={14} />
+        </div>
+        {hasFilter && (
+          <button onClick={() => { setSearch(''); setFilterRole(''); setFilterDept(''); }}
+            className="px-4 py-2.5 border border-gray-200 rounded-xl bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 shadow-sm whitespace-nowrap">
+            Xóa lọc ({filtered.length})
+          </button>
+        )}
       </div>
 
       {/* Content */}
@@ -609,6 +599,7 @@ export default function AdminUserManagement() {
                     <th className="text-left py-3.5 px-5 text-xs font-bold text-gray-500 uppercase tracking-wider">Người dùng</th>
                     <th className="text-left py-3.5 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Email</th>
                     <th className="text-left py-3.5 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Chức vụ</th>
+                    <th className="text-left py-3.5 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Cấp</th>
                     <th className="text-left py-3.5 px-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Phòng ban</th>
                     <th className="text-right py-3.5 px-5 text-xs font-bold text-gray-500 uppercase tracking-wider">Thao tác</th>
                   </tr>
@@ -637,6 +628,11 @@ export default function AdminUserManagement() {
                       <td className="py-3.5 px-4 text-gray-500">{u.email}</td>
                       <td className="py-3.5 px-4">
                         <RoleBadge roleName={u.role} roles={roles} />
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-200" title={levelLabel(u.managementLevel)}>
+                          LV {u.managementLevel ?? 10}
+                        </span>
                       </td>
                       <td className="py-3.5 px-4 text-gray-500">{u.department}</td>
                       <td className="py-3.5 px-5">
@@ -687,8 +683,12 @@ export default function AdminUserManagement() {
         />
       )}
       {deletingUser && (
-        <ConfirmDeleteModal
-          user={deletingUser}
+        <AdminDeleteModal
+          title="Xóa người dùng?"
+          itemName={deletingUser.name}
+          itemSub={`${deletingUser.email} · ${deletingUser.role}`}
+          warning="Công việc, báo cáo và lịch sử của tài khoản này vẫn giữ lại nhưng mất người phụ trách."
+          busy={false}
           onCancel={() => setDeletingUser(null)}
           onConfirm={() => handleDelete(deletingUser)}
         />

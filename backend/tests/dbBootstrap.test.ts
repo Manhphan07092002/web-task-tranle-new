@@ -48,6 +48,7 @@ function database() {
     const count = sql.match(/^SELECT COUNT\(\*\) as count FROM (\w+)$/i);
     if (count) return [[{ count: rows(count[1]).size }]];
     if (sql.startsWith('UPDATE password_reset_tokens')) return [{ affectedRows: 0 }];
+    if (/^UPDATE (users|roles)\b/.test(sql)) return [{ affectedRows: 0 }]; // v11/v12 level backfills + role/user syncs
     if (sql === 'UPDATE _bootstrap SET completed = 1 WHERE id = 1') {
       rows('_bootstrap').get('1')!.completed = 1;
       return [{ affectedRows: 1 }];
@@ -124,7 +125,7 @@ describe('first-install database bootstrap', () => {
     expect(store.rows('tasks').size).toBe(0);
     expect(store.rows('system_config').size).toBe(0);
     expect(store.rows('_bootstrap').get('1')?.completed).toBe(1);
-    expect(store.rows('_migrations').size).toBe(7); // 3 original + indexes + legacy columns + dept RBAC backfill + scopes scopeType
+    expect(store.rows('_migrations').size).toBe(9); // + users level backfill (v11) + roles level (v12)
   });
 
   it('does not recreate accounts, roles, or config after all application data is deleted', async () => {
@@ -144,10 +145,14 @@ describe('first-install database bootstrap', () => {
     store.failNext(failure);
     await expect(restart()).rejects.toThrow('injected database failure');
     expect(store.rows('_bootstrap').get('1')?.completed).toBe(0);
-    for (const table of ['users', 'roles', 'departments', 'system_config', 'projects']) expect(store.rows(table).size).toBe(0);
+    for (const table of ['users', 'departments', 'system_config', 'projects']) expect(store.rows(table).size).toBe(0);
+    // v12 Deputy seed chạy ở migrateSchema (ngoài seed transaction, như mọi migration
+    // MySQL) nên được giữ lại sau rollback — hành vi thật, không phải rò rỉ seed.
+    expect(store.rows('roles').size).toBeLessThanOrEqual(1);
     await restart();
     expect(store.rows('_bootstrap').get('1')?.completed).toBe(1);
     expect(store.rows('tasks').size).toBe(4);
+    expect(store.rows('roles').has('role-deputy')).toBe(true);
   });
 
   it('retries first-install schema failures without treating partial schema as a legacy install', async () => {
