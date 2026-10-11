@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
+import { hasManagementLevel, normalizeManagementLevel, MANAGEMENT_LEVELS } from '../middleware/auth.js';
+import { requireDepartmentScope, checkApprovalAuthority } from '../middleware/rbac.js';
 import { sendNotification } from '../utils/notify.js';
 
 const ContractProductSchema = z.object({
@@ -63,6 +65,10 @@ import { sanitizeActivityValue } from '../utils/activityPrivacy.js';
 
 export function contractRoutes(db: any) {
   const router = Router();
+
+  // Tự cung req.db như server.ts để requireDepartmentScope chạy được
+  // cả khi mount trực tiếp trong test.
+  router.use((req: any, _res, next) => { req.db = db; next(); });
   const toProtectedUploadUrl = (url: string) => url.replace(
     /^\/uploads\/reports\/([a-f0-9]{24}\.(?:jpg|png|gif|webp|pdf|doc|docx|xls|xlsx))$/i,
     '/api/upload/files/$1',
@@ -389,8 +395,34 @@ export function contractRoutes(db: any) {
     }
   }
 
+  // Thẩm quyền quyết định HĐ: giữ nguyên bypass Admin/GĐ, thêm hạn mức
+  // theo level (TP <500M, Phó GĐ <2B) + hỗ trợ Deputy mà check role-string cũ thiếu.
+  function decideAuthority(user: any, contract: any, scopeNames: string[]): { ok: boolean; overLimit?: boolean } {
+    if (!user) return { ok: false };
+    const perms = user.permissions || [];
+    if (perms.includes('admin_panel') || perms.includes('director_feedback') || user.role === 'Admin' || user.role === 'Director') return { ok: true };
+    const level = normalizeManagementLevel(user.managementLevel);
+    if (level >= MANAGEMENT_LEVELS.DIRECTOR) return { ok: true };
+    const sameDept = !!user.department && !!contract?.department && user.department === contract.department;
+    const inScope = !!contract?.department && scopeNames.includes(contract.department);
+    const amount = Number(contract?.preTaxValue ?? contract?.postTaxValue ?? 0) || 0;
+    if (level >= MANAGEMENT_LEVELS.DEPUTY && (sameDept || inScope)) {
+      return checkApprovalAuthority(user, 'contract', amount) ? { ok: true } : { ok: false, overLimit: true };
+    }
+    if (level >= MANAGEMENT_LEVELS.MANAGER && sameDept) {
+      return checkApprovalAuthority(user, 'contract', amount) ? { ok: true } : { ok: false, overLimit: true };
+    }
+    return { ok: false };
+  }
+
+  function decideError(authz: { overLimit?: boolean }): string {
+    return authz.overLimit
+      ? 'Giá trị hợp đồng vượt thẩm quyền phê duyệt của bạn'
+      : 'Chỉ Trưởng phòng của phòng ban hoặc Admin mới có quyền thao tác trên hợp đồng này!';
+  }
+
   // GET all contracts (not deleted)
-  router.get('/', async (req, res) => {
+  router.get('/', requireDepartmentScope('contract'), async (req, res) => {
     try {
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
@@ -404,8 +436,15 @@ export function contractRoutes(db: any) {
       // Time-boxing disabled: fetching all contracts regardless of createdAt
 
       if (!canViewAll) {
-        query += ' AND (createdBy = ? OR department = ? OR docAccountantUserId = ?)';
-        params.push(user.id, user.department || '', user.id);
+        // TP+ thấy cả phòng (phòng + con); NV giữ nguyên clause cũ.
+        const names = (req.rbacContext?.deptNames ?? []).filter(Boolean);
+        if (names.length > 0 && hasManagementLevel(user, MANAGEMENT_LEVELS.MANAGER)) {
+          query += ` AND (createdBy = ? OR department IN (${names.map(() => '?').join(', ')}) OR docAccountantUserId = ?)`;
+          params.push(user.id, ...names, user.id);
+        } else {
+          query += ' AND (createdBy = ? OR department = ? OR docAccountantUserId = ?)';
+          params.push(user.id, user.department || '', user.id);
+        }
       }
       
       query += ' ORDER BY createdAt DESC';
@@ -423,7 +462,7 @@ export function contractRoutes(db: any) {
   });
 
   // GET archive
-  router.get('/archive', async (req, res) => {
+  router.get('/archive', requireDepartmentScope('contract'), async (req, res) => {
     try {
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
@@ -435,8 +474,14 @@ export function contractRoutes(db: any) {
       const params: any[] = [];
 
       if (!canViewAll) {
-        query += ' AND (createdBy = ? OR department = ? OR docAccountantUserId = ?)';
-        params.push(user.id, user.department || '', user.id);
+        const names = (req.rbacContext?.deptNames ?? []).filter(Boolean);
+        if (names.length > 0 && hasManagementLevel(user, MANAGEMENT_LEVELS.MANAGER)) {
+          query += ` AND (createdBy = ? OR department IN (${names.map(() => '?').join(', ')}) OR docAccountantUserId = ?)`;
+          params.push(user.id, ...names, user.id);
+        } else {
+          query += ' AND (createdBy = ? OR department = ? OR docAccountantUserId = ?)';
+          params.push(user.id, user.department || '', user.id);
+        }
       }
       
       query += ' ORDER BY createdAt DESC';
@@ -1095,7 +1140,7 @@ export function contractRoutes(db: any) {
   });
 
   // APPROVE contract (TP / Admin only)
-  router.put('/:id/approve', validate(EmptyActionSchema), async (req, res) => {
+  router.put('/:id/approve', requireDepartmentScope('contract'), validate(EmptyActionSchema), async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
@@ -1103,19 +1148,16 @@ export function contractRoutes(db: any) {
 
     try {
       const contract = await db.get(
-        'SELECT createdBy, contractName, contractNumber, department FROM contracts WHERE id = ? AND (isDeleted IS NULL OR isDeleted = 0)',
+        'SELECT createdBy, contractName, contractNumber, department, preTaxValue, postTaxValue FROM contracts WHERE id = ? AND (isDeleted IS NULL OR isDeleted = 0)',
         [contractId]
       );
       if (!contract) {
         return res.status(404).json({ error: 'Hợp đồng không tồn tại' });
       }
 
-      const perms = user.permissions || [];
-      const isSystemAdmin = perms.includes('admin_panel') || perms.includes('director_feedback') || user.role === 'Admin' || user.role === 'Director';
-      const isDeptManager = (user.role && (user.role === 'Manager' || user.role.startsWith('Trưởng') || user.role.includes('Trưởng'))) && user.department === contract.department;
-
-      if (!isSystemAdmin && !isDeptManager) {
-        return res.status(403).json({ error: 'Chỉ Trưởng phòng của phòng ban hoặc Admin mới có quyền thao tác trên hợp đồng này!' });
+      const authz = decideAuthority(user, contract, req.rbacContext?.deptNames ?? []);
+      if (!authz.ok) {
+        return res.status(403).json({ error: decideError(authz) });
       }
 
       const now = new Date().toISOString();
@@ -1145,7 +1187,7 @@ export function contractRoutes(db: any) {
   });
 
   // REJECT contract (TP / Admin only)
-  router.put('/:id/reject', validate(ContractFeedbackSchema), async (req, res) => {
+  router.put('/:id/reject', requireDepartmentScope('contract'), validate(ContractFeedbackSchema), async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
@@ -1157,19 +1199,16 @@ export function contractRoutes(db: any) {
 
     try {
       const contract = await db.get(
-        'SELECT createdBy, contractName, contractNumber, department FROM contracts WHERE id = ? AND (isDeleted IS NULL OR isDeleted = 0)',
+        'SELECT createdBy, contractName, contractNumber, department, preTaxValue, postTaxValue FROM contracts WHERE id = ? AND (isDeleted IS NULL OR isDeleted = 0)',
         [contractId]
       );
       if (!contract) {
         return res.status(404).json({ error: 'Hợp đồng không tồn tại' });
       }
 
-      const perms = user.permissions || [];
-      const isSystemAdmin = perms.includes('admin_panel') || perms.includes('director_feedback') || user.role === 'Admin' || user.role === 'Director';
-      const isDeptManager = (user.role && (user.role === 'Manager' || user.role.startsWith('Trưởng') || user.role.includes('Trưởng'))) && user.department === contract.department;
-
-      if (!isSystemAdmin && !isDeptManager) {
-        return res.status(403).json({ error: 'Chỉ Trưởng phòng của phòng ban hoặc Admin mới có quyền thao tác trên hợp đồng này!' });
+      const authz = decideAuthority(user, contract, req.rbacContext?.deptNames ?? []);
+      if (!authz.ok) {
+        return res.status(403).json({ error: decideError(authz) });
       }
 
       const now = new Date().toISOString();
@@ -1199,7 +1238,7 @@ export function contractRoutes(db: any) {
   });
 
   // CANCEL PENDING contract (TP of department / Admin only)
-  router.put('/:id/cancel-pending', validate(ContractFeedbackSchema), async (req, res) => {
+  router.put('/:id/cancel-pending', requireDepartmentScope('contract'), validate(ContractFeedbackSchema), async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
@@ -1211,19 +1250,16 @@ export function contractRoutes(db: any) {
 
     try {
       const contract = await db.get(
-        'SELECT createdBy, contractName, contractNumber, department FROM contracts WHERE id = ? AND (isDeleted IS NULL OR isDeleted = 0)',
+        'SELECT createdBy, contractName, contractNumber, department, preTaxValue, postTaxValue FROM contracts WHERE id = ? AND (isDeleted IS NULL OR isDeleted = 0)',
         [contractId]
       );
       if (!contract) {
         return res.status(404).json({ error: 'Hợp đồng không tồn tại' });
       }
 
-      const perms = user.permissions || [];
-      const isSystemAdmin = perms.includes('admin_panel') || perms.includes('director_feedback') || user.role === 'Admin' || user.role === 'Director';
-      const isDeptManager = (user.role && (user.role === 'Manager' || user.role.startsWith('Trưởng') || user.role.includes('Trưởng'))) && user.department === contract.department;
-
-      if (!isSystemAdmin && !isDeptManager) {
-        return res.status(403).json({ error: 'Chỉ Trưởng phòng của phòng ban hoặc Admin mới có quyền thao tác trên hợp đồng này!' });
+      const authz = decideAuthority(user, contract, req.rbacContext?.deptNames ?? []);
+      if (!authz.ok) {
+        return res.status(403).json({ error: decideError(authz) });
       }
 
       const now = new Date().toISOString();

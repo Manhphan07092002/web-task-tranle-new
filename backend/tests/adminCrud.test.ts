@@ -2,6 +2,7 @@ import express from 'express';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { userRoutes } from '../routes/users.js';
+import { projectRoutes } from '../routes/projects.js';
 import { roleRoutes } from '../routes/roles.js';
 import { departmentRoutes } from '../routes/departments.js';
 
@@ -65,6 +66,75 @@ describe('users CRUD', () => {
   });
 });
 
+// ─── Management scopes ──────────────────────────────────────────────────────
+
+describe('user management scopes', () => {
+  function db() {
+    return {
+      get: vi.fn(async (sql: string) => {
+        if (String(sql).includes('FROM users')) return { id: 'u1' };
+        if (String(sql).includes('FROM departments')) return { id: 'd1' };
+        return undefined;
+      }),
+      all: vi.fn(async () => [{ departmentId: 'd1' }, { departmentId: 'd2' }]),
+      run: vi.fn().mockResolvedValue({ changes: 1 }),
+    };
+  }
+
+  it('GET returns the department id list', async () => {
+    const d = db();
+    const res = await request(adminApp(userRoutes(d, {}))).get('/u1/scopes').expect(200);
+    expect(res.body).toEqual(['d1', 'd2']);
+  });
+
+  it('PUT replaces scopes, dedupes and revokes tokens', async () => {
+    const d = db();
+    const res = await request(adminApp(userRoutes(d, {}))).put('/u1/scopes').send({ departmentIds: ['d1', 'd1', 'd2'] }).expect(200);
+    expect(res.body).toEqual({ success: true, departmentIds: ['d1', 'd2'] });
+    expect(d.run.mock.calls[0][0]).toBe('DELETE FROM management_scopes WHERE userId = ?');
+    expect(d.run.mock.calls.some(([sql]: string[]) => String(sql).includes('tokenVersion = tokenVersion + 1'))).toBe(true);
+  });
+
+  it('PUT rejects unknown departments and bad payloads', async () => {
+    const d: any = {
+      get: vi.fn(async (sql: string) => String(sql).includes('FROM users') ? { id: 'u1' } : undefined),
+      all: vi.fn(),
+      run: vi.fn(),
+    };
+    await request(adminApp(userRoutes(d, {}))).put('/u1/scopes').send({ departmentIds: ['ghost'] }).expect(400);
+    await request(adminApp(userRoutes(d, {}))).put('/u1/scopes').send({ departmentIds: 'd1' }).expect(400);
+    expect(d.run).not.toHaveBeenCalled();
+  });
+
+  it('PUT missing user is 404', async () => {
+    const d: any = { get: vi.fn().mockResolvedValue(undefined), all: vi.fn(), run: vi.fn() };
+    await request(adminApp(userRoutes(d, {}))).put('/ghost/scopes').send({ departmentIds: [] }).expect(404);
+  });
+
+  it('employee cannot touch scopes', async () => {
+    const d = db();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { (req as any).user = { id: 'e', role: 'Employee', permissions: [], managementLevel: 10 }; next(); });
+    app.use(userRoutes(d, {}));
+    await request(app).get('/u1/scopes').expect(403);
+    await request(app).put('/u1/scopes').send({ departmentIds: [] }).expect(403);
+  });
+
+  it('GET assignments maps rows and degrades to [] without the table', async () => {
+    const d: any = {
+      get: vi.fn(),
+      all: vi.fn().mockResolvedValue([{ id: 'tle-1', departmentId: 'd1', departmentName: 'P KT', title: 'Kế toán', isPrimary: 1, confirmationStatus: 'ok', effectiveFrom: null, note: null }]),
+      run: vi.fn(),
+    };
+    const res = await request(adminApp(userRoutes(d, {}))).get('/u1/assignments').expect(200);
+    expect(res.body).toEqual([{ id: 'tle-1', departmentId: 'd1', departmentName: 'P KT', title: 'Kế toán', isPrimary: true, confirmationStatus: 'ok', effectiveFrom: null, note: null }]);
+
+    const nodb: any = { get: vi.fn(), all: vi.fn().mockRejectedValue(new Error('no table')), run: vi.fn() };
+    await request(adminApp(userRoutes(nodb, {}))).get('/u1/assignments').expect(200, []);
+  });
+});
+
 // ─── Roles CRUD ─────────────────────────────────────────────────────────────
 
 describe('roles CRUD', () => {
@@ -107,6 +177,76 @@ describe('roles CRUD', () => {
   it('DELETE missing role is 404', async () => {
     const d = db([]);
     await request(adminApp(roleRoutes(d))).delete('/ghost').expect(404);
+  });
+});
+
+// ─── Projects scope ─────────────────────────────────────────────────────────
+
+describe('projects scope', () => {
+  const departments = [
+    { id: 'd-kt', name: 'P KT', parentId: null },
+    { id: 'd-kd', name: 'P KD', parentId: null },
+  ];
+  const manager = { id: 'm', role: 'Manager', department: 'P KT', primaryDepartmentId: 'd-kt', managementLevel: 20, permissions: [] };
+  const employee = { id: 'e', role: 'Employee', department: 'P KT', primaryDepartmentId: 'd-kt', managementLevel: 10, permissions: [] };
+
+  function db() {
+    return {
+      all: vi.fn(async (sql: string) => {
+        if (String(sql).includes('FROM departments')) return departments;
+        if (String(sql).includes('FROM management_scopes')) return [];
+        if (String(sql).startsWith('SELECT * FROM projects')) return [];
+        return [];
+      }),
+      get: vi.fn(),
+      run: vi.fn().mockResolvedValue({ changes: 1 }),
+    };
+  }
+
+  function appFor(user: any, db: any) {
+    const app = express();
+    app.use(express.json());
+    app.use((req: any, _res, next) => { req.user = user; next(); });
+    app.use(projectRoutes(db));
+    return app;
+  }
+
+  it('manager lists managed plus department projects', async () => {
+    const d = db();
+    await request(appFor(manager, d)).get('/').expect(200);
+    const [sql, params] = d.all.mock.calls.find(([s]: string[]) => String(s).startsWith('SELECT * FROM projects'));
+    expect(sql).toContain('department IN (?)');
+    expect(params).toEqual(['m', 'P KT']);
+  });
+
+  it('employee keeps the legacy manager-or-department filter', async () => {
+    const d = db();
+    await request(appFor(employee, d)).get('/').expect(200);
+    const [sql] = d.all.mock.calls.find(([s]: string[]) => String(s).startsWith('SELECT * FROM projects'));
+    expect(sql).toContain('department = ?');
+    expect(sql).not.toContain('department IN');
+  });
+
+  it('single project allows same-department managers', async () => {
+    const d: any = {
+      all: vi.fn(async (sql: string) => String(sql).includes('FROM departments') ? departments : []),
+      get: vi.fn(async (sql: string) => String(sql).includes('FROM projects') ? { id: 'p1', managerId: 'other', department: 'P KT' } : undefined),
+      run: vi.fn(),
+    };
+    const res = await request(appFor(manager, d)).get('/p1').expect(200);
+    expect(res.body.project.id).toBe('p1');
+  });
+
+  it('single project blocks other departments', async () => {
+    const d: any = {
+      all: vi.fn(async (sql: string) => String(sql).includes('FROM departments') ? departments : []),
+      get: vi.fn(async (sql: string) => {
+        if (String(sql).includes('FROM projects')) return { id: 'p2', managerId: 'other', department: 'P KD' };
+        return undefined;
+      }),
+      run: vi.fn(),
+    };
+    await request(appFor(manager, d)).get('/p2').expect(403);
   });
 });
 

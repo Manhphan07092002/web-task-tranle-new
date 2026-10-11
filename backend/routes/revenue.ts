@@ -3,6 +3,8 @@ import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { sendNotification } from '../utils/notify.js';
 import { validate } from '../middleware/validate.js';
+import { hasManagementLevel, MANAGEMENT_LEVELS } from '../middleware/auth.js';
+import { requireDepartmentScope } from '../middleware/rbac.js';
 
 const RevenueStatusSchema = z.enum(['Draft', 'Pending Manager', 'Pending Director', 'Approved', 'Rejected']);
 const RevenueCreateSchema = z.object({
@@ -38,32 +40,45 @@ const RevenueUpdateSchema = z.object({
 
 export function revenueRoutes(db: any) {
   const router = Router();
+
+  // Tự cung req.db như server.ts để requireDepartmentScope chạy được
+  // cả khi mount trực tiếp trong test.
+  router.use((req: any, _res, next) => { req.db = db; next(); });
+
   const canManageRevenue = (user: any) => user?.role === 'Admin'
     || user?.permissions?.includes('admin_panel')
     || user?.permissions?.includes('view_all_reports')
     || user?.permissions?.includes('director_feedback');
   const isAdmin = (user: any) => user?.role === 'Admin' || user?.permissions?.includes('admin_panel');
+  const inManagedDept = (user: any, deptName: string, scopeNames: string[]) =>
+    hasManagementLevel(user, MANAGEMENT_LEVELS.MANAGER) && !!deptName && (user.department === deptName || scopeNames.includes(deptName));
 
   // GET all revenue reports (not deleted, last 6 months)
-  router.get('/', async (req, res) => {
+  router.get('/', requireDepartmentScope('revenue'), async (req, res) => {
     try {
       const sixMonthsAgo = new Date();
       sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
       if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+      const names = (req.rbacContext?.deptNames ?? []).filter(Boolean);
       const rows = canManageRevenue(req.user)
         ? await db.all('SELECT * FROM revenue_reports WHERE (isDeleted IS NULL OR isDeleted = 0) AND createdAt >= ? ORDER BY createdAt DESC', [sixMonthsAgo.toISOString()])
-        : await db.all('SELECT * FROM revenue_reports WHERE (isDeleted IS NULL OR isDeleted = 0) AND createdAt >= ? AND authorId = ? ORDER BY createdAt DESC', [sixMonthsAgo.toISOString(), req.user.id]);
+        : names.length > 0 && hasManagementLevel(req.user, MANAGEMENT_LEVELS.MANAGER)
+          ? await db.all(`SELECT * FROM revenue_reports WHERE (isDeleted IS NULL OR isDeleted = 0) AND createdAt >= ? AND (authorId = ? OR department IN (${names.map(() => '?').join(', ')})) ORDER BY createdAt DESC`, [sixMonthsAgo.toISOString(), req.user.id, ...names])
+          : await db.all('SELECT * FROM revenue_reports WHERE (isDeleted IS NULL OR isDeleted = 0) AND createdAt >= ? AND authorId = ? ORDER BY createdAt DESC', [sixMonthsAgo.toISOString(), req.user.id]);
       res.json(rows);
     } catch (e) { res.status(500).json({ error: 'Failed to fetch revenue reports' }); }
   });
 
   // GET archive
-  router.get('/archive', async (req, res) => {
+  router.get('/archive', requireDepartmentScope('revenue'), async (req, res) => {
     try {
       if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+      const names = (req.rbacContext?.deptNames ?? []).filter(Boolean);
       const rows = canManageRevenue(req.user)
         ? await db.all('SELECT * FROM revenue_reports WHERE isDeleted IS NULL OR isDeleted = 0 ORDER BY createdAt DESC')
-        : await db.all('SELECT * FROM revenue_reports WHERE (isDeleted IS NULL OR isDeleted = 0) AND authorId = ? ORDER BY createdAt DESC', [req.user.id]);
+        : names.length > 0 && hasManagementLevel(req.user, MANAGEMENT_LEVELS.MANAGER)
+          ? await db.all(`SELECT * FROM revenue_reports WHERE (isDeleted IS NULL OR isDeleted = 0) AND (authorId = ? OR department IN (${names.map(() => '?').join(', ')})) ORDER BY createdAt DESC`, [req.user.id, ...names])
+          : await db.all('SELECT * FROM revenue_reports WHERE (isDeleted IS NULL OR isDeleted = 0) AND authorId = ? ORDER BY createdAt DESC', [req.user.id]);
       res.json(rows);
     } catch (e) { res.status(500).json({ error: 'Failed to fetch revenue reports archive' }); }
   });
@@ -109,13 +124,14 @@ export function revenueRoutes(db: any) {
   });
 
   // UPDATE (also used for approve/reject)
-  router.put('/:id', validate(RevenueUpdateSchema), async (req, res) => {
+  router.put('/:id', requireDepartmentScope('revenue'), validate(RevenueUpdateSchema), async (req, res) => {
     const reportId = String(req.params.id);
     const { title, content, reportType, periodStart, periodEnd, totalPreTax, totalDelivered, totalCumulative, status, submittedAt, approvedAt, approvedBy, managerFeedback, directorFeedback, generationMode } = req.body;
     try {
       const existing = await db.get('SELECT * FROM revenue_reports WHERE id = ?', [reportId]);
       if (!existing) return res.status(404).json({ error: 'Not found' });
       if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+      const scopeNames: string[] = req.rbacContext?.deptNames ?? [];
       const maySubmitToDirector = req.user.permissions?.includes('approve_dept_revenue')
         || req.user.permissions?.includes('approve_all_revenue')
         || req.user.permissions?.includes('director_feedback')
@@ -125,12 +141,12 @@ export function revenueRoutes(db: any) {
         && ['Draft', 'Pending Manager', ...(maySubmitToDirector ? ['Pending Director'] : [])].includes(status);
       const managerReview = !isAdmin(req.user)
         && req.user.permissions?.includes('approve_dept_revenue')
-        && req.user.department === existing.department
+        && inManagedDept(req.user, existing.department, scopeNames)
         && existing.authorId !== req.user.id
         && existing.status === 'Pending Manager'
         && ['Pending Director', 'Rejected'].includes(status);
       const adminManagerReview = isAdmin(req.user)
-        && req.user.department === existing.department
+        && inManagedDept(req.user, existing.department, scopeNames)
         && existing.authorId !== req.user.id
         && existing.status === 'Pending Manager'
         && ['Pending Director', 'Rejected'].includes(status);

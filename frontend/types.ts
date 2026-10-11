@@ -94,6 +94,16 @@ export interface User {
   primaryDepartmentId?: string;
   managementLevel?: number;
   managedDepartments?: string[];
+  assignments?: {
+    id: string;
+    departmentId: string;
+    departmentName?: string;
+    title: string;
+    isPrimary: boolean;
+    confirmationStatus?: string;
+    effectiveFrom?: string;
+    note?: string;
+  }[];
   avatar: string;
   bio?: string;
   phone?: string;

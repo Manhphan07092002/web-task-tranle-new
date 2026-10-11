@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLanguage } from '../../contexts/LanguageContext';
+import { getAccessibleDeptNames } from '../../utils/rbac';
 import { useData } from '../../contexts/DataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotifications } from '../../contexts/NotificationContext';
@@ -47,6 +48,13 @@ export default function ReportsPage() {
   const canApprove = perms.includes('approve_dept_reports') || perms.includes('approve_dept_revenue') || perms.includes('approve_all_revenue');
   const canViewAll = perms.includes('view_all_reports');
   const canCreate = perms.includes('create_report');
+  // Phòng ban được thấy: phòng mình + con + scope được giao (Phó GĐ).
+  const accessibleDeptNames = useMemo(
+    () => (user ? getAccessibleDeptNames(user, departments || []) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [user?.id, user?.department, user?.primaryDepartmentId, user?.managementLevel, JSON.stringify(user?.managedDepartments || []), departments]
+  );
+  const deptVisible = (dept?: string) => !dept || !user?.department || dept === user.department || accessibleDeptNames.includes(dept);
 
   const currentWeekStartStr = useMemo(() => {
     const now = new Date();
@@ -120,8 +128,8 @@ export default function ReportsPage() {
     const all = [...reports, ...revenueReports];
     return all
       .filter(r => {
-        // Department check – allow when either side is unset
-        const deptOk = !r.department || !user.department || r.department === user.department;
+        // Department check – allow when either side is unset, own dept, or a managed scope
+        const deptOk = deptVisible(r.department);
         if (!deptOk) return false;
         if (r.authorId === user.id) return false;
         if (r.status !== 'Pending' && r.status !== 'Pending Manager') return false;
@@ -138,7 +146,7 @@ export default function ReportsPage() {
     const all = [...reports, ...revenueReports];
     return all
       .filter(r => {
-        const deptOk = !r.department || !user.department || r.department === user.department;
+        const deptOk = deptVisible(r.department);
         if (!deptOk) return false;
         if (r.authorId === user.id) return false;
         if (r.status !== 'Approved' && r.status !== 'Pending Director') return false;
@@ -190,7 +198,7 @@ export default function ReportsPage() {
     let list: any[] = [];
     const all = [...reports, ...revenueReports];
     if (canViewAll) list = all;
-    else if (canApprove) list = all.filter(r => r.department === user.department);
+    else if (canApprove) list = all.filter(r => deptVisible(r.department));
     else list = all.filter(r => r.authorId === user.id);
     return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [reports, revenueReports, user, canViewAll, canApprove]);

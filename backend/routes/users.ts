@@ -41,14 +41,17 @@ export function userRoutes(db: any, mailer: any) {
     try {
       const isAdmin = req.user?.role === 'Admin' || req.user?.permissions?.includes('admin_panel') || req.user?.permissions?.includes('manage_users');
       const query = isAdmin
-        ? `SELECT u.id, u.name, u.email, u.role, u.department, u.managementLevel, u.primaryDepartmentId, u.avatar, u.bio, u.phone, u.dob, u.hometown, u.cccd, u.gender, u.preferences, u.isLocked, u.jobTitle, r.permissions FROM users u LEFT JOIN roles r ON u.role = r.name`
+        ? `SELECT u.id, u.name, u.email, u.role, u.department, u.managementLevel, u.primaryDepartmentId, u.avatar, u.bio, u.phone, u.dob, u.hometown, u.cccd, u.gender, u.preferences, u.isLocked, u.jobTitle, r.permissions, (SELECT GROUP_CONCAT(departmentId) FROM management_scopes WHERE userId = u.id) AS managedDepartments FROM users u LEFT JOIN roles r ON u.role = r.name`
         : `SELECT u.id, u.name, u.email, u.role, u.department, u.managementLevel, u.primaryDepartmentId, u.avatar FROM users u`;
       const users = await db.all(query);
       res.json(users.map((u: any) => ({
         ...u,
         isLocked: Boolean(u.isLocked),
         permissions: u.permissions ? JSON.parse(u.permissions) : [],
-        preferences: u.preferences ? JSON.parse(u.preferences) : {}
+        preferences: u.preferences ? JSON.parse(u.preferences) : {},
+        managedDepartments: typeof u.managedDepartments === 'string' && u.managedDepartments
+          ? u.managedDepartments.split(',').filter(Boolean)
+          : [],
       })));
     } catch (e) { console.error('GET /api/users error:', e); res.status(500).json({ error: 'Failed' }); }
   });
@@ -138,6 +141,55 @@ export function userRoutes(db: any, mailer: any) {
         );
       } catch (e) {}
       res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: 'Failed' }); }
+  });
+
+  // ─── Management scopes (giao phòng ban cho Phó GĐ, level >= 30) ──────────
+  // Bảng từng trống vì chưa có UI/API ghi — login đã đọc managedDepartments.
+
+  router.get('/:id/scopes', requirePermission('manage_users'), async (req, res) => {
+    try {
+      const rows = await db.all('SELECT departmentId FROM management_scopes WHERE userId = ?', [req.params.id]);
+      res.json(rows.map((r: any) => r.departmentId));
+    } catch (e) { res.status(500).json({ error: 'Failed' }); }
+  });
+
+  // Phân công kiêm nhiệm từ import nhân sự (bảng user_assignments).
+  // Chỉ đọc để hiển thị — dữ liệu do script personnel quản lý.
+  router.get('/:id/assignments', requirePermission('manage_users'), async (req, res) => {
+    try {
+      const rows = await db.all(
+        `SELECT a.id, a.departmentId, d.name AS departmentName, a.title, a.isPrimary,
+                a.confirmationStatus, a.effectiveFrom, a.note
+         FROM user_assignments a LEFT JOIN departments d ON d.id = a.departmentId
+         WHERE a.userId = ? ORDER BY a.isPrimary DESC, a.id ASC`,
+        [req.params.id]
+      );
+      res.json(rows.map((r: any) => ({ ...r, isPrimary: Boolean(r.isPrimary) })));
+    } catch {
+      res.json([]);
+    }
+  });
+
+  router.put('/:id/scopes', requirePermission('manage_users'), async (req, res) => {
+    try {
+      const { departmentIds } = req.body ?? {};
+      if (!Array.isArray(departmentIds) || departmentIds.length > 50 || departmentIds.some((id) => typeof id !== 'string' || !id.trim() || id.length > 191)) {
+        return res.status(400).json({ error: 'departmentIds must be an array of 0-50 department ids' });
+      }
+      const target = await db.get('SELECT id FROM users WHERE id = ?', [req.params.id]);
+      if (!target) return res.status(404).json({ error: 'User not found' });
+      const unique = [...new Set(departmentIds.map((id: string) => id.trim()))];
+      for (const deptId of unique) {
+        const dept = await db.get('SELECT id FROM departments WHERE id = ?', [deptId]);
+        if (!dept) return res.status(400).json({ error: `Department not found: ${deptId}` });
+      }
+      await db.run('DELETE FROM management_scopes WHERE userId = ?', [req.params.id]);
+      for (const deptId of unique) {
+        await db.run('INSERT INTO management_scopes (id, userId, departmentId) VALUES (?, ?, ?)', [crypto.randomUUID(), req.params.id, deptId]);
+      }
+      await db.run('UPDATE users SET tokenVersion = tokenVersion + 1 WHERE id = ?', [req.params.id]);
+      res.json({ success: true, departmentIds: unique });
     } catch (e) { res.status(500).json({ error: 'Failed' }); }
   });
 

@@ -63,9 +63,10 @@ const UserFormModal: React.FC<{
   user: User | null;
   roles: RoleInfo[];
   departments: string[];
+  deptObjs: { id: string; name: string }[];
   onClose: () => void;
   onSave: (u: User) => Promise<void>;
-}> = ({ user, roles, departments, onClose, onSave }) => {
+}> = ({ user, roles, departments, deptObjs, onClose, onSave }) => {
   const isEdit = !!user;
   // Default role: first available or 'Employee'
   const defaultRole = roles[0]?.name || 'Employee';
@@ -77,7 +78,21 @@ const UserFormModal: React.FC<{
     department: user?.department || '',
     avatar: user?.avatar || '',
   });
+  const [scopes, setScopes] = useState<string[]>(user?.managedDepartments || []);
+  const [assignments, setAssignments] = useState<NonNullable<User['assignments']>>([]);
+  useEffect(() => {
+    let cancelled = false;
+    setAssignments([]);
+    if (user?.id) {
+      apiFetch(`/api/users/${user.id}/assignments`)
+        .then(r => r.ok ? r.json() : [])
+        .then(rows => { if (!cancelled) setAssignments(Array.isArray(rows) ? rows : []); })
+        .catch(() => {});
+    }
+    return () => { cancelled = true; };
+  }, [user?.id]);
   const selectedLevel = roles.find(r => r.name === form.role)?.managementLevel ?? 10;
+  const showScopes = selectedLevel >= 30;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -109,6 +124,7 @@ const UserFormModal: React.FC<{
         role: form.role as UserRole,
         department: form.department,
         avatar: form.avatar || '',
+        managedDepartments: showScopes ? scopes : user?.managedDepartments || [],
       };
       await onSave(saved);
       onClose();
@@ -243,6 +259,49 @@ const UserFormModal: React.FC<{
                 </div>
               </div>
             </div>
+
+            {/* Managed scopes — chỉ cấp Phó GĐ trở lên */}
+            {showScopes && (
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Phòng ban được giao quản lý</label>
+                <div className="max-h-40 overflow-y-auto border border-gray-200 rounded-xl divide-y divide-gray-50">
+                  {deptObjs.length === 0 && <p className="px-4 py-3 text-xs text-gray-400">Chưa có phòng ban nào.</p>}
+                  {deptObjs.map(d => {
+                    const checked = scopes.includes(d.id);
+                    return (
+                      <label key={d.id} className={`flex items-center gap-3 px-4 py-2 text-sm cursor-pointer hover:bg-gray-50 ${checked ? 'bg-blue-50/50' : ''}`}>
+                        <input type="checkbox" checked={checked}
+                          onChange={() => setScopes(s => checked ? s.filter(x => x !== d.id) : [...s, d.id])}
+                          className="w-4 h-4 rounded border-gray-300 text-blue-600" />
+                        <span className={checked ? 'text-gray-800 font-medium' : 'text-gray-500'}>{d.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-gray-400 mt-1">Đã chọn {scopes.length} phòng — áp dụng khi đăng nhập lại (token revoke).</p>
+              </div>
+            )}
+
+            {/* Phân công kiêm nhiệm (từ import nhân sự, chỉ xem) */}
+            {isEdit && assignments.length > 0 && (
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Phân công kiêm nhiệm ({assignments.length})</label>
+                <ul className="border border-gray-200 rounded-xl divide-y divide-gray-50 max-h-36 overflow-y-auto">
+                  {assignments.map(a => (
+                    <li key={a.id} className="flex items-center gap-2 px-4 py-2 text-sm">
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${a.isPrimary ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+                        {a.isPrimary ? 'CHÍNH' : 'KIÊM NHIỆM'}
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        <span className="block text-gray-800 font-medium truncate">{a.title}</span>
+                        <span className="block text-xs text-gray-400 truncate">{a.departmentName || a.departmentId}{a.confirmationStatus ? ` · ${a.confirmationStatus}` : ''}</span>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-gray-400 mt-1">Do script import nhân sự quản lý, không sửa tay ở đây.</p>
+              </div>
+            )}
           </div>
 
           <div className="flex justify-end gap-3 pt-2 border-t border-gray-100">
@@ -382,7 +441,17 @@ export default function AdminUserManagement() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(u),
     });
-    if (!res.ok) throw new Error('Lỗi lưu');
+    if (!res.ok) { const data = await res.json().catch(() => ({})); throw new Error(data.error || 'Lỗi lưu'); }
+    // Sync phòng ban được giao cho cấp Phó GĐ+ (backend revoke token để login sau nhận scope)
+    const level = roles.find(r => r.name === u.role)?.managementLevel ?? 10;
+    if (level >= 30) {
+      const sr = await apiFetch(`/api/users/${u.id}/scopes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ departmentIds: u.managedDepartments || [] }),
+      });
+      if (!sr.ok) { const data = await sr.json().catch(() => ({})); throw new Error(data.error || 'Lưu scope thất bại'); }
+    }
     showToast(
       isNew ? `Đã thêm ${u.name}` : `Đã cập nhật ${u.name}`,
       isNew ? `Tài khoản ${u.email} đã sẵn sàng sử dụng.` : `Thông tin và phân quyền đã được làm mới.`,
@@ -633,6 +702,11 @@ export default function AdminUserManagement() {
                         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-200" title={levelLabel(u.managementLevel)}>
                           LV {u.managementLevel ?? 10}
                         </span>
+                        {(u.managedDepartments?.length || 0) > 0 && (
+                          <span className="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-700 border border-blue-200" title="Phòng ban được giao quản lý">
+                            +{u.managedDepartments!.length} phòng
+                          </span>
+                        )}
                       </td>
                       <td className="py-3.5 px-4 text-gray-500">{u.department}</td>
                       <td className="py-3.5 px-5">
@@ -671,6 +745,7 @@ export default function AdminUserManagement() {
           user={editingUser}
           roles={roles}
           departments={departments}
+          deptObjs={deptObjs}
           onClose={() => setEditingUser(undefined)}
           onSave={handleSave}
         />

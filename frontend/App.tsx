@@ -38,6 +38,7 @@ import { AIAssistant, AIAssistantHandle } from './components/AIAssistant';
 import { useLanguage } from './contexts/LanguageContext';
 import { useAuth } from './contexts/AuthContext';
 import { useData } from './contexts/DataContext';
+import { getAccessibleDeptNames, levelOf, LEVELS } from './utils/rbac';
 import { resolveDeptKey, resolveDeptKeyById } from './components/layout/menus/resolveDepartment';
 import { getDeptHomePath, DEPARTMENT_MENUS, asGroupList } from './components/layout/menus/departmentMenus';
 import type { DeptKey } from './components/layout/menus/menuTypes';
@@ -137,9 +138,10 @@ export default function TranLeTaskApp() {
     const isAssignee = task.assignees.includes(currentUser.id);
 
     if (action === 'edit') {
-      // Chỉ người tạo hoặc người được phân công mới được chỉnh sửa
-      // Trưởng phòng, Giám đốc, Admin KHÔNG được edit task của người khác
-      return isCreator || isAssignee;
+      if (isCreator || isAssignee) return true;
+      // Đồng bộ backend PUT: TP+ được sửa task cùng phòng ban.
+      const deptNames = getAccessibleDeptNames(currentUser, departments || []);
+      return levelOf(currentUser) >= LEVELS.MANAGER && !!task.department && deptNames.includes(task.department);
     }
 
     if (action === 'delete') {

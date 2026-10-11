@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
+import { hasManagementLevel, MANAGEMENT_LEVELS } from '../middleware/auth.js';
+import { requireDepartmentScope } from '../middleware/rbac.js';
 import { sendNotification } from '../utils/notify.js';
 
 const taskBodyFields = {
@@ -29,6 +31,10 @@ const UpdateTaskSchema = z.object(taskBodyFields).extend({ status: z.enum(['Todo
 export function taskRoutes(db: any) {
   const router = Router();
 
+  // Tự cung req.db như server.ts để requireDepartmentScope chạy được
+  // cả khi mount trực tiếp trong test.
+  router.use((req: any, _res, next) => { req.db = db; next(); });
+
   const canManageTasks = (user: any) => user?.role === 'Admin'
     || user?.permissions?.includes('admin_panel')
     || user?.permissions?.includes('view_all_tasks');
@@ -41,7 +47,7 @@ export function taskRoutes(db: any) {
     }, {});
   }
 
-  async function buildTasks(user: any, thresholdDate?: string) {
+  async function buildTasks(user: any, thresholdDate?: string, scopeNames?: string[]) {
     let tasksQuery = 'SELECT * FROM tasks WHERE 1=1';
     const params: any[] = [];
     if (thresholdDate) {
@@ -49,8 +55,15 @@ export function taskRoutes(db: any) {
       params.push(thresholdDate, thresholdDate);
     }
     if (!canManageTasks(user)) {
-      tasksQuery += ' AND (createdBy = ? OR id IN (SELECT taskId FROM task_assignees WHERE userId = ?))';
-      params.push(user.id, user.id);
+      // Có scope RBAC + từ TP trở lên: thêm task cả phòng; NV giữ nguyên own + assigned.
+      const names = (scopeNames ?? []).filter(Boolean);
+      if (names.length > 0 && hasManagementLevel(user, MANAGEMENT_LEVELS.MANAGER)) {
+        tasksQuery += ` AND (department IN (${names.map(() => '?').join(', ')}) OR createdBy = ? OR id IN (SELECT taskId FROM task_assignees WHERE userId = ?))`;
+        params.push(...names, user.id, user.id);
+      } else {
+        tasksQuery += ' AND (createdBy = ? OR id IN (SELECT taskId FROM task_assignees WHERE userId = ?))';
+        params.push(user.id, user.id);
+      }
     }
     
     const [tasks, assignees, tags, subtasks, comments] = await Promise.all([
@@ -137,19 +150,19 @@ export function taskRoutes(db: any) {
     return true;
   }
 
-  router.get('/', async (req, res) => {
+  router.get('/', requireDepartmentScope('task'), async (req, res) => {
     try {
       if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
       const sixMonthsAgo = new Date();
       sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-      res.json(await buildTasks(req.user, sixMonthsAgo.toISOString()));
+      res.json(await buildTasks(req.user, sixMonthsAgo.toISOString(), req.rbacContext?.deptNames));
     } catch (e) { res.status(500).json({ error: 'Failed to fetch tasks' }); }
   });
 
-  router.get('/archive', async (req, res) => {
+  router.get('/archive', requireDepartmentScope('task'), async (req, res) => {
     try {
       if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
-      res.json(await buildTasks(req.user));
+      res.json(await buildTasks(req.user, undefined, req.rbacContext?.deptNames));
     } catch (e) { res.status(500).json({ error: 'Failed to fetch tasks archive' }); }
   });
 
@@ -198,7 +211,7 @@ export function taskRoutes(db: any) {
     } catch (e) { res.status(500).json({ error: 'Failed task create' }); }
   });
 
-  router.put('/:id', validate(UpdateTaskSchema), async (req, res) => {
+  router.put('/:id', requireDepartmentScope('task'), validate(UpdateTaskSchema), async (req, res) => {
     const t = req.body;
     try {
       if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
@@ -207,7 +220,9 @@ export function taskRoutes(db: any) {
       const existing = await db.get('SELECT * FROM tasks WHERE id = ?', [taskId]);
       if (!existing) return res.status(404).json({ error: 'Task not found' });
       const assigned = await db.get('SELECT taskId FROM task_assignees WHERE taskId = ? AND userId = ?', [taskId, req.user.id]);
-      if (!canManageTasks(req.user) && existing.createdBy !== req.user.id && !assigned) return res.status(403).json({ error: 'Forbidden' });
+      const deptInScope = hasManagementLevel(req.user, MANAGEMENT_LEVELS.MANAGER)
+        && !!existing.department && (req.rbacContext?.deptNames ?? []).includes(existing.department);
+      if (!canManageTasks(req.user) && existing.createdBy !== req.user.id && !assigned && !deptInScope) return res.status(403).json({ error: 'Forbidden' });
 
       if (typeof t.title !== 'string' || !t.title.trim() || t.title.length > 500) return res.status(400).json({ error: 'Task title is required' });
       if (!['Todo', 'In Progress', 'Done'].includes(t.status)) return res.status(400).json({ error: 'Invalid task status' });

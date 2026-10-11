@@ -3,6 +3,8 @@ import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { sendNotification } from '../utils/notify.js';
 import { validate } from '../middleware/validate.js';
+import { hasManagementLevel, MANAGEMENT_LEVELS } from '../middleware/auth.js';
+import { requireDepartmentScope } from '../middleware/rbac.js';
 
 const ReportCreateSchema = z.object({
   id: z.string().trim().min(1).max(191),
@@ -24,13 +26,20 @@ const ReportUpdateSchema = z.object({
 export function reportRoutes(db: any) {
   const router = Router();
 
+  // Tự cung req.db như server.ts để requireDepartmentScope chạy được
+  // cả khi mount trực tiếp trong test.
+  router.use((req: any, _res, next) => { req.db = db; next(); });
+
   const canManageReports = (user: any) => user?.role === 'Admin'
     || user?.permissions?.includes('admin_panel')
     || user?.permissions?.includes('view_all_reports')
     || user?.permissions?.includes('director_feedback');
   const isAdmin = (user: any) => user?.role === 'Admin' || user?.permissions?.includes('admin_panel');
+  // TP+ thấy cả phòng được giao (phòng mình + managed scopes), không chỉ tên phòng mình.
+  const inManagedDept = (user: any, deptName: string, scopeNames: string[]) =>
+    hasManagementLevel(user, MANAGEMENT_LEVELS.MANAGER) && !!deptName && (user.department === deptName || scopeNames.includes(deptName));
 
-  router.get('/', async (req, res) => {
+  router.get('/', requireDepartmentScope('report'), async (req, res) => {
     try {
       // Time-boxing: only load data from the last 6 months
       const sixMonthsAgo = new Date();
@@ -38,19 +47,25 @@ export function reportRoutes(db: any) {
       const thresholdDate = sixMonthsAgo.toISOString();
       
       if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+      const names = (req.rbacContext?.deptNames ?? []).filter(Boolean);
       const reports = canManageReports(req.user)
         ? await db.all('SELECT * FROM reports WHERE (isDeleted IS NULL OR isDeleted = 0) AND createdAt >= ?', [thresholdDate])
-        : await db.all('SELECT * FROM reports WHERE (isDeleted IS NULL OR isDeleted = 0) AND createdAt >= ? AND authorId = ?', [thresholdDate, req.user.id]);
+        : names.length > 0 && hasManagementLevel(req.user, MANAGEMENT_LEVELS.MANAGER)
+          ? await db.all(`SELECT * FROM reports WHERE (isDeleted IS NULL OR isDeleted = 0) AND createdAt >= ? AND (authorId = ? OR department IN (${names.map(() => '?').join(', ')}))`, [thresholdDate, req.user.id, ...names])
+          : await db.all('SELECT * FROM reports WHERE (isDeleted IS NULL OR isDeleted = 0) AND createdAt >= ? AND authorId = ?', [thresholdDate, req.user.id]);
       res.json(reports);
     } catch (e) { res.status(500).json({ error: 'Failed to fetch reports' }); }
   });
 
-  router.get('/archive', async (req, res) => {
+  router.get('/archive', requireDepartmentScope('report'), async (req, res) => {
     try {
       if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+      const names = (req.rbacContext?.deptNames ?? []).filter(Boolean);
       const reports = canManageReports(req.user)
         ? await db.all('SELECT * FROM reports WHERE isDeleted IS NULL OR isDeleted = 0')
-        : await db.all('SELECT * FROM reports WHERE (isDeleted IS NULL OR isDeleted = 0) AND authorId = ?', [req.user.id]);
+        : names.length > 0 && hasManagementLevel(req.user, MANAGEMENT_LEVELS.MANAGER)
+          ? await db.all(`SELECT * FROM reports WHERE (isDeleted IS NULL OR isDeleted = 0) AND (authorId = ? OR department IN (${names.map(() => '?').join(', ')}))`, [req.user.id, ...names])
+          : await db.all('SELECT * FROM reports WHERE (isDeleted IS NULL OR isDeleted = 0) AND authorId = ?', [req.user.id]);
       res.json(reports);
     } catch (e) { res.status(500).json({ error: 'Failed to fetch reports archive' }); }
   });
@@ -107,22 +122,23 @@ export function reportRoutes(db: any) {
     } catch (e) { res.status(500).json({ error: 'Failed to create report' }); }
   });
 
-  router.put('/:id', validate(ReportUpdateSchema), async (req, res) => {
+  router.put('/:id', requireDepartmentScope('report'), validate(ReportUpdateSchema), async (req, res) => {
     const reportId = String(req.params.id);
     const { title, content, status, submittedAt, approvedAt, approvedBy, directorFeedback, managerFeedback } = req.body;
     try {
       const existing = await db.get('SELECT * FROM reports WHERE id = ?', [reportId]);
       if (!existing) return res.status(404).json({ error: 'Report not found' });
       if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+      const scopeNames: string[] = req.rbacContext?.deptNames ?? [];
       const authorEdit = existing.authorId === req.user.id && ['Draft', 'Rejected'].includes(existing.status) && ['Draft', 'Pending'].includes(status);
       const managerReview = !isAdmin(req.user)
         && req.user.permissions?.includes('approve_dept_reports')
-        && req.user.department === existing.department
+        && inManagedDept(req.user, existing.department, scopeNames)
         && existing.authorId !== req.user.id
         && existing.status === 'Pending'
         && ['Approved', 'Rejected'].includes(status);
       const adminManagerReview = isAdmin(req.user)
-        && req.user.department === existing.department
+        && inManagedDept(req.user, existing.department, scopeNames)
         && existing.authorId !== req.user.id
         && existing.status === 'Pending'
         && ['Approved', 'Rejected'].includes(status);

@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { sendNotification } from '../utils/notify.js';
 import { sanitizeActivityValue } from '../utils/activityPrivacy.js';
+import { hasManagementLevel, MANAGEMENT_LEVELS } from '../middleware/auth.js';
+import { requireDepartmentScope } from '../middleware/rbac.js';
 
 const optionalProjectText = (max: number) => z.string().max(max).nullable().optional();
 const ProjectBodySchema = z.object({
@@ -47,6 +49,10 @@ const ProjectMilestoneBodySchema = z.object({
 export function projectRoutes(db: any) {
   const router = Router();
 
+  // Tự cung req.db như server.ts để requireDepartmentScope chạy được
+  // cả khi mount trực tiếp trong test.
+  router.use((req: any, _res, next) => { req.db = db; next(); });
+
   async function logActivity(userId: string, action: string, entityId: string, metadata: any) {
     const id = randomUUID();
     await db.run(
@@ -61,13 +67,14 @@ export function projectRoutes(db: any) {
     || user?.permissions?.includes('view_all_reports');
   const canManageProject = (project: any, user: any) => canManageProjects(user) || project?.managerId === user?.id;
 
-  async function getProjectAccess(id: string, user: any) {
+  async function getProjectAccess(id: string, user: any, scopeNames: string[] = []) {
     const project = await db.get('SELECT * FROM projects WHERE id = ? AND (isDeleted IS NULL OR isDeleted = 0)', [id]);
-    return { project, allowed: Boolean(project && user && (canManageProjects(user) || project.managerId === user.id || project.department === user.department)) };
+    const inScope = hasManagementLevel(user, MANAGEMENT_LEVELS.MANAGER) && !!project?.department && (project.department === user?.department || scopeNames.includes(project.department));
+    return { project, allowed: Boolean(project && user && (canManageProjects(user) || project.managerId === user.id || inScope)) };
   }
 
   // GET all projects
-  router.get('/', async (req, res) => {
+  router.get('/', requireDepartmentScope('project'), async (req, res) => {
     try {
       const user = (req as any).user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
@@ -79,8 +86,15 @@ export function projectRoutes(db: any) {
       const params: any[] = [];
 
       if (!canViewAll) {
-        query += ' AND (managerId = ? OR department = ?)';
-        params.push(user.id, user.department || '');
+        // TP+ thấy cả phòng (phòng + con); NV giữ nguyên quản lý/trực thuộc.
+        const names = ((req as any).rbacContext?.deptNames ?? []).filter(Boolean);
+        if (names.length > 0 && hasManagementLevel(user, MANAGEMENT_LEVELS.MANAGER)) {
+          query += ` AND (managerId = ? OR department IN (${names.map(() => '?').join(', ')}))`;
+          params.push(user.id, ...names);
+        } else {
+          query += ' AND (managerId = ? OR department = ?)';
+          params.push(user.id, user.department || '');
+        }
       }
       
       query += ' ORDER BY createdAt DESC';
@@ -90,11 +104,11 @@ export function projectRoutes(db: any) {
   });
 
   // GET single project with its contracts and reports
-  router.get('/:id', async (req, res) => {
+  router.get('/:id', requireDepartmentScope('project'), async (req, res) => {
     try {
       const projectId = typeof req.params.id === 'string' ? req.params.id : '';
       if (!projectId) return res.status(400).json({ error: 'Invalid project id' });
-      const { project, allowed } = await getProjectAccess(projectId, req.user);
+      const { project, allowed } = await getProjectAccess(projectId, req.user, (req as any).rbacContext?.deptNames ?? []);
       if (!project) return res.status(404).json({ error: 'Project not found' });
       if (!allowed) return res.status(403).json({ error: 'Forbidden' });
       

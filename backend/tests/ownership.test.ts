@@ -255,6 +255,7 @@ describe('ownership boundaries', () => {
   it('report authors cannot approve their own pending report', async () => {
     const db = {
       get: vi.fn().mockResolvedValue({ id: 'report-1', authorId: 'user-1', department: 'Sales', status: 'Pending' }),
+      all: vi.fn().mockResolvedValue([]),
       run: vi.fn(),
     };
     await request(appFor(reportRoutes(db)))
@@ -267,6 +268,7 @@ describe('ownership boundaries', () => {
   it('regular revenue report authors cannot skip the manager review stage', async () => {
     const db = {
       get: vi.fn().mockResolvedValue({ id: 'revenue-1', authorId: 'user-1', department: 'Sales', status: 'Pending Manager' }),
+      all: vi.fn().mockResolvedValue([]),
       run: vi.fn(),
     };
     await request(appFor(secureRevenueRoutes(db)))

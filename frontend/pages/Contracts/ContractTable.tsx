@@ -3,6 +3,7 @@ import { FileText, Pencil, Trash2, Paperclip, Building2, PackageMinus, Eye, Doll
 import { Contract } from '../../services/contractService';
 import { Pagination } from '../../components/Pagination';
 import { CHECKLIST_ITEMS, getStatusBadge, getStatusSelectClasses, STATUS_OPTIONS, calcDebt } from './contractUtils';
+import { canApproveContractValue } from '../../utils/rbac';
 
 interface ContractTableProps {
   filtered: Contract[];
@@ -94,8 +95,10 @@ export const ContractTable: React.FC<ContractTableProps> = ({
             
             const perms = currentUser?.permissions || [];
             const isSystemAdmin = perms.includes('admin_panel') || perms.includes('director_feedback') || currentUser?.role === 'Admin' || currentUser?.role === 'Director';
-            const isDeptManager = (currentUser?.role === 'Manager' || currentUser?.role?.startsWith('Trưởng') || currentUser?.role?.includes('Trưởng')) && currentUser?.department === c.department;
-            const canApproveThis = isSystemAdmin || isDeptManager;
+            const level = currentUser?.managementLevel ?? 10;
+            const isDeptManager = ((currentUser?.role === 'Manager' || currentUser?.role?.startsWith('Trưởng') || currentUser?.role?.includes('Trưởng') || level >= 20)) && currentUser?.department === c.department;
+            // Ẩn quyền duyệt khi vượt hạn mức (backend vẫn chặn 403 nếu cố tình gọi).
+            const canApproveThis = (isSystemAdmin || isDeptManager) && canApproveContractValue(currentUser, c);
             return (
               <tr key={c.id} 
                   className="hover:bg-emerald-50/30 transition-colors group cursor-pointer"
