@@ -1,5 +1,5 @@
-import type { Department, User } from '../../../types';
-import type { DeptKey } from './menuTypes';
+import type { Department, User } from '../../../types.js';
+import type { DeptKey } from './menuTypes.js';
 
 // Database department codes (migration 006) -> stable menu keys.
 export const CODE_MAP: Record<string, DeptKey> = {

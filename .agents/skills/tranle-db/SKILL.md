@@ -1,12 +1,12 @@
 ---
 name: tranle-db
-description: Database changes for SQLite/PostgreSQL. Use for schema, migration or data-model work.
+description: Database changes for MySQL. Use for schema, migration or data-model work.
 ---
 
-# Database changes for SQLite/PostgreSQL
+# Database changes for MySQL (single `mysql2` backend)
 
 
-Inspect db.ts and db_pg.ts, preserve data, assess compatibility, implement deterministic migration and test it.
+Inspect `backend/db_mysql.ts`, preserve data, implement a deterministic versioned migration and test it.
 
 
 ## TranLe completion rule

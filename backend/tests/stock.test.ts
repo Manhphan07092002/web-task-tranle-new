@@ -51,7 +51,7 @@ function mockDbProducts(opts: Parameters<typeof mockDb>[0] & { productIds?: Set<
   const origGet = db.get;
   db.get = vi.fn(async (sql: string, params?: any[]) => {
     if (String(sql).includes('FROM products')) {
-      return opts.productIds?.has(params?.[0]) ? { id: params[0] } : undefined;
+      return opts.productIds?.has(params?.[0]) ? { id: params?.[0] } : undefined;
     }
     return origGet(sql, params);
   });
@@ -80,7 +80,8 @@ describe('stock balances scope', () => {
     const db = mockDb({ scopes: ['wh-hn'], balances: rows });
     const res = await request(appFor(nv, db)).get('/balances?warehouseId=wh-hn').expect(200);
     expect(res.body).toEqual(rows);
-    const [sql, params] = db.all.mock.calls.find(([s]: string[]) => String(s).includes('FROM stock_balances b'));
+    const balanceQuery = db.all.mock.calls.find(([s]: string[]) => String(s).includes('FROM stock_balances b')) as unknown as [string, any[]] | undefined;
+    const [sql, params] = balanceQuery ?? ['', []];
     expect(sql).toContain('b.warehouseId = ?');
     expect(params).toContain('wh-hn');
   });
@@ -88,7 +89,7 @@ describe('stock balances scope', () => {
   it('director bypasses scope filters', async () => {
     const db = mockDb({ scopes: [] });
     await request(appFor(director, db)).get('/balances').expect(200);
-    const [sql] = db.all.mock.calls.find(([s]: string[]) => String(s).includes('FROM stock_balances b'));
+    const [sql] = db.all.mock.calls.find(([s]: string[]) => String(s).includes('FROM stock_balances b'))!;
     expect(sql).not.toContain('b.warehouseId IN');
   });
 });
@@ -120,8 +121,8 @@ describe('receipts', () => {
     await request(appFor(nv, db)).post('/receipts/doc1/complete').send({}).expect(200);
     const sqls = db.run.mock.calls.map(([s]: string[]) => String(s));
     expect(sqls[0]).toBe('START TRANSACTION');
-    expect(sqls.some((s) => s.includes('INSERT INTO stock_moves'))).toBe(true);
-    expect(sqls.some((s) => s.includes('INSERT INTO stock_balances') && s.includes('ON DUPLICATE KEY UPDATE'))).toBe(true);
+    expect(sqls.some((s: string) => s.includes('INSERT INTO stock_moves'))).toBe(true);
+    expect(sqls.some((s: string) => s.includes('INSERT INTO stock_balances') && s.includes('ON DUPLICATE KEY UPDATE'))).toBe(true);
     expect(sqls).toContain('COMMIT');
     expect(sqls).not.toContain('ROLLBACK');
   });
@@ -570,7 +571,8 @@ describe('warehouse locations', () => {
   it('lists scoped locations', async () => {
     const d = db();
     await request(appFor(tp, d)).get('/locations').expect(200);
-    const [sql, params] = d.all.mock.calls.find(([s]: string[]) => String(s).includes('FROM stock_locations'));
+    const locationQuery = d.all.mock.calls.find(([s]: string[]) => String(s).includes('FROM stock_locations')) as unknown as [string, any[]] | undefined;
+    const [sql, params] = locationQuery ?? ['', []];
     expect(sql).toContain('l.warehouseId IN (?)');
     expect(params).toEqual(['wh-hn']);
   });
@@ -580,7 +582,7 @@ describe('warehouse locations', () => {
     const res = await request(appFor(tp, d)).post('/locations')
       .send({ warehouseId: 'wh-hn', code: 'a-01', name: 'Kệ A01' }).expect(201);
     expect(res.body.id).toBeTruthy();
-    const [, params] = d.run.mock.calls.find(([s]: string[]) => String(s).includes('INSERT INTO stock_locations'));
+    const [, params] = d.run.mock.calls.find(([s]: string[]) => String(s).includes('INSERT INTO stock_locations'))!;
     expect(params).toContain('A-01');
     await request(appFor(nv, db())).post('/locations')
       .send({ warehouseId: 'wh-hn', code: 'a-02', name: 'Kệ A02' }).expect(403);

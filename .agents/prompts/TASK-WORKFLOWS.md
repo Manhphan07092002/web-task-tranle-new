@@ -56,7 +56,7 @@ Checklist:
 ## D. Database migration
 
 /tranle-db
-→ inspect SQLite/PostgreSQL
+→ inspect MySQL schema/migrations (`backend/db_mysql.ts`)
 → migration plan
 → data preservation
 → implement

@@ -273,7 +273,7 @@ export default function AdminSystemConfig() {
             <StatusBadge ok={true} label="Running" />
           </div>
           <div className="space-y-1">
-            <InfoRow label="Framework" value="React 18" />
+            <InfoRow label="Framework" value="React 19" />
             <InfoRow label="Build Tool" value="Vite 6" />
             <InfoRow label="Ngôn ngữ" value="TypeScript" />
           </div>
@@ -467,7 +467,7 @@ export default function AdminSystemConfig() {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {[
-            { category: 'Frontend', items: ['React 18', 'TypeScript', 'Vite 6', 'Tailwind CSS', 'Recharts', 'Lucide Icons', 'React Router v6'] },
+            { category: 'Frontend', items: ['React 19', 'TypeScript', 'Vite 6', 'Tailwind CSS', 'Recharts', 'Lucide Icons', 'React Router v7'] },
             { category: 'Backend', items: ['Node.js', 'Express.js', 'TypeScript', 'MySQL 8 (mysql2)', 'dotenv', 'CORS'] },
           ].map(section => (
             <div key={section.category}>

@@ -24,7 +24,7 @@ Known stack:
 - TanStack React Query
 - Socket.IO
 - Express 5, Zod, JWT, bcryptjs
-- SQLite + PostgreSQL support
+- MySQL 8 only (mysql2 via DATABASE_URL; no SQLite/PostgreSQL path)
 - Nodemailer, IMAPFlow, mailparser
 - Google GenAI/Gemini
 - Vitest

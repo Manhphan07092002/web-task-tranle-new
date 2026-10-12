@@ -2,7 +2,7 @@
 
 **Version:** 1.0  
 **Date:** 2026-10-09  
-**Current Status:** Phase 0 Complete → Ready for Phase 1
+**Current Status:** Phase 1 + Warehouse DONE (29 suites / 312 tests PASS, 12/10/2026). File này lưu trữ trạng thái Phase 0 (09/10) — số liệu và mission mới nhất xem `CLAUDE.md` + `phan_tich.MD`.
 
 ---
 

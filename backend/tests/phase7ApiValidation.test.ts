@@ -8,7 +8,7 @@ import { reportRoutes } from '../routes/reports.js';
 import { adminRoutes } from '../routes/admin.js';
 
 const admin = { id: 'admin-1', role: 'Admin', department: 'Operations', permissions: ['admin_panel'] };
-const employee = { id: 'user-1', role: 'Employee', department: 'Operations', permissions: [] };
+const employee: { id: string; role: string; department: string; permissions: string[] } = { id: 'user-1', role: 'Employee', department: 'Operations', permissions: [] };
 
 function appFor(router: express.Router, user = employee) {
   const app = express();

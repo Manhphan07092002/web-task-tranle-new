@@ -211,7 +211,7 @@ Ví dụ:
 
 ```text
 Thêm trường priority cho tasks.
-Hãy kiểm tra schema hiện tại và cách project hỗ trợ SQLite/PostgreSQL trước.
+Hãy kiểm tra schema MySQL hiện tại trong `backend/db_mysql.ts` trước.
 Đề xuất migration/backward compatibility trước khi sửa.
 ```
 
@@ -220,7 +220,7 @@ Hãy kiểm tra schema hiện tại và cách project hỗ trợ SQLite/PostgreS
 - Không tự xóa database.
 - Không tự đổi schema chỉ vì test hiện tại lỗi.
 - Không hardcode dữ liệu production vào migration.
-- Kiểm tra cả SQLite và PostgreSQL nếu thay đổi có ảnh hưởng hai backend.
+- Kiểm tra migration versioned (`runVersionedMigration`) và dữ liệu cũ nếu thay đổi schema.
 
 ---
 

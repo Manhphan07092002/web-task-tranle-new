@@ -330,7 +330,7 @@ describe('departments routes dual-column + cascade', () => {
   it('counts users by name OR primaryDepartmentId', async () => {
     const db = deptDb([{ id: 'd1', name: 'P KT', managerId: null }]);
     await request(deptApp(db)).get('/').expect(200);
-    const countCall = db.get.mock.calls.find(([sql]: string[]) => String(sql).includes('FROM users'));
+    const countCall = db.get.mock.calls.find(([sql]: [string, any[]?]) => String(sql).includes('FROM users'));
     expect(countCall?.[0]).toContain('primaryDepartmentId');
     expect(countCall?.[1]).toEqual(['P KT', 'd1']);
   });

@@ -7,8 +7,7 @@
 - `backend/routes/`: domain APIs.
 - `backend/middleware/`: authentication and validation.
 - `backend/tests/`: Vitest tests.
-- `backend/db.ts`: SQLite/data initialization and migration-heavy area.
-- `backend/db_pg.ts`: PostgreSQL path.
+- `backend/db_mysql.ts`: MySQL 8 adapter, bootstrap DDL + versioned migrations (v1–v25) + seeds; migration-heavy area.
 - `backend/socket.ts`: realtime layer.
 - `backend/mailer.ts`: mail integration.
 - `frontend/services/`: browser API/service integration.

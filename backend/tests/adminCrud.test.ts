@@ -276,7 +276,8 @@ describe('projects scope', () => {
   it('manager lists managed plus department projects', async () => {
     const d = db();
     await request(appFor(manager, d)).get('/').expect(200);
-    const [sql, params] = d.all.mock.calls.find(([s]: string[]) => String(s).startsWith('SELECT * FROM projects'));
+    const projectQuery = d.all.mock.calls.find(([s]: string[]) => String(s).startsWith('SELECT * FROM projects')) as unknown as [string, any[]] | undefined;
+    const [sql, params] = projectQuery ?? ['', []];
     expect(sql).toContain('department IN (?)');
     expect(params).toEqual(['m', 'P KT']);
   });
@@ -284,7 +285,7 @@ describe('projects scope', () => {
   it('employee keeps the legacy manager-or-department filter', async () => {
     const d = db();
     await request(appFor(employee, d)).get('/').expect(200);
-    const [sql] = d.all.mock.calls.find(([s]: string[]) => String(s).startsWith('SELECT * FROM projects'));
+    const [sql] = d.all.mock.calls.find(([s]: string[]) => String(s).startsWith('SELECT * FROM projects'))!;
     expect(sql).toContain('department = ?');
     expect(sql).not.toContain('department IN');
   });

@@ -29,9 +29,9 @@ describe('production security headers', () => {
     expect(options.hsts).toMatchObject({ maxAge: 31_536_000, includeSubDomains: true });
     expect(options.noSniff).toBe(true);
     expect(options.frameguard).toEqual({ action: 'sameorigin' });
-    expect(options.contentSecurityPolicy.directives.defaultSrc).toEqual(["'self'"]);
-    expect(options.contentSecurityPolicy.directives.connectSrc).toContain('wss://app.example.com');
-    expect(options.contentSecurityPolicy.directives.objectSrc).toEqual(["'none'"]);
+    expect((options.contentSecurityPolicy as any).directives.defaultSrc).toEqual(["'self'"]);
+    expect((options.contentSecurityPolicy as any).directives.connectSrc).toContain('wss://app.example.com');
+    expect((options.contentSecurityPolicy as any).directives.objectSrc).toEqual(["'none'"]);
   });
 
   it('does not force production-only CSP/HSTS in development', () => {

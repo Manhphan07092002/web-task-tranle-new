@@ -11,7 +11,7 @@ Focus on:
 - frontend/backend boundaries
 - API contracts
 - RBAC
-- SQLite/PostgreSQL
+- MySQL 8 schema/migrations (`backend/db_mysql.ts`)
 - realtime
 - mail
 - AI

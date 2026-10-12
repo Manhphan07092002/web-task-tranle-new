@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "cross-env NODE_OPTIONS=\"--max-http-header-size=1000000\" npx tsx watch server.ts",
     "start": "cross-env NODE_OPTIONS=\"--max-http-header-size=1000000\" npx tsx server.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },

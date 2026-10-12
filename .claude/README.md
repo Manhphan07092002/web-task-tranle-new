@@ -13,7 +13,7 @@ It is intentionally project-specific instead of copying the whole ECC catalog.
 - Root workspace: npm workspaces for `frontend` and `backend`.
 - Frontend: React 19 + Vite 6 + TypeScript + Tailwind 4, React Router 7, TanStack React Query, Socket.IO client, Recharts, DOMPurify.
 - Backend: Node/TypeScript + Express 5 + Zod + JWT + bcryptjs + rate limiting + Socket.IO.
-- Data: SQLite and PostgreSQL support.
+- Data: MySQL 8 only (`mysql2` via `DATABASE_URL`; DDL + versioned migrations v1–v25 in `backend/db_mysql.ts`).
 - Mail: Nodemailer + IMAPFlow + mailparser.
 - AI: Google GenAI/Gemini integration.
 - Backend tests: Vitest with auth, tasks, meetings, reports, activity and crypto utility coverage.

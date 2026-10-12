@@ -1,12 +1,12 @@
 ---
 name: tranle-database
-description: SQLite/PostgreSQL database safety rules.
+description: MySQL database safety rules.
 activation: model_decision
 ---
 
 Before schema changes inspect:
-- `backend/db.ts`
-- `backend/db_pg.ts`
+- `backend/db_mysql.ts`
+- versioned migration conventions (`runVersionedMigration`, `ensureColumn`)
 - migration/initialization behavior
 - affected queries/tests
 
@@ -14,4 +14,4 @@ Preserve existing data.
 Prefer deterministic/idempotent migrations.
 Check indexes, foreign keys, uniqueness and nullability.
 Do not reset production data.
-Do not introduce SQLite-only behavior that silently breaks PostgreSQL.
+Do not add columns via CREATE TABLE on existing tables; use ensureColumn/ALTER.

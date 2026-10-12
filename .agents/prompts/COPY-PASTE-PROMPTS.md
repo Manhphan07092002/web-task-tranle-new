@@ -79,7 +79,7 @@ Tạo test cho allowed và denied cases.
 Tôi muốn thay đổi database:
 [ MÔ TẢ ]
 
-Kiểm tra SQLite và PostgreSQL path.
+Kiểm tra schema MySQL và migration versioned hiện tại (`backend/db_mysql.ts`).
 Không reset database.
 Đề xuất migration/backfill trước khi sửa.
 Kiểm tra data preservation, index, FK, uniqueness và nullability.

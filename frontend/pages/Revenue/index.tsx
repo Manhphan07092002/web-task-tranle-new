@@ -12,27 +12,10 @@ import {
 import { RevenueReport } from '../../services/revenueService';
 import { Contract } from '../../services/contractService';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend, LabelList } from 'recharts';
+import { fmtMoney, formatCompactVND, makeYAxisFormatter, getWeekRange, getMonthRange, getWeekInfo, getContractVatRate, computeDeliveredValue, getAssignees, getDeduplicatedTotals, buildInvoicedCsv, buildHistoryCsv, getTodayParts } from './revenueUtils.js';
 
 
-const fmtMoney = (v: number) => v.toLocaleString('vi-VN') + ' ₫';
 
-function getWeekRange() {
-  const d = new Date();
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  const start = new Date(d); start.setDate(diff);
-  const end = new Date(start); end.setDate(start.getDate() + 4);
-  const fmt = (dt: Date) => `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
-  return { start: fmt(start), end: fmt(end) };
-}
-
-function getMonthRange() {
-  const d = new Date();
-  const start = new Date(d.getFullYear(), d.getMonth(), 1);
-  const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-  const fmt = (dt: Date) => `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
-  return { start: fmt(start), end: fmt(end) };
-}
 
 interface RevenueRow {
   contractId: string;
@@ -56,21 +39,6 @@ const RevenuePage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'list' | 'create' | 'history' | 'invoiced' | 'periodic'>('list');
   const [originTab, setOriginTab] = useState<'list' | 'history'>('list');
   const [search, setSearch] = useState('');
-
-  // L\u1ea5y thu\u1ebf VAT th\u1ef1c t\u1ebf t\u1eeb s\u1ea3n ph\u1ea9m trong h\u1ee3p \u0111\u1ed3ng (uu ti\u00ean h\u01a1n tr\u01b0\u1eddng vatRate c\u1ea5p H\u0110)
-  const getContractVatRate = (c: any): number => {
-    try {
-      const prods: any[] = Array.isArray(c.products) ? c.products
-        : (c.products && typeof c.products === 'string' ? JSON.parse(c.products) : []);
-      if (prods.length > 0) {
-        const preTax = prods.reduce((s: number, p: any) => s + (Number(p.total) || 0), 0);
-        const tax = prods.reduce((s: number, p: any) => s + ((Number(p.total) || 0) * (Number(p.vatRate) || 8) / 100), 0);
-        if (preTax > 0) return Math.round(tax / preTax * 100);
-        return Number(prods[0]?.vatRate) || 8;
-      }
-    } catch {}
-    return Number(c.vatRate) || 8;
-  };
 
   // Sync activeTab with URL 'tab' parameter
   const queryTab = new URLSearchParams(location.search).get('tab');
@@ -116,33 +84,6 @@ const RevenuePage: React.FC = () => {
     }
   }, [location.state]);
 
-  // Helper to get week start date (Monday) and week label for a given date YYYY-MM-DD
-  const getWeekInfo = (dateStr: string) => {
-    const d = new Date(dateStr);
-    const day = d.getDay();
-    const diff = d.getDate() - day + (day === 0 ? -6 : 1); // adjust when day is sunday
-    const monday = new Date(d.setDate(diff));
-    
-    const sunday = new Date(monday);
-    sunday.setDate(monday.getDate() + 6);
-    
-    const fmt = (date: Date) => date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    const weekRange = `${fmt(monday)} - ${fmt(sunday)}`;
-    
-    // Week number
-    const firstDayOfYear = new Date(monday.getFullYear(), 0, 1);
-    const pastDaysOfYear = (monday.getTime() - firstDayOfYear.getTime()) / 86400000;
-    const weekNum = Math.ceil((pastDaysOfYear + firstDayOfYear.getDay() + 1) / 7);
-    
-    return {
-      mondayStr: monday.toISOString().split('T')[0],
-      weekRange,
-      weekNum,
-      year: monday.getFullYear(),
-      label: `Tuần ${weekNum} (${weekRange})`
-    };
-  };
-
   const invoicedContractsList = useMemo(() => {
     return contracts.filter(c => {
       // Only output contracts
@@ -171,20 +112,7 @@ const RevenuePage: React.FC = () => {
 
       return true;
     }).map(c => {
-      const products: any[] = Array.isArray(c.products)
-        ? c.products
-        : (c.products && typeof c.products === 'string' ? JSON.parse(c.products) : []);
-
-      let deliveredValue = 0;
-      if (products.length > 0) {
-        deliveredValue = products.reduce((sum, p) => {
-          const qty = Number(p.invoicedQuantity) || Number(p.exportedQuantity) || Number(p.quantity) || 0;
-          const price = Number(p.unitPrice) || 0;
-          return sum + (qty * price);
-        }, 0);
-      } else {
-        deliveredValue = Number(c.preTaxValue) || 0;
-      }
+      const deliveredValue = computeDeliveredValue(c);
 
       return {
         ...c,
@@ -195,28 +123,7 @@ const RevenuePage: React.FC = () => {
 
   const exportInvoicedToCSV = () => {
     if (invoicedContractsList.length === 0) return;
-    const headers = ['Số Hợp đồng', 'Chủ đầu tư', 'Tên hợp đồng', 'Ngày xuất hóa đơn', 'Số hóa đơn', 'Giá trị trước thuế', 'Doanh thu đã xuất', 'Lũy kế thanh toán'];
-    const rows = invoicedContractsList.map(c => [
-      c.contractNumber,
-      c.clientName || '',
-      c.contractName || '',
-      c.invoiceDate || '',
-      c.invoiceNumber || '',
-      c.preTaxValue || 0,
-      c.deliveredValue || 0,
-      c.paidAmount || 0
-    ]);
-    
-    const csvContent = [
-      headers.join(','),
-      ...rows.map(row => row.map(val => {
-        const str = String(val ?? '');
-        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-          return `"${str.replace(/"/g, '""')}"`;
-        }
-        return str;
-      }).join(','))
-    ].join('\n');
+    const csvContent = buildInvoicedCsv(invoicedContractsList);
     
     const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -235,20 +142,7 @@ const RevenuePage: React.FC = () => {
       if (c.isDeleted !== undefined && c.isDeleted !== 0 && c.isDeleted !== null) return false;
       return true;
     }).map(c => {
-      const products: any[] = Array.isArray(c.products)
-        ? c.products
-        : (c.products && typeof c.products === 'string' ? JSON.parse(c.products) : []);
-
-      let deliveredValue = 0;
-      if (products.length > 0) {
-        deliveredValue = products.reduce((sum, p) => {
-          const qty = Number(p.invoicedQuantity) || Number(p.exportedQuantity) || Number(p.quantity) || 0;
-          const price = Number(p.unitPrice) || 0;
-          return sum + (qty * price);
-        }, 0);
-      } else {
-        deliveredValue = Number(c.preTaxValue) || 0;
-      }
+      const deliveredValue = computeDeliveredValue(c);
 
       return {
         ...c,
@@ -256,11 +150,8 @@ const RevenuePage: React.FC = () => {
       };
     });
 
-    // Today's date components
-    const todayStr = '2026-05-22';
-    const todayWeek = getWeekInfo(todayStr);
-    const todayMonth = todayStr.substring(0, 7);
-    const todayYear = 2026;
+    // Today's date components (live date via getTodayParts — do NOT hardcode)
+    const { todayStr, todayWeek, todayMonth, todayYear } = getTodayParts();
 
     let revenueThisWeek = 0;
     let revenueThisMonth = 0;
@@ -454,45 +345,6 @@ const RevenuePage: React.FC = () => {
   }, [historicalReports, historyType]);
 
 
-  /**
-   * Compute deduplicated revenue totals from a list of reports.
-   * Each contract (contractId) is counted only ONCE even if it appears in multiple reports.
-   * Uses the value from the LATEST report (sorted by createdAt descending).
-   */
-  const getDeduplicatedTotals = (reports: typeof historicalReports) => {
-    const contractMap = new Map<string, { delivered: number; preTax: number }>();
-    // Sort newest first so newest report's value wins on conflict
-    const sorted = [...reports].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    sorted.forEach(r => {
-      try {
-        const rows: any[] = JSON.parse(r.content || '[]');
-        rows.forEach((row: any) => {
-          const cid = row.contractId || row.contractNumber || `${r.id}_${row.contractNumber}`;
-          if (!contractMap.has(cid)) {
-            contractMap.set(cid, {
-              delivered: Number(row.deliveredMonth) || 0,
-              preTax: Number(row.preTaxValue) || 0,
-            });
-          }
-        });
-      } catch {
-        // If content can't be parsed, fall back to report-level total
-        if (!contractMap.has(`report_${r.id}`)) {
-          contractMap.set(`report_${r.id}`, { delivered: r.totalDelivered, preTax: r.totalPreTax });
-        }
-      }
-    });
-    let totalDelivered = 0;
-    let totalPreTax = 0;
-    let maxVal = 0;
-    contractMap.forEach(v => {
-      totalDelivered += v.delivered;
-      totalPreTax += v.preTax;
-      if (v.delivered > maxVal) maxVal = v.delivered;
-    });
-    return { totalDelivered, totalPreTax, maxReport: maxVal };
-  };
-
   const historyStats = useMemo(() => {
     const count = historicalReports.length;
     // Only count APPROVED reports for revenue totals, deduplicated by contractId
@@ -518,45 +370,7 @@ const RevenuePage: React.FC = () => {
   const exportHistoryToCSV = () => {
     if (historicalReports.length === 0) return;
     
-    const headers = ['Mã báo cáo', 'Tiêu đề', 'Loại', 'Từ ngày', 'Đến ngày', 'Phương thức', 'Phòng ban', 'Người thực hiện', 'Tổng doanh thu', 'Trạng thái', 'Ngày tạo'];
-    
-    const rows = historicalReports.map(r => {
-      const creatorName = users.find(u => u.id === r.authorId)?.name || r.authorId;
-      const typeLabel = r.reportType === 'weekly' ? 'Tuần' : 'Tháng';
-      const modeLabel = r.generationMode === 'automatic' ? 'Tự động' : 'Thủ công';
-      const statusLabel = {
-        Draft: 'Nháp',
-        'Pending Manager': 'Chờ TP duyệt',
-        'Pending Director': 'Chờ GĐ duyệt',
-        Approved: 'Đã duyệt',
-        Rejected: 'Từ chối'
-      }[r.status] || r.status;
-      
-      return [
-        r.id,
-        r.title,
-        typeLabel,
-        r.periodStart || '',
-        r.periodEnd || '',
-        modeLabel,
-        r.department || '',
-        creatorName,
-        r.totalDelivered,
-        statusLabel,
-        new Date(r.createdAt).toLocaleDateString('vi-VN')
-      ];
-    });
-    
-    const csvContent = [
-      headers.join(','),
-      ...rows.map(row => row.map(val => {
-        const str = String(val ?? '');
-        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-          return `"${str.replace(/"/g, '""')}"`;
-        }
-        return str;
-      }).join(','))
-    ].join('\n');
+    const csvContent = buildHistoryCsv(historicalReports, users);
     
     const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -583,20 +397,7 @@ const RevenuePage: React.FC = () => {
       });
 
       const mappedRows = filtered.map(c => {
-        const products: any[] = Array.isArray(c.products)
-          ? c.products
-          : (c.products && typeof c.products === 'string' ? JSON.parse(c.products) : []);
-
-        let invoiceVal = 0;
-        if (products.length > 0) {
-          invoiceVal = products.reduce((sum, p) => {
-            const qty = Number(p.invoicedQuantity) || Number(p.exportedQuantity) || Number(p.quantity) || 0;
-            const price = Number(p.unitPrice) || 0;
-            return sum + (qty * price);
-          }, 0);
-        } else {
-          invoiceVal = Number(c.preTaxValue) || 0;
-        }
+        const invoiceVal = computeDeliveredValue(c);
 
         return {
           contractId: c.id,
@@ -807,21 +608,6 @@ const RevenuePage: React.FC = () => {
     }
   };
 
-  const formatCompactVND = (val: number) => {
-    if (val >= 1_000_000_000) return (val / 1_000_000_000).toLocaleString('vi-VN', { maximumFractionDigits: 2 }) + ' tỷ';
-    if (val >= 1_000_000) return (val / 1_000_000).toLocaleString('vi-VN', { maximumFractionDigits: 1 }) + ' tr';
-    return new Intl.NumberFormat('vi-VN').format(val) + ' ₫';
-  };
-
-  const getAssignees = (r: RevenueReport) => {
-    try {
-      const rows: any[] = JSON.parse(r.content || '[]');
-      return [...new Set(rows.map(row => row.assignee).filter(Boolean))] as string[];
-    } catch {
-      return [];
-    }
-  };
-
   const chartData = useMemo(() => {
     const dataByMonth: Record<string, number> = {};
     const dataByDept: Record<string, number> = {};
@@ -844,15 +630,6 @@ const RevenuePage: React.FC = () => {
   }, [visibleReports]);
 
   const COLORS = ['#f97316', '#3b82f6', '#10b981', '#8b5cf6', '#ef4444', '#f59e0b', '#06b6d4', '#ec4899'];
-
-  // Smart Y-axis formatter that adapts to data scale
-  const makeYAxisFormatter = (data: { value: number }[]) => {
-    const max = Math.max(...data.map(d => d.value), 1);
-    if (max >= 1_000_000_000) return (val: number) => `${(val / 1_000_000_000).toFixed(1)}Tỷ`;
-    if (max >= 1_000_000) return (val: number) => `${(val / 1_000_000).toFixed(1)}Tr`;
-    if (max >= 1_000) return (val: number) => `${(val / 1_000).toFixed(0)}K`;
-    return (val: number) => `${val.toFixed(0)}đ`;
-  };
 
   const barYFormatter = makeYAxisFormatter(chartData.monthly);
 

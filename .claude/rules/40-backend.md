@@ -1,7 +1,7 @@
 # Backend rules
 
 Current stack:
-Express 5, TypeScript, Zod, JWT, bcryptjs, express-rate-limit, Socket.IO, SQLite/PostgreSQL, Nodemailer, IMAPFlow and Google GenAI.
+Express 5, TypeScript, Zod, JWT, bcryptjs, express-rate-limit, Socket.IO, MySQL 8 (mysql2), Nodemailer, IMAPFlow and Google GenAI.
 
 Rules:
 

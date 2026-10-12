@@ -1,7 +1,7 @@
 # 📚 Documentation Index - TranLe Tasks Department System
 
-**Last Updated:** 2026-10-09  
-**Current Phase:** Phase 0 Complete → Phase 1 Ready
+**Last Updated:** 2026-10-12
+**Current Phase:** Phase 1 + Warehouse DONE (29 suites / 312 tests PASS) → Phase 2-12. Các mục Phase 0 bên dưới có giá trị lưu trữ; số liệu mới nhất xem `CLAUDE.md` + `phan_tich.MD`.
 
 ---
 
@@ -97,10 +97,10 @@ These documents are essential to understand before starting Phase 1:
   - Testing conventions
 
 - **Code Implementation:**
-  - Backend: `backend/services/rbacService.ts` (359 lines)
-  - Middleware: `backend/middleware/rbac.ts` (174 lines)
-  - Tests: `backend/tests/rbac.test.ts` (296 lines, 17 tests)
-  - Migration: `backend/migrations/006_department_system.sql` (317 lines)
+  - Backend: `backend/services/rbacService.ts` (156 lines)
+  - Middleware: `backend/middleware/rbac.ts` (69 lines)
+  - Tests: `backend/tests/rbacService.test.ts` (204 lines) + `backend/tests/rbacStandardization.test.ts` (344 lines)
+  - Migration: `backend/migrations/006_department_system.sql` (269 lines)
 
 ---
 
@@ -136,7 +136,7 @@ These documents are essential to understand before starting Phase 1:
 2. **Reference Implementation:**
    - `backend/services/rbacService.ts` - Authorization logic
    - `backend/middleware/rbac.ts` - Route middleware
-   - `backend/tests/rbac.test.ts` - Test examples
+   - `backend/tests/rbacService.test.ts` + `rbacStandardization.test.ts` - Test examples
 
 3. **Step-by-Step Guide:** [`Huong_dan.md`](Huong_dan.md) (Vietnamese)
 
@@ -162,7 +162,7 @@ See [`PHASE_0_COMPLETION_REPORT.md`](PHASE_0_COMPLETION_REPORT.md):
 - 3 new user columns
 - RBAC service (7 methods)
 - RBAC middleware (5 functions)
-- 17 new tests (160 total PASS)
+- 29 suites / 312 tests PASS (12/10/2026; Phase 1 + Warehouse)
 - 533 lines production code
 
 ---
@@ -242,7 +242,7 @@ See [`DECISIONS_PHASE0.md`](DECISIONS_PHASE0.md):
 **Quick refresh:**
 1. `KNOWLEDGE_TRANSFER.md` - Phase 1 mission
 2. `PATTERNS_PHASE1.md` - Code patterns
-3. `backend/tests/rbac.test.ts` - Test examples
+3. `backend/tests/rbacService.test.ts` - Test examples
 4. Start implementing
 
 ---
@@ -262,7 +262,7 @@ See [`DECISIONS_PHASE0.md`](DECISIONS_PHASE0.md):
 1. Check `KNOWLEDGE_TRANSFER.md` troubleshooting
 2. Check `Huong_dan.md` detailed solutions
 3. Re-read `DECISIONS_PHASE0.md` for context
-4. Review `backend/tests/rbac.test.ts` for examples
+4. Review `backend/tests/rbacService.test.ts` for examples
 5. Ask maintainer/user
 
 ### Before Committing:
@@ -278,7 +278,7 @@ See [`DECISIONS_PHASE0.md`](DECISIONS_PHASE0.md):
 - **Database Migration:** `backend/migrations/006_department_system.sql`
 - **RBAC Service:** `backend/services/rbacService.ts`
 - **RBAC Middleware:** `backend/middleware/rbac.ts`
-- **RBAC Tests:** `backend/tests/rbac.test.ts`
+- **RBAC Tests:** `backend/tests/rbacService.test.ts`, `rbacStandardization.test.ts`, `tasksScope.test.ts`
 - **Frontend Types:** `frontend/types.ts` (will update in Phase 1)
 
 ---
