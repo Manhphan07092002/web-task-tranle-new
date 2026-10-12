@@ -1,6 +1,6 @@
 # 🔍 Phân Tích Toàn Diện Dự Án Tran Le Tasks
 
-> **Ngày phân tích:** 07/10/2026 (cập nhật lần 5 — rà soát và remediation bảo mật)
+> **Ngày phân tích:** 12/10/2026 (cập nhật lần 6 — đồng bộ Hệ thống phòng ban / RBAC Phase 1 & module Kho vận)
 > **Mục đích:** Lưu trữ kiến thức về cấu trúc, kiến trúc, điểm mạnh, vấn đề và hướng cải thiện của dự án — phục vụ tra cứu nhanh, không cần phân tích lại.  
 > **Tham khảo thêm:** [CLAUDE.md](CLAUDE.md) — hướng dẫn coding conventions dành cho AI.
 
@@ -40,34 +40,38 @@ web_tranle_new/
 ├── test_api.js                   # Script test API thủ công
 │
 ├── frontend/                     # React 19 + Vite + TailwindCSS 4
-│   ├── App.tsx                   # Router chính + business logic (458 dòng)
+│   ├── App.tsx                   # Router chính + business logic (task permission, modal, notification)
 │   ├── main.tsx                  # Entry point (React + Providers)
-│   ├── types.ts                  # 20+ TypeScript interfaces/enums (282 dòng)
+│   ├── types.ts                  # 20+ TypeScript interfaces/enums
 │   ├── index.html                # HTML shell
 │   ├── index.css                 # Global styles
 │   ├── constants.ts              # App constants
-│   ├── vite.config.ts            # Vite config + proxy /api → backend
+│   ├── vite.config.ts            # Vite config + proxy /api, /socket.io → backend
+│   ├── vitest.config.ts          # Config test FE (vitest chưa khai báo dependencies)
 │   ├── stream-stub.js            # Polyfill cho stream module
-│   ├── components/               # 16+ shared components
-│   │   ├── AIAssistant.tsx          # Gemini AI chatbot (45KB)
-│   │   ├── MeetingRoom.tsx          # Video meeting WebRTC (40KB)
-│   │   ├── TaskModal.tsx            # Task create/edit form (32KB)
-│   │   ├── InlineDocumentManager.tsx # Document upload widget (15KB)
-│   │   ├── UserModal.tsx            # User create/edit (14KB)
-│   │   ├── NoteModal.tsx            # Note editor (13KB)
-│   │   ├── LoginView.tsx            # Login page (10KB)
-│   │   ├── UserProfilePopup.tsx     # Profile hover card (9KB)
-│   │   ├── TaskSuggestionModal.tsx   # AI task suggestions (8KB)
-│   │   ├── StatCard.tsx             # Dashboard stat cards (7KB)
-│   │   ├── MeetingModal.tsx         # Create meeting modal (7KB)
-│   │   ├── UI.tsx                   # Shared UI primitives (6KB)
-│   │   ├── TaskListItem.tsx         # Task row component (5KB)
-│   │   ├── InviteModal.tsx          # Meeting invite modal (5KB)
-│   │   ├── Pagination.tsx           # Reusable pagination (4KB)
-│   │   ├── ConfirmDialog.tsx        # Confirm delete dialog (2KB)
-│   │   ├── layout/                  # Sidebar + TopHeader
-│   │   └── meeting/                 # Meeting sub-components
-│   ├── pages/                    # 19 page modules
+│   ├── components/               # 18+ shared components
+│   │   ├── AIAssistant.tsx          # Gemini AI chatbot
+│   │   ├── MeetingRoom.tsx          # Video meeting WebRTC
+│   │   ├── TaskModal.tsx            # Task create/edit form
+│   │   ├── InlineDocumentManager.tsx # Document upload widget
+│   │   ├── UserModal.tsx            # User create/edit
+│   │   ├── NoteModal.tsx            # Note editor
+│   │   ├── LoginView.tsx            # Login page
+│   │   ├── UserProfilePopup.tsx     # Profile hover card
+│   │   ├── TaskSuggestionModal.tsx  # AI task suggestions
+│   │   ├── StatCard.tsx             # Dashboard stat cards
+│   │   ├── MeetingModal.tsx         # Create meeting modal
+│   │   ├── UI.tsx                   # Shared UI primitives
+│   │   ├── TaskListItem.tsx         # Task row component
+│   │   ├── InviteModal.tsx          # Meeting invite modal
+│   │   ├── Pagination.tsx           # Reusable pagination
+│   │   ├── ConfirmDialog.tsx        # Confirm delete dialog
+│   │   ├── ErrorBoundary.tsx        # Error boundary
+│   │   ├── AdminFeedback.tsx        # Feedback admin
+│   │   ├── layout/                  # Sidebar, TopHeader
+│   │   │   └── menus/               # departmentMenus.ts, resolveDepartment.ts, menuTypes.ts, commonMenus.ts
+│   │   └── meeting/                 # Meeting sub-components (PreJoinLobby, ControlsBar, Sidebars, SettingsModal...)
+│   ├── pages/                    # 20+ page modules
 │   │   ├── Dashboard/               # KPI, biểu đồ, task hôm nay
 │   │   ├── Tasks/                   # Kanban, List View, Calendar View
 │   │   ├── Calendar/                # Lịch biểu (tasks + contracts)
@@ -86,78 +90,72 @@ web_tranle_new/
 │   │   ├── Settings/                # Theme, ngôn ngữ, preferences
 │   │   ├── Notifications/           # Trung tâm thông báo
 │   │   ├── ForgotPassword/          # Quên mật khẩu
-│   │   └── ResetPassword/           # Đặt lại mật khẩu
+│   │   ├── ResetPassword/           # Đặt lại mật khẩu
+│   │   ├── Warehouse/               # 19 trang nghiệp vụ kho (Overview, Inventory, StockDocs, Moves,
+│   │   │                            #   Locations, MinMax, Serial, Reservations, Count, Reports, SlowStock,
+│   │   │                            #   Bundle, Alerts, Approvals, Exceptions, InTransit, Misa, Catalog, MyWork)
+│   │   └── DepartmentStubPage.tsx   # Placeholder "Đang phát triển" cho phòng ban chưa có trang thật
 │   ├── contexts/                 # 4 React Contexts
 │   │   ├── AuthContext.tsx          # JWT auth, login/logout
 │   │   ├── DataContext.tsx          # Server state (react-query)
-│   │   ├── LanguageContext.tsx       # i18n vi/en
-│   │   └── NotificationContext.tsx   # Realtime + local notifications
-│   ├── services/                 # 16 API service files
+│   │   ├── LanguageContext.tsx      # i18n vi/en
+│   │   └── NotificationContext.tsx  # Realtime + local notifications
+│   ├── services/                 # 19 API service files
 │   │   ├── api.ts                   # Base fetch wrapper + auth interceptor
-│   │   ├── taskService.ts           # CRUD tasks
-│   │   ├── contractService.ts       # CRUD contracts
-│   │   ├── projectService.ts        # CRUD projects
-│   │   ├── reportService.ts         # CRUD reports
-│   │   ├── revenueService.ts        # CRUD revenue
-│   │   ├── noteService.ts           # CRUD notes
-│   │   ├── userService.ts           # CRUD users
-│   │   ├── meetingService.ts        # CRUD meetings
-│   │   ├── productService.ts        # CRUD products
-│   │   ├── documentService.ts       # CRUD documents
-│   │   ├── contractLinkService.ts   # Contract links
-│   │   ├── clientService.ts         # List clients
-│   │   ├── departmentService.ts     # List departments
-│   │   ├── roleService.ts           # List roles
-│   │   └── aiService.ts             # AI chat/suggestions
-│   ├── hooks/                    # Custom hooks
+│   │   ├── taskService.ts / contractService.ts / contractLinkService.ts / projectService.ts
+│   │   ├── reportService.ts / revenueService.ts / noteService.ts / userService.ts
+│   │   ├── meetingService.ts / productService.ts / documentService.ts / departmentService.ts
+│   │   ├── roleService.ts / clientService.ts / aiService.ts
+│   │   ├── stockService.ts / reservationService.ts / locationService.ts   # Kho vận
+│   ├── hooks/                    # 4 custom hooks
+│   │   ├── useRBAC.ts               # Quyền/scope theo user (dùng trong UI)
 │   │   ├── useDeviceSelection.ts    # Camera/mic selection
-│   │   └── useVirtualBackground.ts  # MediaPipe background blur
+│   │   ├── useVirtualBackground.ts  # MediaPipe background blur
+│   │   └── useMailConnectionCooldown.ts # Cooldown kết nối mail
 │   └── utils/
-│       └── dateUtils.ts             # Date formatting helpers
+│       ├── rbac.ts                  # Frontend RBAC mirror
+│       ├── dateUtils.ts             # Date formatting helpers
+│       └── exportXlsx.ts            # Export Excel (exceljs)
 │
 ├── backend/                      # Express 5 + TypeScript (tsx runtime)
-│   ├── server.ts                 # Entry point – Express app setup (151 dòng)
-│   ├── db_mysql.ts               # MySQL 8 adapter + schema DDL + seeds + SQL normalizer (540 dòng)
+│   ├── server.ts                 # Entry point – Express app setup (CSP, rate limit, mount route, scheduler)
+│   ├── db_mysql.ts               # MySQL 8 adapter + schema DDL (~50 bảng) + seeds + normalizeSql + versioned migrations v1–v25
 │   ├── socket.ts                 # Socket.io init + room join
 │   ├── mailer.ts                 # Nodemailer SMTP transporter
-│   ├── tranle_knowledge.ts          # AI knowledge base cho Gemini (5KB)
-│   ├── db_history.json           # Lịch sử export/import database
+│   ├── tranle_knowledge.ts       # AI knowledge base cho Gemini
 │   ├── middleware/
 │   │   ├── auth.ts                  # requireAuth + requireAdmin (JWT)
+│   │   ├── rbac.ts                  # requirePermission/scope, applyTaskScopeFilter, ownership, approval
 │   │   └── validate.ts              # Zod validation middleware
-│   ├── routes/                   # 22 API route modules
-│   │   ├── contracts.ts             # Hợp đồng CRUD + workflow (52KB)
-│   │   ├── mail.ts                  # Webmail IMAP/SMTP (39KB)
-│   │   ├── ai.ts                    # Gemini AI assistant (28KB)
-│   │   ├── admin.ts                 # User/system management + MySQL JSON export/import (26KB)
-│   │   ├── products.ts              # Kho hàng (15.5KB)
-│   │   ├── auth.ts                  # Login, register, reset password (13KB)
-│   │   ├── documents.ts             # Tài liệu (10KB)
-│   │   ├── projects.ts              # Dự án (10KB)
-│   │   ├── revenue.ts               # Doanh thu (8KB)
-│   │   ├── tasks.ts                 # Task CRUD (7KB)
-│   │   ├── reports.ts               # Báo cáo tuần (7KB)
-│   │   ├── contractLinks.ts         # Liên kết hợp đồng (6KB)
-│   │   ├── users.ts                 # User profile (6KB)
-│   │   ├── meetings.ts              # Phòng họp (5KB)
-│   │   ├── roles.ts                 # Roles CRUD (3KB)
-│   │   ├── departments.ts           # Departments CRUD (3KB)
-│   │   ├── events.ts                # Calendar events (2KB)
-│   │   ├── upload.ts                # File upload (2KB)
-│   │   ├── activity.ts              # Activity logs (2KB)
-│   │   ├── notes.ts                 # Notes CRUD (2KB)
-│   │   ├── notifications.ts         # Notifications (1KB)
-│   │   └── clients.ts               # Clients list (0.5KB)
-│   ├── schedulers/               # 5 cron jobs
+│   ├── services/
+│   │   └── rbacService.ts           # Scope department/warehouse + ma trận duyệt theo management level
+│   ├── routes/                   # 25 API route modules
+│   │   ├── contracts.ts             # Hợp đồng CRUD + workflow
+│   │   ├── stock.ts                 # Kho vận: chứng từ, moves, tồn kho, serial, combo, kiểm kê, MISA (1.300+ dòng)
+│   │   ├── stockReports.ts          # Báo cáo kho (mount bên trong stock.ts)
+│   │   ├── mail.ts                  # Webmail IMAP/SMTP
+│   │   ├── ai.ts                    # Gemini AI assistant
+│   │   ├── admin.ts                 # User/system management + MySQL JSON export/import
+│   │   ├── products.ts / auth.ts / documents.ts / projects.ts / revenue.ts
+│   │   ├── tasks.ts / reports.ts / contractLinks.ts / users.ts / meetings.ts
+│   │   ├── roles.ts / departments.ts / events.ts / upload.ts / activity.ts
+│   │   ├── notes.ts / notifications.ts / clients.ts / warehouses.ts
+│   ├── schedulers/               # 6 cron jobs
 │   │   ├── fridayReminder.ts        # Nhắc báo cáo thứ 6
 │   │   ├── dailyTaskReminder.ts     # Nhắc task hàng ngày
 │   │   ├── noteReminder.ts          # Nhắc ghi chú
 │   │   ├── mailScheduler.ts         # Gửi email lên lịch
-│   │   └── revenueAutoSubmit.ts     # Tự tạo báo cáo doanh thu
+│   │   ├── revenueAutoSubmit.ts     # Tự tạo báo cáo doanh thu
+│   │   └── reservationExpiry.ts     # Hết hạn giữ hàng (Warehouse)
+│   ├── migrations/               # SQL migration 004–006 (performance indexes, legacy columns, department system)
 │   ├── utils/
 │   │   ├── cryptoUtils.ts           # Mã hoá mail password
-│   │   └── notify.ts                # Push notification helper
-│   └── tests/                    # Vitest test suite
+│   │   ├── notify.ts                # Push notification helper
+│   │   ├── dbMigrations.ts          # runVersionedMigration + withMigrationLock
+│   │   ├── dbTransactionGate.ts     # Transaction MySQL tuần tự hoá (AsyncLocalStorage)
+│   │   ├── dbBootstrap.ts           # Khởi tạo database một lần
+│   │   └── mail helpers             # TLS / IMAP connection helpers
+│   └── tests/                    # 29 suite Vitest (auth, RBAC/scope/ownership, stock, mail, AI, upload, ...)
 │
 ├── scripts/                      # Utility scripts (patch/fix)
 ├── mail-server-config/           # Poste.io mail server data
@@ -178,7 +176,7 @@ Browser
   │
   └─ Production: Nginx → Express (:3500)
                             ├── serves /api/* routes
-                            ├── serves /uploads/* static files
+                            ├── uploads truy cập qua /api/upload (auth + ownership checks, KHÔNG static public)
                             ├── serves frontend/dist/* (SPA)
                             └── Socket.io WebSocket
 ```
@@ -189,7 +187,7 @@ Browser
 backend/server.ts ──▶ initDbMysql() ──▶ MySQL 8 (via DATABASE_URL)
                           │
   ┌───────────────────────┴───────────────────────┐
-  │ db_mysql.ts (540 dòng)                        │
+  │ db_mysql.ts (~1.850 dòng)                     │
   │                                               │
   │ 1. normalizeSql()                             │
   │    - START TRANSACTION                        │
@@ -209,9 +207,10 @@ backend/server.ts ──▶ initDbMysql() ──▶ MySQL 8 (via DATABASE_URL)
   │    - exec(sql) (Multi-statement DDL)          │
   │    - Auto-reconnect on connection lost        │
   │                                               │
-  │ 4. DDL & Schema Setup (27 bảng)               │
+  │ 4. DDL & Schema Setup (50 bảng)               │
+  │    + versioned migrations v1–v25              │
   │                                               │
-  │ 5. seedIfEmpty() (Chạy khi DB mới)            │
+  │ 5. seedInitialData() (Chạy khi DB mới)        │
   └───────────────────────────────────────────────┘
 ```
 
@@ -219,11 +218,13 @@ backend/server.ts ──▶ initDbMysql() ──▶ MySQL 8 (via DATABASE_URL)
 
 ## 4. Database Schema Chi Tiết (MySQL 8)
 
-### 4.1 Danh sách bảng (27 bảng)
+### 4.1 Danh sách bảng (51 bảng cố định)
+
+> 50 bảng từ DDL trong `db_mysql.ts` + bảng `_migrations` (theo dõi versioned migrations). Ngoài ra `positions`/`user_positions` được tạo bởi migration 006 rồi bị **drop nếu rỗng** bởi versioned migration v14 — không phải bảng cố định.
 
 | Bảng | Cột chính | Mô tả |
 |---|---|---|
-| `users` | id (VARCHAR), name (TEXT), email (VARCHAR), password (TEXT), role, department, avatar, phone, dob, hometown, bio, cccd, gender, mailPassword, failedLogins, lockedUntil, isLocked (TINYINT), preferences (TEXT) | Nhân sự |
+| `users` | id (VARCHAR), name (TEXT), email (VARCHAR), password (TEXT), role, department, managementLevel (INT), primaryDepartmentId, position, avatar, phone, dob, hometown, bio, cccd, gender, mailPassword, failedLogins, lockedUntil, isLocked (TINYINT), preferences (TEXT) | Nhân sự |
 | `tasks` | id (VARCHAR), title, description, startDate, dueDate, estimatedEndAt, priority, status, createdBy, department, recurrence, contractId, projectId | Công việc |
 | `task_assignees` | taskId, userId (PK composite) | Phân công |
 | `task_tags` | taskId, tag (PK composite) | Nhãn |
@@ -242,8 +243,8 @@ backend/server.ts ──▶ initDbMysql() ──▶ MySQL 8 (via DATABASE_URL)
 | `signals` | id, meetingId, from, to, type, data, timestamp (BIGINT) | WebRTC |
 | `notes` | id, title, content, color, createdAt, reminderAt, userId | Ghi chú |
 | `notifications` | id, userId, type, title, message, relatedId, isRead (TINYINT), createdAt | Thông báo |
-| `roles` | id, name (VARCHAR UNIQUE), description, color, permissions (TEXT JSON), isSystem (TINYINT) | Vai trò |
-| `departments` | id, name (VARCHAR UNIQUE), description, color, managerId | Phòng ban |
+| `roles` | id, name (VARCHAR UNIQUE), description, color, permissions (TEXT JSON), managementLevel (INT), isSystem (TINYINT) | Vai trò |
+| `departments` | id, name (VARCHAR UNIQUE), description, color, managerId, code (VARCHAR UNIQUE), parentId, level (1=BGD, 2=Phòng ban, 3=Phòng ban con), isActive (TINYINT) | Phòng ban (hệ thống phân cấp) |
 | `clients` | id, name (VARCHAR UNIQUE), region, createdAt | Khách hàng |
 | `events` | id, title, date, endDate, type, color, description, isRecurringYearly (TINYINT) | Sự kiện lịch |
 | `activity_logs` | id, userId, action, entityId, entityType, metadata, createdAt | Nhật ký |
@@ -257,41 +258,66 @@ backend/server.ts ──▶ initDbMysql() ──▶ MySQL 8 (via DATABASE_URL)
 | `documents` | id, name, url, size, type, category, linkedId, createdBy, isDeleted (TINYINT) | Tài liệu |
 | `_migrations` | version (INT PK), name, appliedAt | Migration tracking |
 
+#### 4.1.1 Phân quyền & Kho vận (thêm từ RBAC Phase 1 và module Warehouse)
+
+| Bảng | Cột chính | Mô tả |
+|---|---|---|
+| `management_scopes` | id, userId, departmentId, scopeType (FULL...), createdAt | Phạm vi quản lý phòng ban của user |
+| `user_warehouse_scopes` | id, userId, warehouseId, scopeType, createdAt | Phạm vi quản lý kho của user |
+| `warehouses` | id, code (UNIQUE), name, region, address, isActive (TINYINT) | Kho |
+| `stock_locations` | id, warehouseId, parentId, code, name, type, purpose | Vị trí / khu vực trong kho |
+| `stock_documents` | id, docNo, type (IN/OUT/TRANSFER/COUNT...), warehouseId, docDate, status, createdBy, ... | Chứng từ nhập/xuất/điều chuyển/kiểm kê |
+| `stock_document_lines` | id, documentId, productId, quantity, price, ... | Dòng chứng từ |
+| `stock_moves` | id, productId, documentLineId, fromLocationId, toLocationId, quantityChange, ... | **Ledger bất biến** — nguồn sự thật của tồn kho |
+| `stock_balances` | productId, warehouseId, locationId, quantity, ... | Projection tồn kho (đọc nhanh) |
+| `product_warehouse_policies` | productId, warehouseId, minQuantity, maxQuantity | Chính sách min/max theo kho |
+| `reservations` | id, productId, warehouseId, quantity, requestedBy, status, expiresAt | Giữ hàng |
+| `stock_serials` | id, productId, serialNumber, status, locationId, ... | Serial/Imei |
+| `product_bundles` + `product_bundle_items` | id, code, name, includes (productId, quantity) | Combo/Bộ sản phẩm |
+| `stock_counts` + `stock_count_lines` | id, warehouseId, countedBy, status + productId, countedQty, ... | Kiểm kê kho |
+| `misa_mappings` + `misa_sync_logs` | id, code, mapping, ... | Đối soát/sync MISA |
+| `uploaded_files` | id, filename, mime, size, sha256, ownerId, linkedId, ... | Metadata file upload |
+
 ### 4.2 Seed Data Mặc Định
 
-- **4 Users:** Admin (`admin@tranlecorp.com.vn`), Nguyễn Văn Đạt (Manager, `vandat@tranlecorp.com.vn`), Phan Xuân Mạnh (Employee, `xuanmanh@tranlecorp.com.vn`), Nguyễn Văn Duy (Director, `vanduy@tranlecorp.com.vn`)
-- **4 Roles:** Admin (16 perms), Director (7), Manager (9), Employee (4)
-- **7 Departments:** Board, Product, Marketing, Sales, IT, HR, Finance
-- **34 Clients:** VNPT các tỉnh/thành
-- **6 Events:** Các ngày lễ Việt Nam
-- **1 Task mẫu:** "Design System Review"
-- **1 Note mẫu:** "Brainstorming Ideas"
-- **Mật khẩu mặc định:** `TranLe@dmin2026!` (env `ADMIN_DEFAULT_PASSWORD`)
+- **4 Users (chỉ seed ở non-production):** Admin (`admin@tranlecorp.com.vn`, level 99), Nguyễn Văn Đạt (Manager, `vandat@tranlecorp.com.vn`, level 20), Phan Xuân Mạnh (Employee, `xuanmanh@tranlecorp.com.vn`, level 10), Nguyễn Văn Duy (Director, `vanduy@tranlecorp.com.vn`, level 40). **Production chỉ tạo Admin** (`INITIAL_USERS.slice(0, 1)`).
+- **5 Roles (+ managementLevel):** Admin (16 perms, 99), Director (7, 40), Deputy Director (6, 30), Manager (9, 20), Employee (4, 10).
+- **Departments:** 14 phòng ban legacy trong DDL seed (Ban Lãnh Đạo, Khối EPC & Thi Công, O&M/SAJ Center, Kinh doanh, Thiết kế, Kế toán, HCNS, + aliases Product/Board/Marketing/Sales/IT/HR/Finance) và **9 phòng ban chuẩn có `code`/`parentId`/`level`** từ migration 006: **BGD** (Ban Giám Đốc, level 1), **KT** (Kế Toán), **HCNS** (Hành Chính - Nhân Sự), **KD** (Kinh Doanh), **DA** (Dự Án), **KTBH** (Kỹ Thuật - Bảo Hành), **MKT** (Marketing), **KHO** (Kho Vận), **MH** (Mua Hàng).
+- **15 Products:** catalog tấm pin (AIKO, Jinko, Canadian Solar, JA Solar, LONGi), biến tần (SAJ, Huawei), pin lưu trữ (SAJ, Dyness), phụ kiện (cáp DC, MC4, thanh ray).
+- **Projects mẫu:** Cocotex 4,5 MWp, Nam Lý 3 MWp, ... (kèm milestones).
+- **34 Clients:** VNPT các tỉnh/thành.
+- **6 Events:** Các ngày lễ Việt Nam.
+- **1 Task mẫu:** "Design System Review" · **1 Note mẫu:** "Brainstorming Ideas"
+- **Mật khẩu mặc định:** `TranLe@dmin2026!` (env `ADMIN_DEFAULT_PASSWORD`; production bắt buộc đặt qua env, ≥ 16 ký tự).
 
 ---
 
 ## 5. Hệ Thống Phân Quyền RBAC
 
-### 5.1 Ma trận quyền (16 permissions)
+### 5.1 Ma trận quyền (16 permissions, 5 role)
 
-| Permission | Admin | Director | Manager | Employee | Mô tả |
-|---|:---:|:---:|:---:|:---:|---|
-| `admin_panel` | ✅ | | | | Truy cập trang Admin |
-| `manage_users` | ✅ | | | | CRUD users |
-| `view_all_tasks` | ✅ | ✅ | | | Xem mọi task toàn công ty |
-| `manage_dept_tasks` | ✅ | | ✅ | | Quản lý task phòng ban |
-| `view_own_tasks` | ✅ | | | ✅ | Xem task của mình |
-| `view_all_reports` | ✅ | ✅ | | | Xem mọi báo cáo |
-| `approve_dept_reports` | ✅ | | ✅ | | Duyệt BC phòng ban |
-| `director_feedback` | ✅ | ✅ | | | Phản hồi cấp Giám đốc |
-| `create_report` | ✅ | | ✅ | ✅ | Tạo báo cáo tuần |
-| `manage_meetings` | ✅ | ✅ | ✅ | | Tạo/quản lý cuộc họp |
-| `join_meetings` | ✅ | ✅ | ✅ | ✅ | Tham gia cuộc họp |
-| `create_revenue_report` | ✅ | | ✅ | ✅ | Tạo BC doanh thu |
-| `approve_dept_revenue` | ✅ | | ✅ | | Duyệt doanh thu phòng ban |
-| `approve_all_revenue` | ✅ | ✅ | | | Duyệt mọi doanh thu |
-| `manage_warehouse` | ✅ | ✅ | ✅ | | Quản lý kho hàng |
-| `view_dept_users` | ✅ | | ✅ | | Xem thành viên phòng ban |
+| Permission | Admin | Director | Phó GĐ | Manager | Employee | Mô tả |
+|---|:---:|:---:|:---:|:---:|:---:|---|
+| `admin_panel` | ✅ | | | | | Truy cập trang Admin |
+| `manage_users` | ✅ | | | | | CRUD users |
+| `view_all_tasks` | ✅ | ✅ | | | | Xem mọi task toàn công ty |
+| `manage_dept_tasks` | ✅ | | ✅ | ✅ | | Quản lý task phòng ban |
+| `view_own_tasks` | ✅ | | | | ✅ | Xem task của mình |
+| `view_all_reports` | ✅ | ✅ | ✅ | | | Xem mọi báo cáo |
+| `approve_dept_reports` | ✅ | | | ✅ | | Duyệt BC phòng ban |
+| `director_feedback` | ✅ | ✅ | ✅ | | | Phản hồi cấp Giám đốc |
+| `create_report` | ✅ | | | ✅ | ✅ | Tạo báo cáo tuần |
+| `manage_meetings` | ✅ | ✅ | | ✅ | | Tạo/quản lý cuộc họp |
+| `join_meetings` | ✅ | ✅ | ✅ | ✅ | ✅ | Tham gia cuộc họp |
+| `create_revenue_report` | ✅ | | | ✅ | ✅ | Tạo BC doanh thu |
+| `approve_dept_revenue` | ✅ | | ✅ | ✅ | | Duyệt doanh thu phòng ban |
+| `approve_all_revenue` | ✅ | ✅ | | | | Duyệt mọi doanh thu |
+| `manage_warehouse` | ✅ | ✅ | | ✅ | | Quản lý kho hàng |
+| `view_dept_users` | ✅ | | | ✅ | | Xem thành viên phòng ban |
+
+> **Management Level:** Admin = 99, Director = 40, Deputy Director = 30, Manager = 20, Employee = 10. Level quyết định phạm vi dữ liệu (`rbacService.ts`) và cấp duyệt báo cáo/doanh thu.
+> **Phạm vi dữ liệu (scope):** ngoài permission, `services/rbacService.ts` + `middleware/rbac.ts` giới hạn dữ liệu theo **phòng ban** (`users.department` / `management_scopes`) và **kho** (`user_warehouse_scopes`). Frontend mirror ở `utils/rbac.ts` + `hooks/useRBAC.ts`; menu theo từng phòng ban ở `components/layout/menus/departmentMenus.ts` (giới hạn bằng `minLevel`).
+> **Lệch thiết kế (D4):** quyết định kiến trúc yêu cầu Admin KHÔNG truy cập dữ liệu kinh doanh, nhưng code thực tế vẫn cấp Admin `admin_panel` + `view_all_tasks` (backend `applyTaskScopeFilter` và App.tsx cho Admin xem tất cả, Admin xoá được task) — cần chốt hướng xử lý trước production.
 
 ---
 
@@ -329,6 +355,14 @@ GET                  /api/activity
 GET/POST/PUT/DELETE  /api/events
 POST                 /api/upload
 POST                 /api/ai/chat, /api/ai/suggest-tasks, ...
+
+# Kho vận (Warehouse/Stock)
+GET/POST/PUT/DELETE  /api/warehouses
+GET/POST/PUT/DELETE  /api/stock/*          # documents (IN/OUT/TRANSFER/COUNT), moves, balances, locations,
+                                           # serials, bundles, counts, reservations, policies, slow-stock,
+                                           # in-transit, alerts, approvals, misa...
+GET/POST             /api/stock-reports    # Báo cáo kho (mount bên trong /api/stock)
+GET/POST/PUT/DELETE  /api/mail/*           # Webmail IMAP/SMTP: mailboxes, messages, send/draft, tracking, cooldown
 ```
 
 ### 6.3 Admin Only (cần role Admin)
@@ -499,3 +533,30 @@ Các mục dưới đây đã được triển khai trong commit `8515ee3` trên
 **Xác minh tại thời điểm cập nhật:** `npm run test --workspace=backend` — 15 suites / 102 tests PASS; `npm run build --workspace=frontend` PASS; `npm audit --workspaces` — 0 vulnerabilities; `git diff --check` PASS. Build có cảnh báo kích thước một số JS chunks, không ảnh hưởng kết quả build.
 
 Đây là kết quả kiểm tra trên code tại commit nêu trên, không thay thế việc rà soát lại khi thêm endpoint, dependency hoặc thay đổi cấu hình/deployment.
+
+---
+
+## 12. Changelog Hệ thống Phòng ban & RBAC Phase 1 (12/10/2026)
+
+| Hạng mục | Nội dung |
+|---|---|
+| Phân cấp phòng ban | Migration `006_department_system.sql` thêm `code`, `parentId`, `level` (1=BGD, 2=Phòng ban), `isActive` vào `departments`; seed **9 phòng ban chuẩn** có code: BGD, KT, HCNS, KD, DA, KTBH, MKT, KHO, MH (giữ 14 phòng ban legacy của DDL seed). |
+| Chuẩn hoá level | `users.managementLevel` + `roles.managementLevel` (Admin 99 / Director 40 / Deputy Director 30 / Manager 20 / Employee 10) — versioned migrations v9–v12, đồng bộ backend lẫn frontend. |
+| Role mới | Thêm role **Deputy Director** (6 perms, level 30) → tổng **5 role hệ thống**. |
+| Scope dữ liệu | `management_scopes` (phòng ban) + `services/rbacService.ts` (tính scope + ma trận duyệt theo level) + `middleware/rbac.ts` (`applyTaskScopeFilter`, ownership, approval) — giới hạn task/report/revenue/contract theo department. |
+| Menu theo phòng ban | `components/layout/menus/departmentMenus.ts` + `resolveDepartment.ts` (9 phòng ban có menu riêng, giới hạn bằng `minLevel`); chỉ **Warehouse** có trang thật, 8 phòng ban khác dùng placeholder `DepartmentStubPage`. |
+
+## 13. Changelog Module Kho vận (Warehouse/Stock) (12/10/2026)
+
+| Hạng mục | Nội dung |
+|---|---|
+| Schema | Versioned migrations v13–v25: `warehouses`, `user_warehouse_scopes`, `stock_locations`, `stock_documents`(+lines), `stock_moves`, `stock_balances`, `product_warehouse_policies`, `reservations`, `stock_serials`, `product_bundles`(+items), `stock_counts`(+lines), `misa_mappings`/`misa_sync_logs`. |
+| Ledger bất biến | `stock_moves` là nguồn sự thật của tồn kho (D10); `stock_balances` chỉ là projection đọc nhanh. v4/v24/v25 hội tụ: chỉ số hiệu suất, lượng giữ hàng, ledger cũ bị đánh lại số. |
+| Backend | `routes/stock.ts` (**1.300+ dòng**: chứng từ IN/OUT/TRANSFER/COUNT, tồn kho, min/max, serial/lô, combo, kiểm kê, giữ hàng, MISA, cảnh báo, duyệt...) + `routes/stockReports.ts` (mount bên trong `stock.ts`) + `routes/warehouses.ts`. |
+| Frontend | **19 trang** `pages/Warehouse/` (Overview, Inventory, StockDocs, Moves, Locations, MinMax, Serial, Reservations, Count, Reports, SlowStock, Bundle, Alerts, Approvals, Exceptions, InTransit, Misa, Catalog, MyWork) + `services/stockService.ts`, `reservationService.ts`, `locationService.ts`. |
+| Scheduler | Thêm `reservationExpiry.ts` (tự hết hiệu lực giữ hàng hết hạn) → tổng 6 cron job. |
+| Tests | Thêm `stock.test.ts`, `stockReports.test.ts`, `warehouseRegression.test.ts`, `tasksScope.test.ts`... |
+
+---
+
+> **Xác minh gần nhất (12/10/2026):** `npm run test --workspace=backend` — **29 suites / 312 tests PASS** (~70s, mock DB; riêng `stockReports.test.ts` dùng `node:sqlite`). Số liệu 15 suites / 102 tests ở mục 11 là tại commit `8515ee3` (06/10/2026), trước các phase warehouse/RBAC.
