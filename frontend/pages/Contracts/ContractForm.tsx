@@ -4,7 +4,7 @@ import { Contract, ContractProduct, confirmContractReceipt, approveContract, rej
 import { canApproveContractValue } from '../../utils/rbac';
 import { WarehousePickerModal } from './WarehousePickerModal';
 import { Task, User } from '../../types';
-import { CHECKLIST_ITEMS, numToVnText, statusToStepIndex, isChecklistComplete as checkChecklistComplete, filterAccountantUsers, mapInputContractProducts, mapWarehouseProducts, summarizeVatByRate } from './contractUtils';
+import { CHECKLIST_ITEMS, numToVnText } from './contractUtils';
 import { InputContractPickerModal } from './InputContractPickerModal';
 import { InlineDocumentManager } from '../../components/InlineDocumentManager';
 import { useData } from '../../contexts/DataContext';
@@ -154,7 +154,9 @@ export const ContractForm: React.FC<ContractFormProps> = ({
     return canApproveContractValue(currentUser, { department: form.department, preTaxValue: form.preTaxValue, postTaxValue: form.postTaxValue });
   }, [currentUser, form.department, form.preTaxValue, form.postTaxValue]);
 
-  const isChecklistComplete = React.useMemo(() => checkChecklistComplete(form.documentChecklist), [form.documentChecklist]);
+  const isChecklistComplete = React.useMemo(() => {
+    return CHECKLIST_ITEMS.every(item => form.documentChecklist?.[item.key]);
+  }, [form.documentChecklist]);
 
   const steps = React.useMemo(() => [
     { key: 'draft', label: 'Bản nháp', desc: 'Đang soạn thảo' },
@@ -163,7 +165,14 @@ export const ContractForm: React.FC<ContractFormProps> = ({
     { key: 'completed', label: 'Hoàn thành', desc: 'Đã nghiệm thu' },
   ], []);
 
-  const currentStepIdx = React.useMemo(() => statusToStepIndex(form.status || 'draft'), [form.status]);
+  const currentStepIdx = React.useMemo(() => {
+    const status = form.status || 'draft';
+    if (status === 'draft') return 0;
+    if (status === 'pending') return 1;
+    if (status === 'in_progress') return 2;
+    if (status === 'completed') return 3;
+    return -1;
+  }, [form.status]);
 
   const isHandoverDisabled = isFormLocked || !isChecklistComplete;
 
@@ -242,7 +251,15 @@ export const ContractForm: React.FC<ContractFormProps> = ({
     }
   };
 
-  const accountantUsers = React.useMemo(() => filterAccountantUsers(users), [users]);
+  const accountantUsers = React.useMemo(() => {
+    if (!users) return [];
+    const filtered = users.filter(u => {
+      const dept = (u.department || '').toLowerCase();
+      const role = (u.role || '').toLowerCase();
+      return dept.includes('finance') || dept.includes('kế toán') || dept.includes('ke toan') || role.includes('accountant') || role.includes('kế toán');
+    });
+    return filtered.length > 0 ? filtered : users;
+  }, [users]);
 
   const handleConfirmReceipt = async () => {
     if (!form.id) return;
@@ -271,7 +288,36 @@ export const ContractForm: React.FC<ContractFormProps> = ({
     const srcContract = contracts.find(c => c.id === contractId);
     const contractNumberTrimmed = srcContract?.contractNumber?.trim() || '';
 
-    const { items: newProducts, triggeredFallback } = mapInputContractProducts(products, contractNumberTrimmed, catalogProducts);
+    let triggeredFallback = false;
+    const newProducts = products.map((p, idx) => {
+      const expectedImportCode = `${contractNumberTrimmed}-${idx + 1}`;
+      let dbProd = catalogProducts.find(cp => cp.importCode === expectedImportCode);
+      if (!dbProd) {
+        dbProd = catalogProducts.find(cp => cp.name.trim().toLowerCase() === p.name.trim().toLowerCase());
+      }
+      const hasSalePrice = dbProd && dbProd.salePrice && Number(dbProd.salePrice) > 0;
+
+      const suggestedPrice = hasSalePrice ? Number(dbProd.salePrice) : Number(p.unitPrice);
+      const isFallback = !hasSalePrice;
+
+      if (isFallback) {
+        triggeredFallback = true;
+      }
+
+      return {
+        name: p.name,
+        unit: p.unit || '',
+        origin: p.origin || '',
+        quantity: p.quantity || 1,
+        unitPrice: suggestedPrice,
+        total: (p.quantity || 1) * suggestedPrice,
+        exportedQuantity: p.quantity || 1,
+        isBuyingPriceFallback: isFallback,
+        sourceProductId: dbProd?.id || '',
+        sourceProductName: dbProd?.name || '',
+        importCode: dbProd?.importCode || expectedImportCode
+      };
+    });
 
     if (triggeredFallback && showToast) {
       showToast('error', '⚠️ Phát hiện sản phẩm chưa có giá bán gợi ý! Đã đề xuất tạm thời bằng giá mua. Bạn cần thay đổi giá bán!');
@@ -293,7 +339,27 @@ export const ContractForm: React.FC<ContractFormProps> = ({
   };
 
   const handleSelectFromWarehouse = (selectedItems: { product: any; quantity: number }[]) => {
-    const newProducts = mapWarehouseProducts(selectedItems, contracts);
+    const newProducts = selectedItems.map(item => {
+      // Find output contracts that have this product (excluding cancelled)
+      const match = contracts
+        .filter(c => (c.contractType || 'output') === 'output' && c.status !== 'cancelled')
+        .flatMap(c => c.products || [])
+        .find(cp => cp.name.trim().toLowerCase() === item.product.name.trim().toLowerCase());
+      const salePrice = match ? match.unitPrice : (item.product.salePrice || item.product.defaultPrice || 0);
+
+      return {
+        name: item.product.name,
+        unit: item.product.unit || '',
+        origin: item.product.origin || '',
+        quantity: item.quantity,
+        unitPrice: salePrice,
+        total: item.quantity * salePrice,
+        exportedQuantity: item.quantity,
+        sourceProductId: item.product.id,
+        sourceProductName: item.product.name,
+        importCode: item.product.importCode
+      };
+    });
 
     setForm((f: any) => ({
       ...f,
@@ -1041,7 +1107,13 @@ export const ContractForm: React.FC<ContractFormProps> = ({
                   {!isFormLocked && <td></td>}
                 </tr>
                 {(() => {
-                  const { rates, amounts: vatSummary } = summarizeVatByRate(form.products);
+                  const vatSummary = form.products.reduce((acc: any, p: ContractProduct) => {
+                    const rate = p.vatRate ?? 8;
+                    acc[rate] = (acc[rate] || 0) + (p.total * rate) / 100;
+                    return acc;
+                  }, {});
+                  const rates = Object.keys(vatSummary).map(Number).sort((a, b) => a - b);
+                  if (rates.length === 0) rates.push(8);
                   
                   return rates.map(rate => (
                     <tr key={rate}>

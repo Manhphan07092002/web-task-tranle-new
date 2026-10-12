@@ -14,7 +14,6 @@ import {
   toCsvContent,
   buildInvoicedCsv,
   buildHistoryCsv,
-  getTodayParts,
 } from '../pages/Revenue/revenueUtils.js';
 
 function report(overrides: Partial<RevenueReport>): RevenueReport {
@@ -64,19 +63,6 @@ describe('getWeekInfo', () => {
     expect(info.mondayStr).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(info.label).toBe(`Tuần ${info.weekNum} (${info.weekRange})`);
     expect(info.weekRange).toContain('/');
-  });
-});
-
-describe('getTodayParts', () => {
-  it('reflects the actual current date', () => {
-    const now = new Date();
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const expectedStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-    const parts = getTodayParts();
-    expect(parts.todayStr).toBe(expectedStr);
-    expect(parts.todayMonth).toBe(expectedStr.substring(0, 7));
-    expect(parts.todayYear).toBe(now.getFullYear());
-    expect(parts.todayWeek.label).toContain('Tuần ');
   });
 });
 

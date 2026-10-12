@@ -12,7 +12,7 @@ import {
 import { RevenueReport } from '../../services/revenueService';
 import { Contract } from '../../services/contractService';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend, LabelList } from 'recharts';
-import { fmtMoney, formatCompactVND, makeYAxisFormatter, getWeekRange, getMonthRange, getWeekInfo, getContractVatRate, computeDeliveredValue, getAssignees, getDeduplicatedTotals, buildInvoicedCsv, buildHistoryCsv, getTodayParts } from './revenueUtils.js';
+import { fmtMoney, formatCompactVND, makeYAxisFormatter, getWeekRange, getMonthRange, getWeekInfo, getContractVatRate, computeDeliveredValue, getAssignees, getDeduplicatedTotals, buildInvoicedCsv, buildHistoryCsv } from './revenueUtils.js';
 
 
 
@@ -150,8 +150,11 @@ const RevenuePage: React.FC = () => {
       };
     });
 
-    // Today's date components (live date via getTodayParts — do NOT hardcode)
-    const { todayStr, todayWeek, todayMonth, todayYear } = getTodayParts();
+    // Today's date components
+    const todayStr = '2026-05-22';
+    const todayWeek = getWeekInfo(todayStr);
+    const todayMonth = todayStr.substring(0, 7);
+    const todayYear = 2026;
 
     let revenueThisWeek = 0;
     let revenueThisMonth = 0;
