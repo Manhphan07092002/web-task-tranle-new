@@ -1070,6 +1070,241 @@ export async function initDbMysql(): Promise<MysqlDb> {
         `);
       });
 
+      await runVersionedMigration(db, 24, 'reconcile_reservations_quantity', async () => {
+        // Hòa giải drift schema bảng reservations: DB cũ (đời qty/qtyConsumed/status ACTIVE,
+        // tạo bởi migration đời cũ đã bị đánh lại số) thiếu cột `quantity`/`requestedBy` mà code
+        // hiện tại (routes/stock.ts, schedulers/reservationExpiry.ts) yêu cầu.
+        // CREATE TABLE IF NOT EXISTS ở v17 không sửa bảng đã tồn tại -> ER_BAD_FIELD_ERROR 1054.
+        // Dùng version 24 vì DB cũ đã ghi version 23 với tên migration khác.
+        await ensureColumn('reservations', 'quantity', '`quantity` DOUBLE NOT NULL DEFAULT 0');
+        await ensureColumn('reservations', 'requestedBy', '`requestedBy` VARCHAR(191) NULL');
+        await ensureColumn('reservations', 'sourceType', "`sourceType` VARCHAR(32) NOT NULL DEFAULT 'INTERNAL'");
+        await ensureColumn('reservations', 'sourceId', '`sourceId` VARCHAR(191) NULL');
+        const columnExists = async (column: string) => {
+          const row = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+            ['reservations', column]
+          );
+          return Number(row?.count) > 0;
+        };
+        // Backfill số lượng đang giữ từ schema cũ (qty - qtyConsumed), chỉ khi cột cũ còn tồn tại.
+        if (await columnExists('qty')) {
+          if (await columnExists('qtyConsumed')) {
+            await db.run(
+              'UPDATE reservations SET quantity = GREATEST(CAST(qty AS DECIMAL(18,3)) - CAST(COALESCE(qtyConsumed, 0) AS DECIMAL(18,3)), 0) WHERE quantity = 0'
+            );
+          } else {
+            await db.run('UPDATE reservations SET quantity = GREATEST(CAST(qty AS DECIMAL(18,3)), 0) WHERE quantity = 0');
+          }
+        }
+        // Backfill người giữ từ createdBy đời cũ.
+        if (await columnExists('createdBy')) {
+          await db.run(
+            "UPDATE reservations SET requestedBy = createdBy WHERE (requestedBy IS NULL OR requestedBy = '') AND createdBy IS NOT NULL AND createdBy <> ''"
+          );
+        }
+        // Chuẩn hóa trạng thái đời cũ ACTIVE -> HELD (code hiện tại chỉ hiểu HELD/RELEASED/CONSUMED).
+        await db.run("UPDATE reservations SET status = 'HELD' WHERE status = 'ACTIVE'");
+        // Nới lỏng cột NOT NULL đời cũ mà INSERT mới không ghi (productCode/productName/qty):
+        // DB fresh không có các cột này nên chỉ MODIFY khi cột còn tồn tại.
+        if (await columnExists('productCode')) {
+          await db.run('ALTER TABLE reservations MODIFY COLUMN productCode VARCHAR(50) NULL');
+        }
+        if (await columnExists('productName')) {
+          await db.run('ALTER TABLE reservations MODIFY COLUMN productName VARCHAR(255) NULL');
+        }
+        if (await columnExists('qty')) {
+          await db.run('ALTER TABLE reservations MODIFY COLUMN qty DECIMAL(18,3) NOT NULL DEFAULT 0');
+        }
+        await db.run("ALTER TABLE reservations MODIFY COLUMN status VARCHAR(32) NOT NULL DEFAULT 'HELD'");
+        // Gỡ FK đời cũ trỏ sang bảng legacy stock_products/warehouse_locations: code hiện tại
+        // ghi productId từ bảng products và locationId từ stock_locations (hoặc ''/NULL),
+        // giữ FK cũ thì mọi INSERT mới đều lỗi 1452. Giữ nguyên FK warehouseId -> warehouses.
+        // Tra theo bảng tham chiếu để không phụ thuộc tên constraint (ibfk_N) từng môi trường.
+        const staleFks = await db.all(
+          `SELECT DISTINCT constraint_name AS name FROM information_schema.key_column_usage
+           WHERE table_schema = DATABASE() AND table_name = 'reservations'
+             AND referenced_table_name IN ('stock_products', 'warehouse_locations')`
+        );
+        for (const fk of staleFks) {
+          const fkName = String((fk as any).name).replace(/`/g, '');
+          await db.run(`ALTER TABLE reservations DROP FOREIGN KEY \`${fkName}\``);
+        }
+        // Index phục vụ scheduler hết hạn + lọc theo kho (bỏ qua nếu đã tồn tại).
+        const indexExists = async (index: string) => {
+          const row = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+            ['reservations', index]
+          );
+          return Number(row?.count) > 0;
+        };
+        if (!(await indexExists('idx_res_wh_product'))) {
+          await db.run('CREATE INDEX idx_res_wh_product ON reservations (warehouseId, productId)');
+        }
+        if (!(await indexExists('idx_res_status'))) {
+          await db.run('CREATE INDEX idx_res_status ON reservations (status)');
+        }
+        if (!(await indexExists('idx_res_source'))) {
+          await db.run('CREATE INDEX idx_res_source ON reservations (sourceType, sourceId)');
+        }
+      });
+
+      await runVersionedMigration(db, 25, 'reconcile_stock_ledger_schema', async () => {
+        // Hòa giải drift schema họ bảng kho (chứng từ/dòng/moves/kiểm kê): DB cũ đời
+        // type/docId/qty... trong khi code dùng docType/documentId/quantity... (ER_BAD_FIELD_ERROR,
+        // vd GET /api/stock/documents 500 vì thiếu d.docType). Mọi bước đều kiểm tra tồn tại
+        // trước nên an toàn trên DB fresh, DB cũ trống lẫn DB cũ có dữ liệu.
+        const columnExists = async (table: string, column: string) => {
+          const row = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+            [table, column]
+          );
+          return Number(row?.count) > 0;
+        };
+        const tableIndexExists = async (table: string, index: string) => {
+          const row = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+            [table, index]
+          );
+          return Number(row?.count) > 0;
+        };
+        const createTableIndex = async (table: string, index: string, definition: string) => {
+          if (!(await tableIndexExists(table, index))) await db.run(definition);
+        };
+
+        // ── stock_documents (code: docType/source+destWarehouseId/reference*/approvedBy) ──
+        await ensureColumn('stock_documents', 'docType', '`docType` VARCHAR(32) NOT NULL');
+        await ensureColumn('stock_documents', 'sourceWarehouseId', '`sourceWarehouseId` VARCHAR(191) NULL');
+        await ensureColumn('stock_documents', 'destWarehouseId', '`destWarehouseId` VARCHAR(191) NULL');
+        await ensureColumn('stock_documents', 'referenceType', '`referenceType` VARCHAR(64) NULL');
+        await ensureColumn('stock_documents', 'referenceId', '`referenceId` VARCHAR(191) NULL');
+        await ensureColumn('stock_documents', 'approvedBy', '`approvedBy` VARCHAR(191) NULL');
+        if (await columnExists('stock_documents', 'type')) {
+          await db.run("UPDATE stock_documents SET docType = `type` WHERE docType = '' AND `type` IS NOT NULL AND `type` <> ''");
+        }
+        if (await columnExists('stock_documents', 'toWarehouseId')) {
+          await db.run('UPDATE stock_documents SET destWarehouseId = toWarehouseId WHERE destWarehouseId IS NULL AND toWarehouseId IS NOT NULL');
+        }
+        if (await columnExists('stock_documents', 'sourceType')) {
+          await db.run('UPDATE stock_documents SET referenceType = sourceType WHERE referenceType IS NULL AND sourceType IS NOT NULL');
+        }
+        if (await columnExists('stock_documents', 'sourceId')) {
+          await db.run('UPDATE stock_documents SET referenceId = sourceId WHERE referenceId IS NULL AND sourceId IS NOT NULL');
+        }
+        if ((await columnExists('stock_documents', 'sourceWarehouseId')) && (await columnExists('stock_documents', 'warehouseId'))) {
+          await db.run("UPDATE stock_documents SET sourceWarehouseId = warehouseId WHERE docType = 'TRANSFER' AND sourceWarehouseId IS NULL AND warehouseId IS NOT NULL");
+        }
+        await createTableIndex('stock_documents', 'idx_sdoc_type_status', 'CREATE INDEX idx_sdoc_type_status ON stock_documents (docType, status)');
+        await createTableIndex('stock_documents', 'idx_sdoc_warehouse', 'CREATE INDEX idx_sdoc_warehouse ON stock_documents (warehouseId)');
+        await createTableIndex('stock_documents', 'idx_sdoc_reference', 'CREATE INDEX idx_sdoc_reference ON stock_documents (referenceType, referenceId)');
+        await createTableIndex('stock_documents', 'idx_sdoc_created', 'CREATE INDEX idx_sdoc_created ON stock_documents (createdAt)');
+
+        // ── stock_document_lines (code: documentId/quantity/unitPrice/note) ──
+        await ensureColumn('stock_document_lines', 'documentId', '`documentId` VARCHAR(191) NOT NULL');
+        await ensureColumn('stock_document_lines', 'quantity', '`quantity` DOUBLE NOT NULL DEFAULT 0');
+        await ensureColumn('stock_document_lines', 'unitPrice', '`unitPrice` DOUBLE NOT NULL DEFAULT 0');
+        await ensureColumn('stock_document_lines', 'note', '`note` TEXT NULL');
+        if (await columnExists('stock_document_lines', 'docId')) {
+          await db.run('UPDATE stock_document_lines SET documentId = docId WHERE documentId = \'\' AND docId IS NOT NULL');
+        }
+        if (await columnExists('stock_document_lines', 'qtyOrdered')) {
+          await db.run('UPDATE stock_document_lines SET quantity = CAST(qtyOrdered AS DECIMAL(18,3)) WHERE quantity = 0 AND qtyOrdered IS NOT NULL');
+        }
+        if (await columnExists('stock_document_lines', 'notes')) {
+          await db.run('UPDATE stock_document_lines SET note = notes WHERE note IS NULL AND notes IS NOT NULL');
+        }
+        await createTableIndex('stock_document_lines', 'idx_sdline_document', 'CREATE INDEX idx_sdline_document ON stock_document_lines (documentId)');
+        await createTableIndex('stock_document_lines', 'idx_sdline_product', 'CREATE INDEX idx_sdline_product ON stock_document_lines (productId)');
+
+        // ── stock_moves (code + stockReports đều dùng quantity/reference*/documentLineId) ──
+        await ensureColumn('stock_moves', 'quantity', '`quantity` DOUBLE NOT NULL');
+        await ensureColumn('stock_moves', 'referenceType', '`referenceType` VARCHAR(64) NULL');
+        await ensureColumn('stock_moves', 'referenceId', '`referenceId` VARCHAR(191) NULL');
+        await ensureColumn('stock_moves', 'documentLineId', '`documentLineId` VARCHAR(191) NULL');
+        if (await columnExists('stock_moves', 'qty')) {
+          await db.run('UPDATE stock_moves SET quantity = CAST(qty AS DECIMAL(18,3)) WHERE quantity = 0 AND qty IS NOT NULL');
+        }
+        if (await columnExists('stock_moves', 'docId')) {
+          await db.run('UPDATE stock_moves SET referenceId = docId WHERE referenceId IS NULL AND docId IS NOT NULL');
+        }
+        if (await columnExists('stock_moves', 'lineId')) {
+          await db.run('UPDATE stock_moves SET documentLineId = lineId WHERE documentLineId IS NULL AND lineId IS NOT NULL');
+        }
+        await createTableIndex('stock_moves', 'idx_smove_product', 'CREATE INDEX idx_smove_product ON stock_moves (productId)');
+        await createTableIndex('stock_moves', 'idx_smove_warehouse', 'CREATE INDEX idx_smove_warehouse ON stock_moves (warehouseId)');
+        await createTableIndex('stock_moves', 'idx_smove_wh_product', 'CREATE INDEX idx_smove_wh_product ON stock_moves (warehouseId, productId)');
+        await createTableIndex('stock_moves', 'idx_smove_reference', 'CREATE INDEX idx_smove_reference ON stock_moves (referenceType, referenceId)');
+        await createTableIndex('stock_moves', 'idx_smove_created', 'CREATE INDEX idx_smove_created ON stock_moves (createdAt)');
+
+        // ── stock_counts (code UPDATE approvedBy khi duyệt kiểm kê) ──
+        await ensureColumn('stock_counts', 'approvedBy', '`approvedBy` VARCHAR(191) NULL');
+
+        // ── stock_count_lines (code: locationId/expectedQty/actualQty/note + upsert theo unique key) ──
+        await ensureColumn('stock_count_lines', 'locationId', "`locationId` VARCHAR(191) NOT NULL DEFAULT ''");
+        await ensureColumn('stock_count_lines', 'expectedQty', '`expectedQty` DOUBLE NOT NULL DEFAULT 0');
+        await ensureColumn('stock_count_lines', 'actualQty', '`actualQty` DOUBLE NULL');
+        await ensureColumn('stock_count_lines', 'note', '`note` TEXT NULL');
+        if (await columnExists('stock_count_lines', 'systemQty')) {
+          await db.run('UPDATE stock_count_lines SET expectedQty = CAST(systemQty AS DECIMAL(18,3)) WHERE expectedQty = 0 AND systemQty IS NOT NULL');
+        }
+        if (await columnExists('stock_count_lines', 'countedQty')) {
+          await db.run('UPDATE stock_count_lines SET actualQty = CAST(countedQty AS DECIMAL(18,3)) WHERE actualQty IS NULL AND countedQty IS NOT NULL');
+        }
+        if (!(await tableIndexExists('stock_count_lines', 'unique_count_line'))) {
+          try {
+            await db.run('ALTER TABLE stock_count_lines ADD UNIQUE KEY unique_count_line (countId, productId, locationId)');
+          } catch (err: any) {
+            console.warn('[MySQL] Skipping unique_count_line (duplicate legacy rows?):', err?.message || err);
+          }
+        }
+
+        // ── Hội tụ 2 ensureColumn đời cũ bị bỏ qua do đánh lại số migration ──
+        await ensureColumn('products', 'tracking', "`tracking` VARCHAR(16) NOT NULL DEFAULT 'NONE'");
+        await ensureColumn('product_bundles', 'kitProductId', '`kitProductId` VARCHAR(191) NULL');
+
+        // ── Gỡ chặn INSERT mới: cột legacy NOT NULL mà code không ghi + FK sang bảng legacy ──
+        // (Fresh schema không có các cột/FK này; chỉ nới khi cột còn tồn tại.)
+        if (await columnExists('stock_document_lines', 'docId')) {
+          await db.run('ALTER TABLE stock_document_lines MODIFY COLUMN docId VARCHAR(36) NULL');
+        }
+        if (await columnExists('stock_document_lines', 'productCode')) {
+          await db.run('ALTER TABLE stock_document_lines MODIFY COLUMN productCode VARCHAR(50) NULL');
+        }
+        if (await columnExists('stock_document_lines', 'productName')) {
+          await db.run('ALTER TABLE stock_document_lines MODIFY COLUMN productName VARCHAR(255) NULL');
+        }
+        if (await columnExists('stock_moves', 'productCode')) {
+          await db.run('ALTER TABLE stock_moves MODIFY COLUMN productCode VARCHAR(50) NULL');
+        }
+        if (await columnExists('stock_moves', 'qty')) {
+          await db.run('ALTER TABLE stock_moves MODIFY COLUMN qty DECIMAL(18,3) NOT NULL DEFAULT 0');
+        }
+        if (await columnExists('stock_count_lines', 'productCode')) {
+          await db.run('ALTER TABLE stock_count_lines MODIFY COLUMN productCode VARCHAR(50) NULL');
+        }
+        if (await columnExists('stock_count_lines', 'productName')) {
+          await db.run('ALTER TABLE stock_count_lines MODIFY COLUMN productName VARCHAR(255) NULL');
+        }
+        // FK productId/locationId đời cũ trỏ sang stock_products/warehouse_locations trong khi code
+        // ghi products.id / stock_locations.id (hoặc ''/NULL) -> mọi INSERT mới lỗi 1452.
+        // Giữ nguyên FK hợp lệ (warehouses, users, stock_counts, stock_documents).
+        const dropLegacyTableFks = async (table: string) => {
+          const stale = await db.all(
+            `SELECT DISTINCT constraint_name AS name FROM information_schema.key_column_usage
+             WHERE table_schema = DATABASE() AND table_name = ?
+               AND referenced_table_name IN ('stock_products', 'warehouse_locations')`,
+            [table]
+          );
+          for (const fk of stale) {
+            const fkName = String((fk as any).name).replace(/`/g, '');
+            await db.run(`ALTER TABLE \`${table}\` DROP FOREIGN KEY \`${fkName}\``);
+          }
+        };
+        await dropLegacyTableFks('stock_document_lines');
+        await dropLegacyTableFks('stock_moves');
+        await dropLegacyTableFks('stock_count_lines');
+      });
+
 
 
 
