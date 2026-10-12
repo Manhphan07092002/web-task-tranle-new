@@ -78,12 +78,16 @@ export const groupEmailsByDate = (items: { representative: Email, thread: Email[
 export const getSignature = (user: any) => {
   return `<br><br><span style="color: #6b7280; font-family: sans-serif; font-size: 13px;">
 --<br>
-<strong>Thanks & Best Regards!</strong><br>
+<img src="${typeof window !== 'undefined' ? window.location.origin : ''}/logo-square.png" alt="Tran Le Electricity" style="height: 48px; margin: 4px 0;" /><br><strong>Thanks & Best Regards!</strong><br>
 ----------------------------------------------------------------------------------------------------------------------<br>
-<strong>${user?.name || ''}</strong> - ${user?.role || ''} - ${user?.department || ''}<br>
+<strong>${user?.name || ''}</strong> - ${user?.department || ''}<br>
 <strong>Công ty Cổ phần Tư vấn xây dựng Điện Trần Lê (Tran Le Electricity)</strong><br>
-Trụ sở chính: 275-277-279 Diên Hồng, P. Hoà Xuân, Q. Cẩm Lệ, TP. Đà Nẵng<br>
-Trụ sở miền Nam: Số 2 Đường số 27, KDC Vạn Phúc, P. Hiệp Bình, TP.HCM<br>
+Trụ sở chính: 275-277-279 Diên Hồng, Phường Hoà Xuân, Quận Cẩm Lệ, Đà Nẵng, Vietnam<br>
+Trụ sở miền Nam: Số 2 Đường số 27, Khu Dân Cư Vạn Phúc, Phường Hiệp Bình, TP. Hồ Chí Minh<br>
+Hệ thống kho vận toàn quốc:<br>
+- Miền Bắc (Hà Nội): Kho Cầu Nhật Tân, Vân Nội, Đông Anh<br>
+- Miền Trung (Đà Nẵng): Kho 1: 275-279 Diên Hồng, Hoà Xuân, Cẩm Lệ; Kho 2: Võ An Ninh - Phan Triêm, Hoà Xuân, Cẩm Lệ<br>
+- Miền Nam (TP.HCM): Kho 1: 02 Nguyễn Ảnh Thủ, Phường Trung Mỹ Tây, Quận 12; Kho 2: Phú Mỹ, Tân Thành, Bà Rịa - Vũng Tàu<br>
 Hotline: 0939 792 428 &nbsp;&nbsp; - &nbsp;&nbsp; Phone: ${user?.phone || '0939 792 428'}<br>
 Email: ${user?.email || 'info@tranlecorp.com.vn'} &nbsp;&nbsp; Website: <a href="https://tranlecorp.com/" style="color: #2563eb;">https://tranlecorp.com/</a><br>
 ----------------------------------------------------------------------------------------------------------------------
