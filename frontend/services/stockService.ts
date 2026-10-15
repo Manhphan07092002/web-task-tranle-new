@@ -617,6 +617,26 @@ export const registerLot = (body: {
   quantity: number; unit?: string; manufacturedAt?: string; supplier?: string;
 }) => postStock('/api/stock/lots/register', body);
 
+export interface SerialTimeline {
+  serial: {
+    id: string; serialNumber: string; productId: string; productName?: string | null;
+    warehouseId: string; warehouseName?: string | null; status: string; stockStatus: string;
+    supplier?: string | null; customerName?: string | null; projectId?: string | null;
+    receivedAt?: string | null; outDate?: string | null;
+  };
+  receipt: { documentId: string; code: string | null; date?: string | null; supplier?: string | null; warehouseId?: string | null; warehouseName?: string | null } | null;
+  issue: { documentId: string; code: string | null; date?: string | null; customerName?: string | null; projectId?: string | null; warehouseId?: string | null; warehouseName?: string | null } | null;
+  warranty: { startType: string; start: string | null; months: number; end: string | null; daysLeft: number | null };
+  moves: { id: string; quantity: number; moveType: string; referenceType?: string | null; referenceId?: string | null; warehouseName?: string | null; createdAt: string }[];
+}
+
+export async function getSerialTimeline(serialNumber: string): Promise<SerialTimeline> {
+  const res = await apiFetch(`/api/stock/serials/timeline/${encodeURIComponent(serialNumber)}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Không tải được vòng đời serial');
+  return data;
+}
+
 export async function getNextDocCode(docType: 'RECEIPT' | 'ISSUE' | 'TRANSFER' | 'RETURN'): Promise<{ code: string; docType: string }> {
   const res = await apiFetch(`/api/stock/next-code?docType=${docType}`);
   const data = await res.json().catch(() => ({}));

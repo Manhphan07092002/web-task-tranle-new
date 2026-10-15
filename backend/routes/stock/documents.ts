@@ -5,6 +5,7 @@ import { validate } from '../../middleware/validate.js';
 import { normalizeManagementLevel, MANAGEMENT_LEVELS } from '../../middleware/auth.js';
 import { beginStockTransaction } from '../../utils/stockTransaction.js';
 import { resolveTracking } from '../../utils/tracking.js';
+import { getWarrantyStartType, resolveWarrantyStart } from '../../utils/warranty.js';
 import type { StockContext } from './context.js';
 
 export function documentsRoutes(ctx: StockContext) {
@@ -701,6 +702,7 @@ export function documentsRoutes(ctx: StockContext) {
   async function consumeIssueSerials(doc: any, lines: any[], user: any): Promise<void> {
     const withSerials = lines.filter((l) => parseSerials(l.serialLot).length > 0);
     if (withSerials.length === 0) return;
+    const warrantyStartType = await getWarrantyStartType(db);
     for (const line of withSerials) {
       const serials = parseSerials(line.serialLot);
       const qty = Number(line.quantity);
@@ -727,9 +729,17 @@ export function documentsRoutes(ctx: StockContext) {
           throw serialError(`Serial ${sn} đang được giữ cho phiếu khác`, 400);
         }
         const nowOut = new Date().toISOString();
+        const wStart = resolveWarrantyStart({
+          startType: warrantyStartType,
+          outboundDate: nowOut,
+          deliveryDate: doc.deliveryDate,
+          installationDate: doc.installationDate,
+          acceptanceDate: doc.acceptanceDate,
+          fallbackDate: row.warrantyStart,
+        });
         await db.run(
-          `UPDATE stock_serials SET status = 'SOLD', stockStatus = 'OUT', outDate = ?, customerName = ?, issueDocumentId = ?, issueLineId = ?, updatedAt = ? WHERE id = ?`,
-          [nowOut, doc.partnerName ?? null, doc.id, line.id, nowOut, (row as any).id]
+          `UPDATE stock_serials SET status = 'SOLD', stockStatus = 'OUT', outDate = ?, customerName = ?, issueDocumentId = ?, issueLineId = ?, warrantyStart = COALESCE(?, warrantyStart), updatedAt = ? WHERE id = ?`,
+          [nowOut, doc.partnerName ?? null, doc.id, line.id, wStart, nowOut, (row as any).id]
         );
       }
     }

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { ScanLine, PlusCircle, RefreshCw, AlertCircle, X, ChevronDown, Pencil } from 'lucide-react';
+import { ScanLine, PlusCircle, RefreshCw, AlertCircle, X, ChevronDown, Pencil, History } from 'lucide-react';
 import { Card } from '../../components/UI';
 import {
   getStockSerials, registerSerial, updateSerial, getWarehouses,
@@ -12,6 +12,7 @@ import type { DeptKey } from '../../components/layout/menus/menuTypes';
 import { useAuth } from '../../contexts/AuthContext';
 import { levelOf, LEVELS } from '../../utils/rbac';
 import SerialDocMode from './SerialDocMode';
+import { SerialTimelineModal } from './StockDocs/SerialTimelineModal';
 
 const STATUSES: SerialStatus[] = ['SALEABLE', 'WARRANTY', 'DAMAGED', 'DEMO', 'QUARANTINE', 'SOLD'];
 const STATUS_LABEL: Record<string, string> = {
@@ -36,6 +37,7 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
   const [status, setStatus] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState<StockSerial | null>(null);
+  const [timelineSerial, setTimelineSerial] = useState<string | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(q.trim()), 350);
@@ -138,9 +140,16 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
                     </td>
                     <td className="py-2 px-4"><span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600">{STATUS_LABEL[r.status] || r.status}</span></td>
                     <td className="py-2 px-5 text-right">
-                      <button onClick={() => setEditing(r)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg" title="Chi tiết / đổi trạng thái">
-                        <Pencil size={14} />
-                      </button>
+                      <div className="flex justify-end gap-1">
+                        {r.serialNumber && (
+                          <button onClick={() => setTimelineSerial(r.serialNumber!)} className="p-1.5 text-gray-400 hover:text-violet-600 hover:bg-violet-50 rounded-lg" title="Vòng đời serial">
+                            <History size={14} />
+                          </button>
+                        )}
+                        <button onClick={() => setEditing(r)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg" title="Chi tiết / đổi trạng thái">
+                          <Pencil size={14} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -159,6 +168,9 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
         <SerialStatusModal serial={editing} canManage={canManage}
           onClose={() => setEditing(null)}
           onDone={async () => { setEditing(null); await fetchAll(); }} />
+      )}
+      {timelineSerial && (
+        <SerialTimelineModal serialNumber={timelineSerial} onClose={() => setTimelineSerial(null)} />
       )}
 
       <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">

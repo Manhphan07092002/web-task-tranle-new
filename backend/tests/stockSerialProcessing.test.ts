@@ -2,6 +2,7 @@ import express from 'express';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { stockRoutes } from '../routes/stock.js';
+import { DatabaseTransactionGate } from '../utils/dbTransactionGate.js';
 
 const tp = { id: 'tp', role: 'Manager', department: 'Kho', managementLevel: 20, permissions: [] };
 
@@ -273,9 +274,67 @@ describe('PUT processing lock (Phase 2)', () => {
     await request(appFor(tp, db)).put('/documents/doc1')
       .send({ resetProcessing: true, lines: sameLines }).expect(409);
   });
+  it('recomputes warranty start on issue complete', async () => {
+    const db = procDb({
+      docType: 'ISSUE',
+      trackings: { p1: 'SERIAL' },
+      lines: [{ id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 1, locationId: null, serialLot: 'SN1', processingStatus: 'PARTIAL' }],
+      serials: { SN1: { productId: 'p1', warehouseId: 'wh-hn', stockStatus: 'IN_STOCK', receiptDocumentId: 'pnk1' } },
+    });
+    await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(200);
+    const today = new Date().toISOString().slice(0, 10);
+    const updates = db.calls.filter(([s]: [string, any[]]) => String(s).includes('warrantyStart = COALESCE'));
+    expect(updates).toHaveLength(1);
+    expect(updates[0][1]).toContain(today);
+  });
 });
 
-describe('idempotent complete (Phase 2)', () => {
+describe('concurrent scan (Phase 6)', () => {
+  function gateDb() {
+    const gate = new DatabaseTransactionGate();
+    const doc: any = { id: 'doc1', docType: 'RECEIPT', status: 'DRAFT', warehouseId: 'wh-hn', referenceType: null };
+    const line: any = { id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 2, locationId: null, serialLot: '', processingStatus: 'PENDING' };
+    const db: any = {
+      runWithRequestContext: (fn: () => any) => gate.runWithRequestContext(fn),
+      all: (sql: string, params: any[] = []) => gate.run(sql, async () => {
+        if (sql.includes('FROM user_warehouse_scopes')) return [{ warehouseId: 'wh-hn' }];
+        if (sql.includes('FROM stock_document_lines')) return [{ ...line }];
+        if (sql.includes('SELECT id, tracking FROM products')) return [{ id: 'p1', tracking: 'SERIAL' }];
+        if (sql.includes('FROM products')) return [{ id: 'p1' }];
+        if (sql.includes('FROM stock_serials')) return [];
+        if (sql.includes('FROM warehouses')) return [{ id: 'wh-hn' }];
+        return [];
+      }),
+      get: (sql: string, params: any[] = []) => gate.run(sql, async () => {
+        if (sql.includes('FROM stock_documents')) return { ...doc };
+        if (sql.includes('FROM stock_document_lines')) return { ...line };
+        if (sql.includes('FROM stock_serials')) return undefined;
+        return undefined;
+      }),
+      run: (sql: string, params: any[] = []) => gate.run(sql, async () => {
+        if (sql.includes('UPDATE stock_document_lines SET serialLot')) {
+          line.serialLot = params[0];
+          line.processingStatus = params[1];
+        }
+        if (sql.includes('UPDATE stock_documents SET status')) doc.status = 'PROCESSING';
+        return { changes: 1 };
+      }),
+    };
+    const app = express();
+    app.use(express.json());
+    app.use((req: any, _res, next) => { req.user = { id: 'u1', managementLevel: 20 }; db.runWithRequestContext(next); });
+    app.use(stockRoutes(db));
+    return { app, line };
+  }
+
+  it('two simultaneous scans of the same serial yield exactly one success', async () => {
+    const { app, line } = gateDb();
+    const body = { documentId: 'doc1', documentLineId: 'l1', serial: 'SN-DUP' };
+    const responses = await Promise.all([1, 2].map(() => request(app).post('/serials/scan').send(body)));
+    expect(responses.map((r) => r.status).sort()).toEqual([201, 400]);
+    expect(line.processingStatus).toBe('PARTIAL');
+  });
+
   it('completes once: second call sees DONE', async () => {
     const db = procDb({ trackings: { p1: 'SERIAL' } });
     // seed serials via scan first
