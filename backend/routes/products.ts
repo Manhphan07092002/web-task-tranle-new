@@ -17,6 +17,7 @@ const ProductBodySchema = z.object({
   importCode: z.string().max(191).optional(),
   invoiceDate: z.string().max(40).nullable().optional(),
   warrantyMonths: z.coerce.number().int().min(0).max(1200).optional(),
+  tracking: z.enum(['NONE', 'SERIAL', 'LOT', 'QUANTITY']).optional(),
 });
 const ProductCreateSchema = z.union([ProductBodySchema, z.array(ProductBodySchema).min(1).max(100)]);
 
@@ -180,7 +181,7 @@ export const productRoutes = (db: any) => {
       const createdAt = new Date().toISOString();
 
       for (const item of payloads) {
-        const { name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate, warrantyMonths } = item;
+        const { name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate, warrantyMonths, tracking } = item;
         const finalImportPrice = Number(importPrice) || 0;
         const finalSalePrice = Number(salePrice) || Number(defaultPrice) || 0;
         const finalWarranty = Math.min(Math.max(Number(warrantyMonths) || 0, 0), 1200);
@@ -188,8 +189,8 @@ export const productRoutes = (db: any) => {
         const id = 'prod-' + Math.random().toString(36).substr(2, 9);
         
         await db.run(
-          'INSERT INTO products (id, name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate, warrantyMonths, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [id, name, unit, origin, defaultPrice || 0, category || '', importQuantity || 0, remainingQuantity || 0, finalImportPrice, finalSalePrice, importCode || '', invoiceDate || null, finalWarranty, createdAt]
+          'INSERT INTO products (id, name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate, warrantyMonths, tracking, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [id, name, unit, origin, defaultPrice || 0, category || '', importQuantity || 0, remainingQuantity || 0, finalImportPrice, finalSalePrice, importCode || '', invoiceDate || null, finalWarranty, tracking || 'NONE', createdAt]
         );
 
         const prod = await db.get('SELECT * FROM products WHERE id = ?', [id]);
@@ -218,7 +219,7 @@ export const productRoutes = (db: any) => {
   router.put('/:id', requireWarehousePerm, validate(ProductBodySchema), async (req, res) => {
     try {
       const { id } = req.params;
-      const { name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate, warrantyMonths } = req.body;
+      const { name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate, warrantyMonths, tracking } = req.body;
       
       if (!name) return res.status(400).json({ error: 'Tên sản phẩm là bắt buộc' });
 
@@ -249,8 +250,8 @@ export const productRoutes = (db: any) => {
       }
 
       await db.run(
-        'UPDATE products SET name = ?, unit = ?, origin = ?, defaultPrice = ?, category = ?, importQuantity = ?, remainingQuantity = ?, importPrice = ?, salePrice = ?, importCode = ?, invoiceDate = ?, warrantyMonths = ? WHERE id = ?',
-        [name, unit, origin, defaultPrice || 0, category || '', importQuantity || 0, remainingQuantity || 0, finalImportPrice, finalSalePrice, importCode || '', invoiceDate || null, Math.min(Math.max(Number(warrantyMonths ?? oldProduct.warrantyMonths) || 0, 0), 1200), id]
+        'UPDATE products SET name = ?, unit = ?, origin = ?, defaultPrice = ?, category = ?, importQuantity = ?, remainingQuantity = ?, importPrice = ?, salePrice = ?, importCode = ?, invoiceDate = ?, warrantyMonths = ?, tracking = ? WHERE id = ?',
+        [name, unit, origin, defaultPrice || 0, category || '', importQuantity || 0, remainingQuantity || 0, finalImportPrice, finalSalePrice, importCode || '', invoiceDate || null, Math.min(Math.max(Number(warrantyMonths ?? oldProduct.warrantyMonths) || 0, 0), 1200), tracking || oldProduct.tracking || 'NONE', id]
       );
 
       // Sync to active output contracts if salePrice, name, unit, or origin changed

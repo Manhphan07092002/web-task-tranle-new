@@ -14,6 +14,7 @@ export interface Product {
   importCode?: string;
   invoiceDate?: string;
   warrantyMonths?: number;
+  tracking?: string;
   createdAt: string;
 }
 
