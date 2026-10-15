@@ -42,6 +42,10 @@ function procDb(opts: ProcOpts = {}) {
     calls, doc, lines, serials,
     all: vi.fn(async (sql: string, params: any[] = []) => {
       if (sql.includes('FROM user_warehouse_scopes')) return [{ warehouseId: 'wh-hn' }, { warehouseId: 'wh-hcm' }];
+      if (sql.includes('GROUP BY l.documentId')) {
+        if (lines.length === 0) return [];
+        return [{ documentId: 'doc1', total: lines.length, done: lines.filter((l) => l.processingStatus === 'COMPLETED').length }];
+      }
       if (sql.includes('FROM stock_document_lines')) {
         if (sql.includes('processingStatus')) return lines.filter((l) => l.processingStatus !== 'PENDING');
         return lines.map((l) => ({ ...l, tracking: opts.trackings?.[l.productId] }));
@@ -405,5 +409,44 @@ describe('progress + confirm-qty + lots (Phase 3 backend)', () => {
     await request(appFor(tp, db)).post('/lots/register').send({
       documentId: 'doc1', documentLineId: 'l1', lotCode: 'X-01', quantity: 1,
     }).expect(400);
+  });
+});
+
+describe('processing summary + PUT keeps progress (Phase 3+)', () => {
+  it('summarizes completed lines per document', async () => {
+    const db = procDb({
+      lines: [
+        { id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 2, serialLot: 'A\nB', processingStatus: 'COMPLETED' },
+        { id: 'l2', documentId: 'doc1', productId: 'p2', quantity: 3, serialLot: 'X', processingStatus: 'PARTIAL' },
+      ],
+      trackings: { p1: 'SERIAL', p2: 'SERIAL' },
+    });
+    const res = await request(appFor(tp, db)).get('/documents/processing-summary').expect(200);
+    expect(res.body).toEqual({ doc1: { total: 2, done: 1 } });
+  });
+
+  it('PUT recomputes processingStatus from line text', async () => {
+    const db = procDb({ trackings: { p1: 'SERIAL' } });
+    await request(appFor(tp, db)).put('/documents/doc1').send({
+      notes: 'sua',
+      lines: [{ productId: 'p1', quantity: 2, locationId: null, serialLot: 'A\nB' }],
+    }).expect(200);
+    const inserts = db.calls.filter(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_document_lines'));
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0][1]).toContain('COMPLETED');
+  });
+
+  it('PUT relinks lots to replacement lines', async () => {
+    const db = procDb({
+      trackings: { p2: 'LOT' },
+      lines: [{ id: 'old1', documentId: 'doc1', productId: 'p2', quantity: 100, locationId: null, serialLot: '', processingStatus: 'PENDING' }],
+      lots: [{ id: 'lot1', productId: 'p2', locationId: '', initialQty: 100 }],
+    });
+    await request(appFor(tp, db)).put('/documents/doc1').send({
+      lines: [{ productId: 'p2', quantity: 100, locationId: null }],
+    }).expect(200);
+    expect(db.calls.some(
+      ([s]: [string, any[]]) => String(s).includes('UPDATE stock_lots SET receiptLineId')
+    )).toBe(true);
   });
 });

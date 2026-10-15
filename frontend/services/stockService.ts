@@ -674,4 +674,16 @@ export async function deleteStockDocument(id: string): Promise<void> {
   if (!res.ok) throw new Error(data.error || 'Xóa chứng từ thất bại');
 }
 
+export type ProcessingSummary = Record<string, { total: number; done: number }>;
+
+export async function getProcessingSummary(params: { docType?: string; warehouseId?: string } = {}): Promise<ProcessingSummary> {
+  const qs = new URLSearchParams();
+  if (params.docType) qs.set('docType', params.docType);
+  if (params.warehouseId) qs.set('warehouseId', params.warehouseId);
+  const res = await apiFetch(`/api/stock/documents/processing-summary${qs.toString() ? `?${qs}` : ''}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Không tải được tiến độ');
+  return data;
+}
+
 

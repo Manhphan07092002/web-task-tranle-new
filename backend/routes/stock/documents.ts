@@ -51,6 +51,40 @@ export function documentsRoutes(ctx: StockContext) {
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch stock documents' }); }
   });
 
+  // ── Tổng tiến độ xử lý cho danh sách (1 query, không N+1) ────────────────────
+
+  router.get('/documents/processing-summary', async (req, res) => {
+    try {
+      const user = req.user;
+      const scope = await listScope(user);
+      const { docType, warehouseId } = req.query as Record<string, string | undefined>;
+      let query = `SELECT l.documentId AS documentId,
+          COUNT(*) AS total,
+          SUM(CASE WHEN l.processingStatus = 'COMPLETED' THEN 1 ELSE 0 END) AS done
+        FROM stock_document_lines l
+        JOIN stock_documents d ON d.id = l.documentId
+        WHERE d.status IN ('DRAFT', 'PROCESSING')`;
+      const params: any[] = [];
+      if (docType?.trim()) { query += ' AND d.docType = ?'; params.push(docType.trim()); }
+      if (warehouseId) {
+        if (!isDirector(user) && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
+        query += ' AND (d.warehouseId = ? OR d.sourceWarehouseId = ? OR d.destWarehouseId = ?)';
+        params.push(warehouseId, warehouseId, warehouseId);
+      } else if (!isDirector(user)) {
+        if (scope.length === 0) return res.json({});
+        query += ` AND (d.warehouseId IN (${scope.map(() => '?').join(', ')}) OR d.sourceWarehouseId IN (${scope.map(() => '?').join(', ')}) OR d.destWarehouseId IN (${scope.map(() => '?').join(', ')}))`;
+        params.push(...scope, ...scope, ...scope);
+      }
+      query += ' GROUP BY l.documentId';
+      const rows = await db.all(query, params);
+      const out: Record<string, { total: number; done: number }> = {};
+      for (const r of rows || []) {
+        out[r.documentId] = { total: Number(r.total) || 0, done: Number(r.done) || 0 };
+      }
+      res.json(out);
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch processing summary' }); }
+  });
+
   // ── Chứng từ: chi tiết ───────────────────────────────────────────────────────
 
   router.get('/documents/:id', async (req, res) => {
@@ -106,6 +140,7 @@ export function documentsRoutes(ctx: StockContext) {
         return res.status(400).json({ error: 'Only draft documents can be cancelled' });
       }
       await releaseReservedSerials(id);
+      await dropDocLots(id);
       await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['CANCELLED', new Date().toISOString(), id]);
       res.json({ success: true });
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to cancel document' }); }
@@ -128,6 +163,7 @@ export function documentsRoutes(ctx: StockContext) {
       await beginStockTransaction(db);
       try {
         await releaseReservedSerials(id);
+        await dropDocLots(id);
         await db.run('DELETE FROM stock_document_lines WHERE documentId = ?', [id]);
         await db.run('DELETE FROM stock_documents WHERE id = ?', [id]);
         await db.run('COMMIT');
@@ -180,6 +216,8 @@ export function documentsRoutes(ctx: StockContext) {
           let computedPreTax = 0;
           let computedVat = 0;
           await db.run('DELETE FROM stock_document_lines WHERE documentId = ?', [id]);
+          const trackMap = await productTrackings(body.lines.map((l: any) => l.productId));
+          const newLineIds: { id: string; productId: string; locationId: string }[] = [];
           for (const line of body.lines) {
             const q = Number(line.quantity) || 0;
             const p = Number(line.unitPrice) || 0;
@@ -189,18 +227,49 @@ export function documentsRoutes(ctx: StockContext) {
             const lineTotal = line.totalAmount !== undefined ? Number(line.totalAmount) : (linePreTax + lineVat);
             computedPreTax += linePreTax;
             computedVat += lineVat;
+            // Giữ trạng thái xử lý theo text serialLot (bulk edit không làm mất tiến độ).
+            const tracking = trackMap.get(line.productId);
+            const codes = parseSerials(line.serialLot);
+            const st = tracking === 'QUANTITY' ? 'PENDING'
+              : (codes.length === q || (codes.length === 1 && q > 1)) ? 'COMPLETED'
+              : codes.length > 0 ? 'PARTIAL' : 'PENDING';
+            const newId = randomUUID();
+            newLineIds.push({ id: newId, productId: line.productId, locationId: line.locationId || '' });
             await db.run(
               `INSERT INTO stock_document_lines (
                 id, documentId, productId, quantity, unitPrice, locationId, note,
-                accountDebit, accountCredit, vatRate, vatAmount, totalAmount, projectId, costItem, serialLot, costObjectId
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                accountDebit, accountCredit, vatRate, vatAmount, totalAmount, projectId, costItem, serialLot, costObjectId, processingStatus
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
-                randomUUID(), id, line.productId, q, p, line.locationId ?? null, line.note ?? null,
+                newId, id, line.productId, q, p, line.locationId ?? null, line.note ?? null,
                 line.accountDebit || '1561', line.accountCredit || '331',
                 rate, lineVat, lineTotal, line.projectId ?? null, line.costItem ?? null,
-                line.serialLot ?? null, line.costObjectId ?? null
+                line.serialLot ?? null, line.costObjectId ?? null, st
               ]
             );
+          }
+          // Nối lại lô/cuộn sang dòng thay thế (PUT tạo id dòng mới).
+          const docLots = await db.all(
+            'SELECT id, productId, locationId, initialQty FROM stock_lots WHERE receiptDocumentId = ?', [id]
+          ).catch(() => []);
+          for (const lot of docLots || []) {
+            const target = newLineIds.find((l) =>
+              l.productId === (lot as any).productId && l.locationId === ((lot as any).locationId || ''));
+            if (target) {
+              await db.run('UPDATE stock_lots SET receiptLineId = ? WHERE id = ?', [target.id, (lot as any).id]);
+            }
+          }
+          // LOT phủ đủ số lượng sau khi nối lại -> COMPLETED.
+          for (const nl of newLineIds) {
+            if (trackMap.get(nl.productId) !== 'LOT') continue;
+            const covered = await db.all(
+              'SELECT COALESCE(SUM(initialQty), 0) AS covered FROM stock_lots WHERE receiptDocumentId = ? AND receiptLineId = ?',
+              [id, nl.id]
+            ).catch(() => []);
+            const need = Number(body.lines.find((l: any) => l.productId === nl.productId && (l.locationId || '') === nl.locationId)?.quantity || 0);
+            if (Number(covered?.[0]?.covered ?? 0) >= need && need > 0) {
+              await db.run(`UPDATE stock_document_lines SET processingStatus = 'COMPLETED' WHERE id = ?`, [nl.id]);
+            }
           }
           totalPreTax = body.totalPreTax !== undefined ? Number(body.totalPreTax) : computedPreTax;
           vatAmount = body.vatAmount !== undefined ? Number(body.vatAmount) : computedVat;
@@ -611,7 +680,7 @@ export function documentsRoutes(ctx: StockContext) {
   }
 
   /** Reset xử lý để sửa lại dòng: chỉ xóa serial chưa từng xuất (IN_STOCK/RESERVED,
-   * chưa gắn phiếu xuất). Serial đã OUT thì chặn reset. */
+   * chưa gắn phiếu xuất). Serial đã OUT thì chặn reset. Xóa cả lô/cuộn của phiếu. */
   async function resetDocProcessing(documentId: string): Promise<void> {
     const issued = await db.get(
       `SELECT id FROM stock_serials WHERE (receiptDocumentId = ? OR issueDocumentId = ?) AND stockStatus = 'OUT' LIMIT 1`,
@@ -621,10 +690,18 @@ export function documentsRoutes(ctx: StockContext) {
       throw Object.assign(new Error('Serial của phiếu đã xuất kho, không thể reset xử lý. Hãy dùng phiếu điều chỉnh/trả hàng.'), { status: 409 });
     }
     await db.run(`DELETE FROM stock_serials WHERE receiptDocumentId = ? OR issueDocumentId = ?`, [documentId, documentId]);
+    await db.run(`DELETE FROM stock_lot_movements WHERE referenceId = ?`, [documentId]);
+    await db.run(`DELETE FROM stock_lots WHERE receiptDocumentId = ?`, [documentId]);
     await db.run(
       `UPDATE stock_document_lines SET processingStatus = 'PENDING', actualQty = NULL, varianceQty = NULL, varianceReason = NULL WHERE documentId = ?`,
       [documentId]
     );
+  }
+
+  /** Dọn lô/cuộn của phiếu hủy/xóa (chưa từng nhập kho chính thức). */
+  async function dropDocLots(documentId: string): Promise<void> {
+    await db.run(`DELETE FROM stock_lot_movements WHERE referenceId = ?`, [documentId]).catch(() => undefined);
+    await db.run(`DELETE FROM stock_lots WHERE receiptDocumentId = ?`, [documentId]).catch(() => undefined);
   }
 
   /** Nhả serial đang RESERVED cho phiếu (hủy/xóa nháp): về IN_STOCK, xóa link xuất. */

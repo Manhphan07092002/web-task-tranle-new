@@ -8,8 +8,8 @@ import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageChec
 import { Card } from '../../components/UI';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
-  advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, deleteStockDocument, countLinesMissingSerials,
-  type StockDocument, type StockDocLine, type Warehouse,
+  advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, deleteStockDocument, countLinesMissingSerials, getProcessingSummary,
+  type StockDocument, type StockDocLine, type Warehouse, type ProcessingSummary,
   type PartnerSuggestion, type PartnerSuggestionsData, type StockDocDetailLine,
 } from '../../services/stockService';
 import { getProducts, type Product } from '../../services/productService';
@@ -28,6 +28,7 @@ import { SerialBulkModal } from './StockDocs/SerialBulkModal';
 export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kind: Kind }) {
   const meta = KIND_META[kind];
   const [docs, setDocs] = useState<StockDocument[]>([]);
+  const [summary, setSummary] = useState<ProcessingSummary>({});
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,11 +47,12 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
   const fetchAll = async () => {
     setLoading(true); setError(null);
     try {
-      const [d, w] = await Promise.all([
+      const [d, w, s] = await Promise.all([
         getStockDocuments({ docType: kind }),
         getWarehouses().catch(() => [] as Warehouse[]),
+        getProcessingSummary({ docType: kind }).catch(() => ({}) as ProcessingSummary),
       ]);
-      setDocs(d); setWarehouses(w);
+      setDocs(d); setWarehouses(w); setSummary(s);
       getProducts().then(setProducts).catch(() => {});
     } catch (e: any) {
       setError(e.message || 'Không tải được chứng từ');
@@ -311,16 +313,25 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                           >
                             <Eye size={15} />
                           </button>
-                          {(d.status === 'DRAFT' || d.status === 'PROCESSING') && kind !== 'TRANSFER' && (
-                            <button
-                              type="button"
-                              onClick={() => navigate(serialProcessPath(d.id))}
-                              className="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
-                              title="Xử lý Serial / Lô"
-                            >
-                              <ListChecks size={15} />
-                            </button>
-                          )}
+                          {(d.status === 'DRAFT' || d.status === 'PROCESSING') && kind !== 'TRANSFER' && (() => {
+                            const s = summary[d.id];
+                            const label = s && s.total > 0
+                              ? (s.done >= s.total ? '✓ Đủ' : `Xử lý (${s.done}/${s.total})`)
+                              : 'Xử lý';
+                            const ready = s && s.total > 0 && s.done >= s.total;
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => navigate(serialProcessPath(d.id))}
+                                className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold transition-colors ${ready
+                                  ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                                  : 'bg-amber-50 text-amber-700 hover:bg-amber-100'}`}
+                                title="Xử lý Serial / Lô"
+                              >
+                                {!s || s.total === 0 ? <ListChecks size={13} /> : null}{label}
+                              </button>
+                            );
+                          })()}
                         </div>
                       </td>
                     </tr>
