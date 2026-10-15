@@ -141,7 +141,8 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
           : await createIssue({ warehouseId: detail.warehouseId!, lines: cleanLines, notes, ...header });
       }
       await fetchAll();
-      setSelectedDocId(created.id);
+      // Mở form sửa của phiếu mới để duyệt lại như khi tạo mới, thay vì màn chi tiết.
+      setEditingId(created.id);
     } catch (e: any) {
       setError(e.message || 'Nhân bản phiếu thất bại');
     } finally {
