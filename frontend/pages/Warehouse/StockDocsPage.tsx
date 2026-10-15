@@ -4,7 +4,7 @@ import { apiFetch } from '../../services/api';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, FileText, Calendar, Building2, User } from 'lucide-react';
+import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, FileText, Calendar, Building2, User } from 'lucide-react';
 import { Card } from '../../components/UI';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
@@ -33,6 +33,7 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
   const [actingId, setActingId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const { users } = useData();
 
   const fetchAll = async () => {
@@ -183,6 +184,16 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                           {d.status === 'DRAFT' && (
                             <button
                               disabled={actingId === d.id}
+                              onClick={() => setEditingId(d.id)}
+                              className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-60"
+                              title="Sửa phiếu nháp"
+                            >
+                              <Pencil size={15} />
+                            </button>
+                          )}
+                          {d.status === 'DRAFT' && (
+                            <button
+                              disabled={actingId === d.id}
                               onClick={() => {
                                 if (window.confirm('Bạn có chắc muốn hủy phiếu nháp này?')) {
                                   act(d.id, () => cancelStockDocument(d.id), 'Hủy phiếu thất bại');
@@ -212,6 +223,7 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
           kind={kind}
           onClose={() => setSelectedDocId(null)}
           onUpdated={fetchAll}
+          onEdit={(id) => { setSelectedDocId(null); setEditingId(id); }}
         />
       )}
 
@@ -220,6 +232,17 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
           kind={kind} warehouses={warehouses} products={products} users={users.map((u: any) => ({ id: u.id, name: u.name }))}
           onClose={() => setShowCreate(false)}
           onDone={async () => { setShowCreate(false); await fetchAll(); }}
+          onError={setError}
+        />
+      )}
+
+      {editingId && (
+        <DocCreateModal
+          key={editingId}
+          kind={kind} warehouses={warehouses} products={products} users={users.map((u: any) => ({ id: u.id, name: u.name }))}
+          editingId={editingId}
+          onClose={() => setEditingId(null)}
+          onDone={async () => { setEditingId(null); await fetchAll(); }}
           onError={setError}
         />
       )}

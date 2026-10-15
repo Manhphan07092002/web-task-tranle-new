@@ -4,7 +4,7 @@ import { apiFetch } from '../../../services/api';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, FileText, Calendar, Building2, User } from 'lucide-react';
+import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, FileText, Calendar, Building2, User } from 'lucide-react';
 import { Card } from '../../../components/UI';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
@@ -26,12 +26,14 @@ export function DocDetailModal({
   kind,
   onClose,
   onUpdated,
+  onEdit,
 }: {
   docId: string;
   warehouses: Warehouse[];
   kind: Kind;
   onClose: () => void;
   onUpdated: () => Promise<void>;
+  onEdit?: (id: string) => void;
 }) {
   const [doc, setDoc] = useState<(StockDocument & { lines?: StockDocDetailLine[] }) | null>(null);
   const [loading, setLoading] = useState(true);
@@ -416,6 +418,17 @@ export function DocDetailModal({
             >
               Đóng
             </button>
+            {doc?.status === 'DRAFT' && onEdit && (
+              <button
+                type="button"
+                disabled={actionLoading}
+                onClick={() => onEdit(doc.id)}
+                className="flex items-center gap-1.5 px-5 py-2 border border-blue-300 text-blue-700 hover:bg-blue-50 rounded-xl text-xs font-bold disabled:opacity-50 transition-colors"
+              >
+                <Pencil size={14} />
+                Sửa
+              </button>
+            )}
             {doc?.status === 'DRAFT' && (
               <button
                 type="button"

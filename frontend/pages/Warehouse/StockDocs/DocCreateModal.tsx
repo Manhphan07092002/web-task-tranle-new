@@ -8,7 +8,7 @@ import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageChec
 import { Card } from '../../../components/UI';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
-  advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument,
+  advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, updateStockDocument,
   type StockDocument, type StockDocLine, type Warehouse,
   type PartnerSuggestion, type PartnerSuggestionsData, type StockDocDetailLine,
 } from '../../../services/stockService';
@@ -21,10 +21,12 @@ import type { DeptKey } from '../../../components/layout/menus/menuTypes';
 import { KIND_META, type Kind } from './meta';
 import { SearchCombo, FormattedNumberInput, UnitSuggestInput, PartnerSuggestInput, TextSuggestInput } from './controls';
 
-export function DocCreateModal({ kind, warehouses, products, users, onClose, onDone, onError }: {
+export function DocCreateModal({ kind, warehouses, products, users, onClose, onDone, onError, editingId }: {
   kind: Kind; warehouses: Warehouse[]; products: Product[]; users: { id: string; name: string }[];
   onClose: () => void; onDone: () => Promise<void>; onError: (m: string) => void;
+  editingId?: string;
 }) {
+  const isEditing = Boolean(editingId);
   const [warehouseId, setWarehouseId] = useState('');
   const [destWarehouseId, setDestWarehouseId] = useState('');
   const [notes, setNotes] = useState('');
@@ -62,6 +64,78 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
   useEffect(() => {
     if (!warehouseId && warehouses.length > 0) setWarehouseId(warehouses[0].id);
   }, [warehouses]);
+
+  // Chế độ sửa phiếu nháp: nạp chi tiết rồi đổ vào form.
+  useEffect(() => {
+    if (!editingId) return;
+    let active = true;
+    setLoadingDoc(true);
+    getStockDocument(editingId)
+      .then((doc) => {
+        if (!active) return;
+        if (doc.status !== 'DRAFT') {
+          setErr('Chỉ sửa được phiếu ở trạng thái nháp.');
+          return;
+        }
+        setWarehouseId(doc.warehouseId || '');
+        setDestWarehouseId(doc.destWarehouseId || '');
+        setNotes(doc.notes || '');
+        const firstLine = doc.lines?.[0];
+        setTkKho(firstLine?.accountDebit || '1561');
+        setTkCongNo(firstLine?.accountCredit || '331');
+        setProject(firstLine?.projectId || '');
+        setCostItem(firstLine?.costItem || '');
+        setCostObject((firstLine as any)?.costObjectId || '');
+        setPartnerCode(doc.partnerCode || '');
+        setPartnerName(doc.partnerName || '');
+        setPartnerAddress(doc.partnerAddress || '');
+        setDeliverer(doc.deliverer || '');
+        setPurchaserId(doc.purchaserId || '');
+        setPostingDate((doc.postingDate || '').slice(0, 10));
+        setDocDate((doc.docDate || '').slice(0, 10));
+        setInvoiceNumber(doc.invoiceNumber || '');
+        setInvoiceDate((doc.invoiceDate || '').slice(0, 10));
+        setPaymentStatus(doc.paymentStatus || 'UNPAID');
+        setPaymentDueDate((doc.paymentDueDate || '').slice(0, 10));
+        setReferenceType(doc.referenceType || 'PO');
+        setReferenceId(doc.referenceId || '');
+        setInvoiceLookupCode(doc.invoiceLookupCode || '');
+        setInvoiceLookupUrl(doc.invoiceLookupUrl || '');
+        setShippingFee(doc.shippingFee !== undefined && doc.shippingFee !== null ? String(doc.shippingFee) : '');
+        if ((doc as any).receiptSubType) setReceiptSubType((doc as any).receiptSubType);
+        const att = (doc as any).attachments;
+        if (Array.isArray(att)) {
+          setAttachments(att.map((a: any) => typeof a === 'string' ? { name: a.split('/').pop() || a, url: a } : a));
+        } else if (typeof att === 'string' && att) {
+          try {
+            const parsed = JSON.parse(att);
+            if (Array.isArray(parsed)) {
+              setAttachments(parsed.map((a: any) => typeof a === 'string' ? { name: String(a).split('/').pop() || String(a), url: String(a) } : a));
+            }
+          } catch { /* attachments không phải JSON — bỏ qua */ }
+        }
+        setLines((doc.lines || []).map((l) => ({
+          productId: l.productId,
+          quantity: Number(l.quantity) || 1,
+          unitPrice: Number(l.unitPrice) || 0,
+          locationId: (l as any).locationId ?? null,
+          unit: (l as any).unit || '',
+          note: (l as any).note ?? (l as any).notes ?? undefined,
+          vatRate: Number((l as any).vatRate ?? 8),
+          vatAmount: (l as any).vatAmount ?? undefined,
+          totalAmount: (l as any).totalAmount ?? undefined,
+          serialLot: (l as any).serialLot || '',
+          accountDebit: (l as any).accountDebit || undefined,
+          accountCredit: (l as any).accountCredit || undefined,
+          projectId: (l as any).projectId || undefined,
+          costItem: (l as any).costItem || undefined,
+          costObjectId: (l as any).costObjectId || undefined,
+        })));
+      })
+      .catch((e: any) => { if (active) setErr(e.message || 'Không tải được phiếu để sửa.'); })
+      .finally(() => { if (active) setLoadingDoc(false); });
+    return () => { active = false; };
+  }, [editingId]);
   const moneyKind = kind !== 'TRANSFER';
   const [costTab, setCostTab] = useState<'goods' | 'cost'>('goods');
   const [referenceType, setReferenceType] = useState('PO');
@@ -89,6 +163,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
   const [attachments, setAttachments] = useState<{ name: string; url: string }[]>([]);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [loadingDoc, setLoadingDoc] = useState(isEditing);
   const notesRef = React.useRef<HTMLTextAreaElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const uploadFiles = async (files: FileList | File[]) => {
@@ -226,12 +301,14 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
         shippingFee: shippingFee === '' ? undefined : Number(shippingFee),
       } : {};
       const attachUrls = attachments.map((a) => a.url);
-      if (kind === 'RECEIPT') await createReceipt({ warehouseId, lines: clean, notes: notes || undefined, ...header, ...(attachUrls.length > 0 ? { attachments: attachUrls } : {}) });
+      if (isEditing && editingId) {
+        await updateStockDocument(editingId, { lines: clean, notes: notes || undefined, ...header, ...(attachUrls.length > 0 ? { attachments: attachUrls } : {}) });
+      } else if (kind === 'RECEIPT') await createReceipt({ warehouseId, lines: clean, notes: notes || undefined, ...header, ...(attachUrls.length > 0 ? { attachments: attachUrls } : {}) });
       else if (kind === 'ISSUE') await createIssue({ warehouseId, lines: clean, notes: notes || undefined, ...header, ...(attachUrls.length > 0 ? { attachments: attachUrls } : {}) });
       else await createTransfer({ sourceWarehouseId: warehouseId, destWarehouseId, lines: clean, notes: notes || undefined });
       await onDone();
     } catch (e: any) {
-      const msg = e.message || 'Tạo phiếu thất bại.';
+      const msg = e.message || (isEditing ? 'Lưu thay đổi thất bại.' : 'Tạo phiếu thất bại.');
       setErr(msg); onError(msg);
     } finally {
       setSaving(false);
@@ -266,13 +343,14 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
       <div className="bg-white shadow-2xl w-full h-[100vh] h-[100dvh] flex flex-col">
         <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-4 border-b border-gray-100 flex-shrink-0">
           <div className="min-w-0">
-            <h3 className="font-bold text-gray-900 text-sm sm:text-base truncate">Tạo phiếu {KIND_META[kind].title.toLowerCase()} ({KIND_META[kind].code})</h3>
+            <h3 className="font-bold text-gray-900 text-sm sm:text-base truncate">{isEditing ? 'Sửa phiếu' : 'Tạo phiếu'} {KIND_META[kind].title.toLowerCase()} ({KIND_META[kind].code})</h3>
             {moneyKind && <p className="text-sm font-extrabold text-emerald-700 font-mono mt-0.5">Tổng: {(totals.pre + totals.vat).toLocaleString('vi-VN')} ₫</p>}
           </div>
           <div className="flex items-center gap-2">
             {kind === 'RECEIPT' && (
-              <select value={receiptSubType} onChange={(e) => setReceiptSubType(e.target.value)} title="Loại chứng từ"
-                className="px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none max-w-[150px] sm:max-w-[280px] truncate">
+              <select value={receiptSubType} onChange={(e) => setReceiptSubType(e.target.value)} title={isEditing ? 'Loại chứng từ không đổi được khi sửa' : 'Loại chứng từ'}
+                disabled={isEditing}
+                className="px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none max-w-[150px] sm:max-w-[280px] truncate disabled:bg-gray-50 disabled:text-gray-400">
                 <option value="DOMESTIC_PURCHASE">Mua hàng trong nước nhập kho</option>
                 <option value="IMPORT_PURCHASE">Mua hàng nhập khẩu nhập kho</option>
                 <option value="OTHER_RECEIPT">Nhập kho khác</option>
@@ -283,6 +361,12 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
         </div>
         <form onSubmit={submit} className="flex flex-col flex-1 min-h-0">
           <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 sm:py-5 space-y-4">
+            {loadingDoc && (
+              <div className="flex flex-col items-center py-16 gap-3">
+                <div className="w-10 h-10 border-4 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+                <p className="text-gray-400 text-sm">Đang tải phiếu để sửa...</p>
+              </div>
+            )}
             {err && <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm"><AlertCircle size={14} />{err}</div>}
             <div className={`grid gap-4 ${kind === 'TRANSFER' ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'}`}>
               <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
@@ -298,7 +382,8 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                     onPick={(w) => setWarehouseId(w ? w.id : '')}
                     placeholder="-- Chọn kho (*) --"
                     showArrow={true}
-                    inputClassName={`w-full px-4 py-2 border rounded-xl bg-white text-sm outline-none transition-colors ${hasAttemptedSubmit && !warehouseId ? 'border-red-500 ring-1 ring-red-400 bg-red-50/50' : 'border-gray-200 focus:border-emerald-500'}`}
+                    disabled={isEditing}
+                    inputClassName={`w-full px-4 py-2 border rounded-xl bg-white text-sm outline-none transition-colors disabled:bg-gray-50 disabled:text-gray-400 ${hasAttemptedSubmit && !warehouseId ? 'border-red-500 ring-1 ring-red-400 bg-red-50/50' : 'border-gray-200 focus:border-emerald-500'}`}
                   />
                 </div>
               </div>
@@ -316,7 +401,8 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                       onPick={(w) => setDestWarehouseId(w ? w.id : '')}
                       placeholder="-- Chọn kho nhận (*) --"
                       showArrow={true}
-                      inputClassName={`w-full px-4 py-2 border rounded-xl bg-white text-sm outline-none transition-colors ${hasAttemptedSubmit && (!destWarehouseId || destWarehouseId === warehouseId) ? 'border-red-500 ring-1 ring-red-400 bg-red-50/50' : 'border-gray-200 focus:border-emerald-500'}`}
+                      disabled={isEditing}
+                      inputClassName={`w-full px-4 py-2 border rounded-xl bg-white text-sm outline-none transition-colors disabled:bg-gray-50 disabled:text-gray-400 ${hasAttemptedSubmit && (!destWarehouseId || destWarehouseId === warehouseId) ? 'border-red-500 ring-1 ring-red-400 bg-red-50/50' : 'border-gray-200 focus:border-emerald-500'}`}
                     />
                   </div>
                 </div>
@@ -373,8 +459,8 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                     </div>
                     <div className="sm:col-span-2">
                       <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Nhân viên mua hàng</label>
-                      <select value={purchaserId} onChange={(e) => setPurchaserId(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none">
+                      <select value={purchaserId} onChange={(e) => setPurchaserId(e.target.value)} disabled={isEditing} title={isEditing ? 'Không đổi được khi sửa' : undefined}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none disabled:bg-gray-50 disabled:text-gray-400">
                         <option value="">-- Chọn --</option>
                         {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
                       </select>
@@ -401,8 +487,8 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                     <div className="sm:col-span-3">
                       <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Tham chiếu</label>
                       <div className="flex flex-col sm:flex-row gap-2">
-                        <select value={referenceType} onChange={(e) => setReferenceType(e.target.value)} title="Loại tham chiếu"
-                          className="w-full sm:w-36 px-2 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none">
+                        <select value={referenceType} onChange={(e) => setReferenceType(e.target.value)} title={isEditing ? 'Tham chiếu không đổi được khi sửa' : 'Loại tham chiếu'} disabled={isEditing}
+                          className="w-full sm:w-36 px-2 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none disabled:bg-gray-50 disabled:text-gray-400">
                           <option value="PO">PO mua hàng</option>
                           <option value="CONTRACT">Hợp đồng MB</option>
                           <option value="INVOICE">Hóa đơn</option>
@@ -410,8 +496,9 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                           <option value="PROJECT">Dự án</option>
                           <option value="OTHER">Khác</option>
                         </select>
-                        <input value={referenceId} onChange={(e) => setReferenceId(e.target.value)} placeholder="PO-2026-0021"
-                          className="flex-1 px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none" />
+                        <input value={referenceId} onChange={(e) => setReferenceId(e.target.value)} placeholder="PO-2026-0021" disabled={isEditing}
+                          title={isEditing ? 'Tham chiếu không đổi được khi sửa' : undefined}
+                          className="flex-1 px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none disabled:bg-gray-50 disabled:text-gray-400" />
                       </div>
                     </div>
                   </div>
@@ -800,9 +887,9 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
           </div>
           <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sm:gap-3 px-4 sm:px-6 py-4 border-t border-gray-100 bg-gray-50 flex-shrink-0">
             <button type="button" onClick={onClose} className="w-full sm:w-auto px-4 py-2.5 sm:py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-xl text-center">Hủy</button>
-            <button type="submit" disabled={saving}
+            <button type="submit" disabled={saving || loadingDoc}
               className="w-full sm:w-auto px-5 py-2.5 sm:py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60 flex items-center justify-center gap-2">
-              {saving ? <><RefreshCw size={14} className="animate-spin" />Đang tạo...</> : 'Tạo phiếu nháp'}
+              {saving ? <><RefreshCw size={14} className="animate-spin" />Đang lưu...</> : (isEditing ? 'Lưu thay đổi' : 'Tạo phiếu nháp')}
             </button>
           </div>
         </form>

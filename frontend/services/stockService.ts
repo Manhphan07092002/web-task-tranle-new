@@ -578,6 +578,14 @@ export async function cancelStockDocument(id: string): Promise<void> {
   if (!res.ok) throw new Error(data.error || 'Hủy chứng từ thất bại');
 }
 
+export async function updateStockDocument(id: string, body: Record<string, unknown>): Promise<void> {
+  const res = await apiFetch(`/api/stock/documents/${id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Cập nhật chứng từ thất bại');
+}
+
 export async function deleteStockDocument(id: string): Promise<void> {
   const res = await apiFetch(`/api/stock/documents/${id}`, { method: 'DELETE' });
   const data = await res.json().catch(() => ({}));

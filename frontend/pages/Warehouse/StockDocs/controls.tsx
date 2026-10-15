@@ -32,6 +32,7 @@ export function SearchCombo<T extends { id: string }>({
   renderItem,
   showArrow = false,
   onCreateNew,
+  disabled = false,
 }: {
   items: T[];
   selectedId: string;
@@ -45,6 +46,7 @@ export function SearchCombo<T extends { id: string }>({
   renderItem?: (t: T, isHighlight: boolean) => React.ReactNode;
   showArrow?: boolean;
   onCreateNew?: (query: string) => void;
+  disabled?: boolean;
 }) {
   const selected = items.find((t) => t.id === selectedId) || null;
   const [text, setText] = useState(selected ? display(selected) : '');
@@ -185,6 +187,7 @@ export function SearchCombo<T extends { id: string }>({
       <input
         ref={inputRef}
         value={text}
+        disabled={disabled}
         placeholder={placeholder}
         onChange={(e) => {
           setShowAll(false);
@@ -239,6 +242,7 @@ export function SearchCombo<T extends { id: string }>({
         <button
           type="button"
           tabIndex={-1}
+          disabled={disabled}
           onMouseDown={(e) => {
             e.preventDefault();
             e.stopPropagation();
