@@ -7,7 +7,7 @@ import { beginStockTransaction } from '../../utils/stockTransaction.js';
 import type { StockContext } from './context.js';
 
 export function documentsRoutes(ctx: StockContext) {
-  const { db, listScope, isDirector, requireWarehouse, canReadDocument, canWriteDocument, assertLocation, availableOf, saleableLocationSet, assertNotCounting, postMove, docCode, paginationOf } = ctx;
+  const { db, listScope, isDirector, requireWarehouse, canReadDocument, canWriteDocument, assertLocation, availableOf, saleableLocationSet, assertNotCounting, postMove, docCode, nextDocCode, paginationOf } = ctx;
   const router = Router();
   // ── Chứng từ: danh sách ─────────────────────────────────────────────────────
 
@@ -374,7 +374,7 @@ export function documentsRoutes(ctx: StockContext) {
       // Mã tự sinh va chạm UNIQUE (random 4 ký tự): sinh lại và thử tiếp, tối đa 3 lần.
       // Mã do người dùng nhập thì báo 409 ngay.
       if (!userCode && error?.message?.includes('Duplicate') && attempts < 3) {
-        finalCode = docCode(DOC_CODE_PREFIX[docType] || 'PXK');
+        finalCode = await nextDocCode(DOC_CODE_PREFIX[docType] || 'PXK');
         await beginStockTransaction(db);
         continue;
       }
@@ -389,7 +389,7 @@ export function documentsRoutes(ctx: StockContext) {
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
       const access = await requireWarehouse(user, req.body.warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
-      res.status(201).json(await createDocument('RECEIPT', docCode('PNK'), { warehouseId: req.body.warehouseId }, req.body, user));
+      res.status(201).json(await createDocument('RECEIPT', await nextDocCode('PNK'), { warehouseId: req.body.warehouseId }, req.body, user));
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to create receipt' }); }
   });
 
@@ -399,7 +399,7 @@ export function documentsRoutes(ctx: StockContext) {
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
       const access = await requireWarehouse(user, req.body.warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
-      res.status(201).json(await createDocument('ISSUE', docCode('PXK'), { warehouseId: req.body.warehouseId }, req.body, user));
+      res.status(201).json(await createDocument('ISSUE', await nextDocCode('PXK'), { warehouseId: req.body.warehouseId }, req.body, user));
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to create issue' }); }
   });
 
@@ -413,7 +413,7 @@ export function documentsRoutes(ctx: StockContext) {
       const from = await requireWarehouse(user, req.body.sourceWarehouseId);
       const to = await requireWarehouse(user, req.body.destWarehouseId);
       if (!from.ok || !to.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
-      res.status(201).json(await createDocument('TRANSFER', docCode('DCK'), {
+      res.status(201).json(await createDocument('TRANSFER', await nextDocCode('DCK'), {
         sourceWarehouseId: req.body.sourceWarehouseId, destWarehouseId: req.body.destWarehouseId,
       }, req.body, user));
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to create transfer' }); }
@@ -425,7 +425,7 @@ export function documentsRoutes(ctx: StockContext) {
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
       const access = await requireWarehouse(user, req.body.warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
-      res.status(201).json(await createDocument('RETURN', docCode('PTH'), { warehouseId: req.body.warehouseId }, req.body, user));
+      res.status(201).json(await createDocument('RETURN', await nextDocCode('PTH'), { warehouseId: req.body.warehouseId }, req.body, user));
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to create return document' }); }
   });
 

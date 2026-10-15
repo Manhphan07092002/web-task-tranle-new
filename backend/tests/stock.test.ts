@@ -136,7 +136,23 @@ describe('receipts', () => {
     const res = await request(appFor(nv, db)).post('/receipts')
       .send({ warehouseId: 'wh-hn', lines: [{ productId: 'p1', quantity: 10 }] }).expect(201);
     expect(res.body.code).toMatch(/^PNK-/);
+    expect(res.body.code).toBe(`PNK-${String(new Date().getFullYear()).slice(2)}-0001`);
     expect(db.run.mock.calls.some(([s]: string[]) => String(s).includes('INSERT INTO stock_documents'))).toBe(true);
+  });
+
+  it('numbers receipts sequentially per year, skipping legacy codes', async () => {
+    const yy = String(new Date().getFullYear()).slice(2);
+    const db = mockDbProducts({ scopes: ['wh-hn'], productIds: new Set(['p1']) });
+    const origAll = db.all;
+    db.all = vi.fn(async (sql: string, params?: any[]) => {
+      if (String(sql).includes('SELECT code FROM stock_documents')) {
+        return [{ code: `PNK-${yy}-0007` }, { code: 'PNK-261015-R79Q' }, { code: `PNK-${yy}-0003` }];
+      }
+      return (origAll as any)(sql, params);
+    });
+    const res = await request(appFor(nv, db)).post('/receipts')
+      .send({ warehouseId: 'wh-hn', lines: [{ productId: 'p1', quantity: 10 }] }).expect(201);
+    expect(res.body.code).toBe(`PNK-${yy}-0008`);
   });
 
   it('refuses creation outside the scope', async () => {

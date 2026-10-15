@@ -122,6 +122,27 @@ export function createStockContext(db: any) {
     return `${prefix}-${stamp}-${rand}`;
   }
 
+  /** Mã phiếu đơn giản PREFIX-YY-NNNN (VD: PNK-26-0001): số thứ tự theo
+   * từng loại phiếu + năm, lấy MAX hiện có rồi +1. Va chạm concurrent
+   * (2 phiếu cùng số) được đỡ bởi UNIQUE + vòng retry ở createDocument. */
+  async function nextDocCode(prefix: string): Promise<string> {
+    const yy = String(new Date().getFullYear()).slice(2);
+    const rows = await db.all(
+      'SELECT code FROM stock_documents WHERE code LIKE ? LIMIT 5000',
+      [`${prefix}-${yy}-%`]
+    ).catch(() => []);
+    const re = new RegExp(`^${prefix}-${yy}-(\\d+)$`);
+    let max = 0;
+    for (const r of rows || []) {
+      const m = String(r?.code || '').match(re);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (Number.isFinite(n)) max = Math.max(max, n);
+      }
+    }
+    return `${prefix}-${yy}-${String(max + 1).padStart(4, '0')}`;
+  }
+
   /** Phân trang cho các endpoint list: mặc định 500 (giữ tương thích FE cũ), tối đa 1000. */
   function paginationOf(query: Record<string, string | undefined>): { limit: number; offset: number } {
     const rawLimit = Number(query.limit);
@@ -143,7 +164,7 @@ export function createStockContext(db: any) {
     return level >= MANAGEMENT_LEVELS.MANAGER && level !== MANAGEMENT_LEVELS.ADMIN;
   }
   return {
-    db, scopeOf, listScope, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, isSaleableLocation, availableOf, saleableLocationSet, saleableAvailableOf, assertNotCounting, postMove, docCode, paginationOf,
+    db, scopeOf, listScope, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, isSaleableLocation, availableOf, saleableLocationSet, saleableAvailableOf, assertNotCounting, postMove, docCode, nextDocCode, paginationOf,
   };
 }
 
