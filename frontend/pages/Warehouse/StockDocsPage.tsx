@@ -113,6 +113,7 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                   )}
                   <th className="text-center py-2 px-3 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
                   <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">Ngày tạo</th>
+                  <th className="text-center py-2 px-3 text-xs font-bold text-gray-500 uppercase">Duyệt phiếu</th>
                   <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Thao tác</th>
                 </tr>
               </thead>
@@ -156,6 +157,28 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                       <td className="py-2.5 px-3 text-gray-400 text-xs">
                         {d.createdAt ? new Date(d.createdAt).toLocaleString('vi-VN') : '—'}
                       </td>
+                      <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-center gap-1.5">
+                          {d.status === 'DRAFT' && kind !== 'TRANSFER' && (
+                            <button disabled={actingId === d.id} onClick={() => act(d.id, () => advanceDocument(kind === 'RECEIPT' ? 'receipts' : 'issues', d.id, 'complete'), 'Hoàn tất thất bại')}
+                              className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors shadow-sm whitespace-nowrap">
+                              {actingId === d.id ? <RefreshCw size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}{meta.actionDone}
+                            </button>
+                          )}
+                          {d.status === 'DRAFT' && kind === 'TRANSFER' && (
+                            <button disabled={actingId === d.id} onClick={() => act(d.id, () => advanceTransfer(d.id, 'ship'), 'Gửi hàng thất bại')}
+                              className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors shadow-sm whitespace-nowrap">
+                              {actingId === d.id ? <RefreshCw size={12} className="animate-spin" /> : <Truck size={12} />}Xác nhận gửi
+                            </button>
+                          )}
+                          {d.status === 'IN_TRANSIT' && kind === 'TRANSFER' && (
+                            <ReceiveTransferButton id={d.id} warehouseId={d.destWarehouseId!} onDone={fetchAll} />
+                          )}
+                          {d.status !== 'DRAFT' && !(d.status === 'IN_TRANSIT' && kind === 'TRANSFER') && (
+                            <span className="text-gray-300 text-xs">—</span>
+                          )}
+                        </div>
+                      </td>
                       <td className="py-2.5 px-4" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1.5">
                           <button
@@ -166,21 +189,6 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                           >
                             <Eye size={15} />
                           </button>
-                          {d.status === 'DRAFT' && kind !== 'TRANSFER' && (
-                            <button disabled={actingId === d.id} onClick={() => act(d.id, () => advanceDocument(kind === 'RECEIPT' ? 'receipts' : 'issues', d.id, 'complete'), 'Hoàn tất thất bại')}
-                              className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors shadow-sm">
-                              {actingId === d.id ? <RefreshCw size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}{meta.actionDone}
-                            </button>
-                          )}
-                          {d.status === 'DRAFT' && kind === 'TRANSFER' && (
-                            <button disabled={actingId === d.id} onClick={() => act(d.id, () => advanceTransfer(d.id, 'ship'), 'Gửi hàng thất bại')}
-                              className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors shadow-sm">
-                              {actingId === d.id ? <RefreshCw size={12} className="animate-spin" /> : <Truck size={12} />}Xác nhận gửi
-                            </button>
-                          )}
-                          {d.status === 'IN_TRANSIT' && kind === 'TRANSFER' && (
-                            <ReceiveTransferButton id={d.id} warehouseId={d.destWarehouseId!} onDone={fetchAll} />
-                          )}
                           {d.status === 'DRAFT' && (
                             <button
                               disabled={actingId === d.id}
