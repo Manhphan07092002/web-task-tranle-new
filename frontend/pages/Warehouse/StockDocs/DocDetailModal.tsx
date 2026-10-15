@@ -93,8 +93,8 @@ export function DocDetailModal({
   const meta = KIND_META[kind];
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-stretch sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
-      <div className="bg-white shadow-2xl w-full h-[100dvh] rounded-none sm:h-auto sm:rounded-2xl sm:max-w-5xl sm:max-h-[92vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+    <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-stretch justify-center p-0 overflow-y-auto">
+      <div className="bg-white shadow-2xl w-full h-[100vh] h-[100dvh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
         <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-4 border-b border-gray-100 bg-gray-50/70">
           <div className="flex items-center gap-3">

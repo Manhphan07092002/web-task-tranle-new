@@ -242,8 +242,8 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
   }, { pre: 0, vat: 0 });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-stretch sm:items-center justify-center bg-black/40 backdrop-blur-sm p-0 sm:p-4 overflow-y-auto">
-      <div className={`bg-white shadow-2xl w-full h-[100dvh] rounded-none sm:h-auto sm:rounded-2xl sm:max-h-[92vh] flex flex-col ${moneyKind ? 'sm:max-w-[79.2rem]' : 'sm:max-w-3xl'}`}>
+    <div className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/40 backdrop-blur-sm p-0 overflow-y-auto">
+      <div className="bg-white shadow-2xl w-full h-[100vh] h-[100dvh] flex flex-col">
         <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-4 border-b border-gray-100 flex-shrink-0">
           <div className="min-w-0">
             <h3 className="font-bold text-gray-900 text-sm sm:text-base truncate">Tạo phiếu {KIND_META[kind].title.toLowerCase()} ({KIND_META[kind].code})</h3>
@@ -776,7 +776,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
               </div>
             )}
           </div>
-          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sm:gap-3 px-4 sm:px-6 py-4 border-t border-gray-100 bg-gray-50 sm:rounded-b-2xl flex-shrink-0">
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sm:gap-3 px-4 sm:px-6 py-4 border-t border-gray-100 bg-gray-50 flex-shrink-0">
             <button type="button" onClick={onClose} className="w-full sm:w-auto px-4 py-2.5 sm:py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-xl text-center">Hủy</button>
             <button type="submit" disabled={saving}
               className="w-full sm:w-auto px-5 py-2.5 sm:py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60 flex items-center justify-center gap-2">
