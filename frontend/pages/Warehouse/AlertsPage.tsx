@@ -105,7 +105,7 @@ export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
   }, [rows]);
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Kho vận · Kiểm soát</p>
@@ -158,11 +158,11 @@ export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm / Kho</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Khả dụng</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Min / Đặt / Max</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Cảnh báo</th>
-                  <th className="text-right py-3 px-5 text-xs font-bold text-gray-500 uppercase">Chính sách</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm / Kho</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Khả dụng</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Min / Đặt / Max</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Cảnh báo</th>
+                  <th className="text-right py-2 px-5 text-xs font-bold text-gray-500 uppercase">Chính sách</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -172,22 +172,22 @@ export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
                   return (
                     <React.Fragment key={k}>
                       <tr className="hover:bg-gray-50/70">
-                        <td className="py-3 px-5">
+                        <td className="py-2 px-5">
                           <p className="font-semibold text-gray-800">{r.productName || r.productId}</p>
                           <p className="text-xs text-gray-400">{r.warehouseName || r.warehouseId}</p>
                         </td>
-                        <td className="py-3 px-4 text-right font-black text-gray-900">{Number(r.available).toLocaleString('vi-VN')}</td>
-                        <td className="py-3 px-4 text-right text-xs text-gray-500">
+                        <td className="py-2 px-4 text-right font-black text-gray-900">{Number(r.available).toLocaleString('vi-VN')}</td>
+                        <td className="py-2 px-4 text-right text-xs text-gray-500">
                           {r.minStock ?? 0} / {r.reorderPoint ?? 0} / {r.maxStock ?? 0}
                         </td>
-                        <td className="py-3 px-4">
+                        <td className="py-2 px-4">
                           <div className="flex flex-wrap gap-1">
                             {classify(r).map((t) => (
                               <span key={t.label} className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${t.cls}`}>{t.label}</span>
                             ))}
                           </div>
                         </td>
-                        <td className="py-3 px-5 text-right">
+                        <td className="py-2 px-5 text-right">
                           <button onClick={() => openEditor(r)}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-blue-600 hover:bg-blue-50 rounded-lg transition-colors">
                             <SlidersHorizontal size={13} />Đặt ngưỡng
@@ -196,7 +196,7 @@ export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
                       </tr>
                       {ed && (
                         <tr className="bg-blue-50/40">
-                          <td colSpan={5} className="px-5 py-3">
+                          <td colSpan={5} className="px-5 py-2">
                             {ed.err && <p className="text-xs text-red-600 mb-2">{ed.err}</p>}
                             <div className="flex flex-wrap items-end gap-2">
                               {([['minStock', 'Min'], ['reorderPoint', 'Điểm đặt'], ['maxStock', 'Max'], ['leadTimeDays', 'Lead (ngày)']] as const).map(([f, label]) => (

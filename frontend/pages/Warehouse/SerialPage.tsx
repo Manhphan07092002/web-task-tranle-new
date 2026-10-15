@@ -9,6 +9,8 @@ import {
 import { getProducts, type Product } from '../../services/productService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
+import { useAuth } from '../../contexts/AuthContext';
+import { levelOf, LEVELS } from '../../utils/rbac';
 
 const STATUSES: SerialStatus[] = ['SALEABLE', 'WARRANTY', 'DAMAGED', 'DEMO', 'QUARANTINE', 'SOLD'];
 const STATUS_LABEL: Record<string, string> = {
@@ -18,6 +20,8 @@ const STATUS_LABEL: Record<string, string> = {
 
 // Serial / Lô (§22): tìm kiếm chung + chi tiết + đổi trạng thái (TP).
 export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
+  const { user } = useAuth();
+  const canManage = levelOf(user) >= LEVELS.MANAGER && levelOf(user) !== LEVELS.ADMIN;
   const [rows, setRows] = useState<StockSerial[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -53,7 +57,7 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
   useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [debouncedQ, status]);
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kho vận · Hàng hóa</p>
@@ -106,26 +110,26 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Serial / Lô · Sản phẩm</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Kho</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Bảo hành</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
-                  <th className="text-right py-3 px-5 text-xs font-bold text-gray-500 uppercase">Sửa</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Serial / Lô · Sản phẩm</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Kho</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase hidden md:table-cell">Bảo hành</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
+                  <th className="text-right py-2 px-5 text-xs font-bold text-gray-500 uppercase">Sửa</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {rows.map((r) => (
                   <tr key={r.id} className="hover:bg-gray-50/70">
-                    <td className="py-3 px-5">
+                    <td className="py-2 px-5">
                       <p className="font-mono font-bold text-gray-800 text-[13px]">{r.serialNumber || r.lotCode || '—'}</p>
                       <p className="text-xs text-gray-400">{r.productName || r.productId}{r.lotCode && r.serialNumber ? ` · Lô ${r.lotCode}` : ''}</p>
                     </td>
-                    <td className="py-3 px-4 text-xs text-gray-500">{r.warehouseName || r.warehouseId}</td>
-                    <td className="py-3 px-4 text-xs text-gray-500">
+                    <td className="py-2 px-4 text-xs text-gray-500">{r.warehouseName || r.warehouseId}</td>
+                    <td className="py-2 px-4 text-xs text-gray-500 hidden md:table-cell">
                       {r.warrantyStart ? `${r.warrantyStart}${r.warrantyMonths ? ` · ${r.warrantyMonths} tháng` : ''}` : '—'}
                     </td>
-                    <td className="py-3 px-4"><span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600">{STATUS_LABEL[r.status] || r.status}</span></td>
-                    <td className="py-3 px-5 text-right">
+                    <td className="py-2 px-4"><span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600">{STATUS_LABEL[r.status] || r.status}</span></td>
+                    <td className="py-2 px-5 text-right">
                       <button onClick={() => setEditing(r)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg" title="Chi tiết / đổi trạng thái">
                         <Pencil size={14} />
                       </button>
@@ -144,7 +148,7 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
           onDone={async () => { setShowCreate(false); await fetchAll(); }} />
       )}
       {editing && (
-        <SerialStatusModal serial={editing}
+        <SerialStatusModal serial={editing} canManage={canManage}
           onClose={() => setEditing(null)}
           onDone={async () => { setEditing(null); await fetchAll(); }} />
       )}
@@ -246,8 +250,8 @@ function SerialModal({ warehouses, products, onClose, onDone }: {
   );
 }
 
-function SerialStatusModal({ serial, onClose, onDone }: {
-  serial: StockSerial; onClose: () => void; onDone: () => Promise<void>;
+function SerialStatusModal({ serial, canManage, onClose, onDone }: {
+  serial: StockSerial; canManage: boolean; onClose: () => void; onDone: () => Promise<void>;
 }) {
   const [status, setStatus] = useState<SerialStatus>(serial.status);
   const [customerName, setCustomerName] = useState(serial.customerName || '');
@@ -279,12 +283,13 @@ function SerialStatusModal({ serial, onClose, onDone }: {
           <p className="text-sm text-gray-500">{serial.productName || serial.productId} · {serial.warehouseName || serial.warehouseId}</p>
           <div>
             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Trạng thái (cần cấp TP)</label>
-            <select value={status} onChange={(e) => setStatus(e.target.value as SerialStatus)}
-              className="w-full px-4 py-2.5 border border-gray-200 rounded-xl bg-white text-sm outline-none">
+            <select value={status} onChange={(e) => setStatus(e.target.value as SerialStatus)} disabled={!canManage}
+              className="w-full px-4 py-2.5 border border-gray-200 rounded-xl bg-white text-sm outline-none disabled:bg-gray-50 disabled:text-gray-400">
               {(['SALEABLE', 'WARRANTY', 'DAMAGED', 'DEMO', 'QUARANTINE', 'SOLD'] as SerialStatus[]).map((s) => (
                 <option key={s} value={s}>{STATUS_LABEL[s]}</option>
               ))}
             </select>
+            {!canManage && <p className="text-xs text-gray-400 mt-1">Bạn đang ở chế độ xem — đổi trạng thái cần cấp TP trở lên.</p>}
           </div>
           <div>
             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Khách hàng / dự án gán</label>

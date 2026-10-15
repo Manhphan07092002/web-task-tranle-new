@@ -16,10 +16,12 @@ export interface Reservation {
   warehouseName?: string | null;
 }
 
-export async function getReservations(warehouseId?: string, status?: string): Promise<Reservation[]> {
+export async function getReservations(warehouseId?: string, status?: string, page?: { limit?: number; offset?: number }): Promise<Reservation[]> {
   const qs = new URLSearchParams();
   if (warehouseId) qs.set('warehouseId', warehouseId);
   if (status) qs.set('status', status);
+  if (page?.limit !== undefined) qs.set('limit', String(page.limit));
+  if (page?.offset) qs.set('offset', String(page.offset));
   const res = await apiFetch(`/api/stock/reservations${qs.toString() ? `?${qs}` : ''}`);
   if (!res.ok) throw new Error('Không tải được giữ hàng');
   return res.json();

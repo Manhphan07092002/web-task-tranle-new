@@ -28,7 +28,14 @@ function mockDb(opts: {
         return (opts.scopes ?? []).map((warehouseId) => ({ warehouseId }));
       }
       if (String(sql).includes('FROM stock_document_lines')) return opts.lines ?? [];
+      if (String(sql).includes('FROM products')) {
+        const ids = [...((opts.products ?? (opts as any).productIds) as Set<string> ?? [])];
+        return ids.map((id) => ({ id }));
+      }
       if (String(sql).includes('FROM stock_balances b')) return opts.balances ?? [];
+      if (String(sql).includes('FROM stock_balances')) {
+        return opts.balance ? [{ productId: 'p1', locationId: '', onHand: opts.balance.onHand, reserved: opts.balance.reserved }] : [];
+      }
       return [];
     }),
     get: vi.fn(async (sql: string) => {
@@ -91,6 +98,33 @@ describe('stock balances scope', () => {
     await request(appFor(director, db)).get('/balances').expect(200);
     const [sql] = db.all.mock.calls.find(([s]: string[]) => String(s).includes('FROM stock_balances b'))!;
     expect(sql).not.toContain('b.warehouseId IN');
+  });
+});
+
+describe('list pagination', () => {
+  it('defaults to 500 rows and clamps out-of-range limit/offset', async () => {
+    const db = mockDb({ scopes: ['wh-hn'], balances: [] });
+    await request(appFor(nv, db)).get('/balances?warehouseId=wh-hn').expect(200);
+    const defaultCall = db.all.mock.calls.find(([s]: string[]) => String(s).includes('FROM stock_balances b')) as unknown as [string, any[]] | undefined;
+    expect(defaultCall?.[1].slice(-2)).toEqual([500, 0]);
+
+    const db2 = mockDb({ scopes: ['wh-hn'], balances: [] });
+    await request(appFor(nv, db2)).get('/balances?warehouseId=wh-hn&limit=5000&offset=-3').expect(200);
+    const clampCall = db2.all.mock.calls.find(([s]: string[]) => String(s).includes('FROM stock_balances b')) as unknown as [string, any[]] | undefined;
+    expect(clampCall?.[1].slice(-2)).toEqual([1000, 0]);
+  });
+
+  it('paginates document and move lists', async () => {
+    const docs = mockDb({ scopes: ['wh-hn'] });
+    await request(appFor(nv, docs)).get('/documents?limit=50&offset=50').expect(200);
+    const docCall = docs.all.mock.calls.find(([s]: string[]) => String(s).includes('FROM stock_documents d')) as unknown as [string, any[]] | undefined;
+    expect(docCall?.[1].slice(-2)).toEqual([50, 50]);
+
+    const moves = mockDb({ scopes: ['wh-hn'] });
+    await request(appFor(nv, moves)).get('/moves?limit=20').expect(200);
+    const moveCall = moves.all.mock.calls.find(([s]: string[]) => String(s).includes('FROM stock_moves m')) as unknown as [string, any[]] | undefined;
+    expect(String(moveCall?.[0])).toContain('LIMIT ? OFFSET ?');
+    expect(moveCall?.[1].slice(-2)).toEqual([20, 0]);
   });
 });
 
@@ -672,7 +706,12 @@ describe('product bundles buildable', () => {
       }),
       get: vi.fn(async (sql: string, params?: any[]) => {
         if (String(sql).includes('FROM product_bundles')) return kit;
-        if (String(sql).includes('FROM stock_balances')) return params?.includes('kit1') ? kitBalance : balance;
+        if (String(sql).includes('FROM stock_balances')) {
+          const bal = params?.includes('kit1') ? kitBalance : balance;
+          // Query SUM SALEABLE trả về { available }; query theo location trả về { onHand, reserved }.
+          if (String(sql).includes('SUM(')) return { available: Number(bal?.onHand ?? 0) - Number(bal?.reserved ?? 0) };
+          return bal;
+        }
         return undefined;
       }),
       run: vi.fn().mockResolvedValue({ changes: 1 }),

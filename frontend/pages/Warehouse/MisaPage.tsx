@@ -45,7 +45,7 @@ export default function MisaPage({ deptKey }: { deptKey: DeptKey }) {
   };
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kho vận · Báo cáo</p>
@@ -97,22 +97,22 @@ export default function MisaPage({ deptKey }: { deptKey: DeptKey }) {
               <table className="w-full text-sm">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Đối tượng</th>
-                    <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Mã nội bộ</th>
-                    <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Mã MISA</th>
-                    <th className="text-right py-3 px-5 text-xs font-bold text-gray-500 uppercase">Xóa</th>
+                    <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Đối tượng</th>
+                    <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Mã nội bộ</th>
+                    <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Mã MISA</th>
+                    <th className="text-right py-2 px-5 text-xs font-bold text-gray-500 uppercase">Xóa</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
                   {mappings.map((m) => (
                     <tr key={m.id} className="hover:bg-gray-50/70">
-                      <td className="py-3 px-5 text-gray-500 text-xs">{m.entityType}</td>
-                      <td className="py-3 px-4 font-mono text-xs text-gray-700">{m.entityId}</td>
-                      <td className="py-3 px-4">
+                      <td className="py-2 px-5 text-gray-500 text-xs">{m.entityType}</td>
+                      <td className="py-2 px-4 font-mono text-xs text-gray-700">{m.entityId}</td>
+                      <td className="py-2 px-4">
                         <span className="font-mono font-bold text-gray-800 text-xs">{m.misaCode}</span>
                         {m.misaName && <span className="text-xs text-gray-400 ml-2">{m.misaName}</span>}
                       </td>
-                      <td className="py-3 px-5 text-right">
+                      <td className="py-2 px-5 text-right">
                         <button onClick={() => remove(m.id)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg" title="Xóa mapping">
                           <Trash2 size={14} />
                         </button>
@@ -135,19 +135,19 @@ export default function MisaPage({ deptKey }: { deptKey: DeptKey }) {
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Thời gian</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Chiều · Đối tượng</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Lỗi</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Thời gian</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Chiều · Đối tượng</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Lỗi</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {logs.map((l) => (
                   <tr key={l.id} className="hover:bg-gray-50/70">
-                    <td className="py-3 px-5 text-xs text-gray-500">{l.createdAt ? new Date(l.createdAt).toLocaleString('vi-VN') : ''}</td>
-                    <td className="py-3 px-4 text-xs text-gray-600">{l.direction} · {l.entityType}</td>
-                    <td className="py-3 px-4"><span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600">{l.status}</span></td>
-                    <td className="py-3 px-5 text-xs text-red-500 max-w-[280px] truncate" title={l.error || ''}>{l.error || '—'}</td>
+                    <td className="py-2 px-5 text-xs text-gray-500">{l.createdAt ? new Date(l.createdAt).toLocaleString('vi-VN') : ''}</td>
+                    <td className="py-2 px-4 text-xs text-gray-600">{l.direction} · {l.entityType}</td>
+                    <td className="py-2 px-4"><span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600">{l.status}</span></td>
+                    <td className="py-2 px-5 text-xs text-red-500 max-w-[280px] truncate" title={l.error || ''}>{l.error || '—'}</td>
                   </tr>
                 ))}
               </tbody>

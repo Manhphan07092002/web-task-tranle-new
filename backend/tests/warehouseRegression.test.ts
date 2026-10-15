@@ -20,7 +20,16 @@ function fixture(options: { type?: string; quantities?: number[]; onHand?: numbe
       if (sql.includes('FROM stock_document_lines')) return structuredClone(lines);
       if (sql.includes('FROM reservations')) return [structuredClone(reservation)];
       if (sql.includes('FROM warehouses')) return [{ id: 'w1' }, { id: 'w2' }];
-      if (sql.includes('FROM stock_balances')) return [];
+      if (sql.includes('FROM products')) return [{ id: 'p1' }];
+      if (sql.includes('FROM stock_locations')) {
+        // Bulk saleability check params: [warehouseId, ...locationIds]. Only
+        // 'damaged' is non-saleable in this fixture (mirrors the get() mock).
+        const ids: string[] = params.filter((p: any) => typeof p === 'string' && p !== 'w1' && p !== 'w2');
+        return ids.filter((id) => id !== 'damaged').map((id) => ({ id }));
+      }
+      if (sql.includes('FROM stock_balances')) {
+        return [{ productId: 'p1', locationId: options.location || '', onHand: balance.onHand, reserved: balance.reserved }];
+      }
       return [];
     }),
     get: (sql: string, params: any[] = []) => gate.run(sql, async () => {

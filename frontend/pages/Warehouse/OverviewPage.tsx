@@ -23,7 +23,7 @@ export default function WarehouseOverview({ deptKey }: { deptKey: DeptKey }) {
 
   if (user && level === 99) {
     return (
-      <div className="max-w-3xl mx-auto">
+      <div className="w-full max-w-[1400px] mx-auto">
         <Card className="p-10 text-center text-gray-400">
           <LayoutDashboard size={36} className="mx-auto mb-3 opacity-25" />
           <p className="font-medium text-gray-700">Quản trị viên không xem dữ liệu kinh doanh kho</p>
@@ -54,14 +54,14 @@ function useWarehouseData() {
       setLoading(true);
       try {
         const [b, d, a, m, c, w, s, h] = await Promise.all([
-          getStockBalances().catch(() => []),
-          getStockDocuments().catch(() => []),
+          getStockBalances({ limit: 200 }).catch(() => []),
+          getStockDocuments({ limit: 50 }).catch(() => []),
           getStockAlerts().catch(() => []),
-          getStockMoves().catch(() => []),
-          getStockCounts().catch(() => []),
+          getStockMoves({ limit: 50 }).catch(() => []),
+          getStockCounts(undefined, undefined, { limit: 20 }).catch(() => []),
           getWarehouses().catch(() => []),
           getSlowStock(undefined, 90).catch(() => []),
-          getReservations().catch(() => []),
+          getReservations(undefined, undefined, { limit: 50 }).catch(() => []),
         ]);
         if (!cancelled) {
           setBalances(b); setDocs(d); setAlerts(a); setMoves(m); setCounts(c); setWarehouses(w); setSlow(s); setHolds(h);
@@ -170,7 +170,7 @@ function StaffOverview({ deptKey }: { deptKey: DeptKey }) {
   ];
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <Header deptKey={deptKey} title="Tổng quan của tôi" subtitle={`hôm nay cần xử lý những việc này${myScopeNames.length > 0 ? ` · Kho: ${myScopeNames.slice(0, 3).join(', ')}${myScopeNames.length > 3 ? '…' : ''}` : ''}`} />
       {loading ? <Loading /> : (
         <>
@@ -330,7 +330,7 @@ function ManagerOverview({ deptKey }: { deptKey: DeptKey }) {
   ];
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <Header deptKey={deptKey} title="Tổng quan kho vận" subtitle="toàn cảnh trong 20 giây" />
         <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)}
@@ -357,12 +357,12 @@ function ManagerOverview({ deptKey }: { deptKey: DeptKey }) {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-xs text-gray-400 uppercase">
-                    <th className="py-2.5 px-5">Kho</th>
-                    <th className="py-2.5 px-4 text-right">SKU</th>
-                    <th className="py-2.5 px-4 text-right">Chờ nhập</th>
-                    <th className="py-2.5 px-4 text-right">Chờ xuất</th>
-                    <th className="py-2.5 px-4 text-right">Cảnh báo</th>
-                    <th className="py-2.5 px-5">Trạng thái</th>
+                    <th className="py-1.5 px-5">Kho</th>
+                    <th className="py-1.5 px-4 text-right">SKU</th>
+                    <th className="py-1.5 px-4 text-right">Chờ nhập</th>
+                    <th className="py-1.5 px-4 text-right">Chờ xuất</th>
+                    <th className="py-1.5 px-4 text-right">Cảnh báo</th>
+                    <th className="py-1.5 px-5">Trạng thái</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
@@ -371,12 +371,12 @@ function ManagerOverview({ deptKey }: { deptKey: DeptKey }) {
                   )}
                   {perWarehouse.map((w) => (
                     <tr key={w.id} className="hover:bg-gray-50/70">
-                      <td className="py-2.5 px-5 font-semibold text-gray-800">{w.name}</td>
-                      <td className="py-2.5 px-4 text-right text-gray-600">{w.sku}</td>
-                      <td className="py-2.5 px-4 text-right text-gray-600">{w.waitIn}</td>
-                      <td className="py-2.5 px-4 text-right text-gray-600">{w.waitOut}</td>
-                      <td className="py-2.5 px-4 text-right font-bold text-gray-800">{w.warn}</td>
-                      <td className="py-2.5 px-5">
+                      <td className="py-1.5 px-5 font-semibold text-gray-800">{w.name}</td>
+                      <td className="py-1.5 px-4 text-right text-gray-600">{w.sku}</td>
+                      <td className="py-1.5 px-4 text-right text-gray-600">{w.waitIn}</td>
+                      <td className="py-1.5 px-4 text-right text-gray-600">{w.waitOut}</td>
+                      <td className="py-1.5 px-4 text-right font-bold text-gray-800">{w.warn}</td>
+                      <td className="py-1.5 px-5">
                         <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${w.state === 'Bình thường' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : w.state === 'Cần chú ý' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-red-50 text-red-600 border-red-200'}`}>
                           {w.state}
                         </span>

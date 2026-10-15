@@ -33,6 +33,29 @@ export function stockRoutes(db: any) {
     return { ok: !!warehouseId && scope.includes(warehouseId), scope };
   }
 
+  /** TRANSFER liên quan 2 kho: đọc cho phép 1 trong 2 đầu, ghi yêu cầu cả 2 đầu. */
+  function docWarehouseIds(doc: any): string[] {
+    return [doc?.warehouseId, doc?.sourceWarehouseId, doc?.destWarehouseId].filter(Boolean);
+  }
+
+  async function canReadDocument(user: any, doc: any): Promise<boolean> {
+    if (!user || normalizeManagementLevel(user?.managementLevel) === MANAGEMENT_LEVELS.ADMIN) return false;
+    if (isDirector(user)) return true;
+    const ids = docWarehouseIds(doc);
+    if (ids.length === 0) return true;
+    const scope = await scopeOf(user);
+    return ids.some((id) => scope.includes(id));
+  }
+
+  async function canWriteDocument(user: any, doc: any): Promise<boolean> {
+    if (!user || normalizeManagementLevel(user?.managementLevel) === MANAGEMENT_LEVELS.ADMIN) return false;
+    if (isDirector(user)) return true;
+    const ids = docWarehouseIds(doc);
+    if (ids.length === 0) return true;
+    const scope = await scopeOf(user);
+    return ids.every((id) => scope.includes(id));
+  }
+
   async function assertLocation(warehouseId: string, locationId: string | null | undefined): Promise<boolean> {
     if (!locationId) return true;
     const loc = await db.get('SELECT warehouseId, isActive, purpose FROM stock_locations WHERE id = ?', [locationId]);
@@ -51,6 +74,31 @@ export function stockRoutes(db: any) {
       [productId, warehouseId, locationId]
     );
     return Number(row?.onHand ?? 0) - Number(row?.reserved ?? 0);
+  }
+
+  /** Vị trí SALEABLE đang hoạt động ('' mặc định luôn tính là bán được). */
+  async function saleableLocationSet(warehouseId: string, locationIds: string[]): Promise<Set<string>> {
+    const out = new Set<string>(['']);
+    const ids = [...new Set(locationIds.filter(Boolean))];
+    if (ids.length === 0) return out;
+    const rows = await db.all(
+      `SELECT id FROM stock_locations WHERE warehouseId = ? AND purpose = 'SALEABLE' AND isActive = 1 AND id IN (${ids.map(() => '?').join(', ')})`,
+      [warehouseId, ...ids]
+    ).catch(() => []);
+    for (const r of rows || []) out.add(r.id);
+    return out;
+  }
+
+  /** Tổng khả dụng SALEABLE toàn kho (location '' mặc định + vị trí SALEABLE đang hoạt động). */
+  async function saleableAvailableOf(productId: string, warehouseId: string): Promise<number> {
+    const row = await db.get(
+      `SELECT SUM(b.onHand - b.reserved) AS available FROM stock_balances b
+        LEFT JOIN stock_locations l ON l.id = b.locationId AND l.warehouseId = b.warehouseId
+       WHERE b.productId = ? AND b.warehouseId = ?
+         AND (b.locationId = '' OR (l.isActive = 1 AND l.purpose = 'SALEABLE'))`,
+      [productId, warehouseId]
+    );
+    return Number(row?.available ?? 0);
   }
 
   async function assertNotCounting(warehouseId: string) {
@@ -85,6 +133,15 @@ export function stockRoutes(db: any) {
     return `${prefix}-${stamp}-${rand}`;
   }
 
+  /** Phân trang cho các endpoint list: mặc định 500 (giữ tương thích FE cũ), tối đa 1000. */
+  function paginationOf(query: Record<string, string | undefined>): { limit: number; offset: number } {
+    const rawLimit = Number(query.limit);
+    const rawOffset = Number(query.offset);
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.floor(rawLimit), 1), 1000) : 500;
+    const offset = Number.isFinite(rawOffset) ? Math.min(Math.max(Math.floor(rawOffset), 0), 1_000_000) : 0;
+    return { limit, offset };
+  }
+
   // ── Tồn kho (đọc) ─────────────────────────────────────────────────────────
 
   router.get('/balances', async (req, res) => {
@@ -115,8 +172,126 @@ export function stockRoutes(db: any) {
       if (q?.trim()) { query += ' AND (p.name LIKE ? OR b.productId LIKE ?)'; params.push(`%${q.trim()}%`, `%${q.trim()}%`); }
       if (purpose?.trim()) { query += ' AND l.purpose = ?'; params.push(purpose.trim()); }
       query += ' ORDER BY w.name ASC, p.name ASC';
+      const page = paginationOf(req.query as Record<string, string | undefined>);
+      query += ' LIMIT ? OFFSET ?';
+      params.push(page.limit, page.offset);
       res.json(await db.all(query, params));
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch stock balances' }); }
+  });
+
+  // ── Gợi ý đối tác / nhà cung cấp / diễn giải ──────────────────────────────
+
+  router.get('/partner-suggestions', async (req, res) => {
+    try {
+      const user = req.user;
+      if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      if (normalizeManagementLevel(user.managementLevel) === MANAGEMENT_LEVELS.ADMIN) {
+        return res.status(403).json({ error: 'Admin cannot view business stock data' });
+      }
+      const scope = await scopeOf(user);
+      if (!isDirector(user) && scope.length === 0) {
+        return res.json({ partners: [], deliverers: [], notes: [], addresses: [] });
+      }
+
+      let docSql = `SELECT partnerCode, partnerName, partnerAddress, deliverer, notes
+         FROM stock_documents
+         WHERE ((partnerCode IS NOT NULL AND partnerCode != '')
+            OR (partnerName IS NOT NULL AND partnerName != '')
+            OR (partnerAddress IS NOT NULL AND partnerAddress != '')
+            OR (deliverer IS NOT NULL AND deliverer != '')
+            OR (notes IS NOT NULL AND notes != ''))`;
+      const docParams: any[] = [];
+      if (!isDirector(user)) {
+        docSql += ` AND (warehouseId IN (${scope.map(() => '?').join(', ')}) OR sourceWarehouseId IN (${scope.map(() => '?').join(', ')}) OR destWarehouseId IN (${scope.map(() => '?').join(', ')}))`;
+        docParams.push(...scope, ...scope, ...scope);
+      }
+      docSql += ` ORDER BY updatedAt DESC, createdAt DESC LIMIT 500`;
+      const docRows = await db.all(docSql, docParams).catch(() => []);
+
+      const clientRows = await db.all('SELECT name, region FROM clients').catch(() => []);
+      const contractRows = await db.all('SELECT DISTINCT supplierName, clientName FROM contracts').catch(() => []);
+      const projectRows = await db.all('SELECT DISTINCT clientName, investor FROM projects').catch(() => []);
+
+      const partnerMap = new Map<string, { id: string; code: string; name: string; address?: string; deliverer?: string }>();
+      const delivererSet = new Set<string>();
+      const noteSet = new Set<string>();
+      const addressSet = new Set<string>();
+
+      let counter = 1;
+
+      for (const r of docRows) {
+        const code = (r.partnerCode || '').trim();
+        const name = (r.partnerName || '').trim();
+        const address = (r.partnerAddress || '').trim();
+        const deliverer = (r.deliverer || '').trim();
+        const note = (r.notes || '').trim();
+
+        if (deliverer) delivererSet.add(deliverer);
+        if (note) noteSet.add(note);
+        if (address) addressSet.add(address);
+
+        if (name || code) {
+          const key = name ? 'name:' + name.toLowerCase() : 'code:' + code.toLowerCase();
+          if (!partnerMap.has(key)) {
+            partnerMap.set(key, { id: `doc-${counter++}`, code, name, address, deliverer });
+          } else {
+            const existing = partnerMap.get(key)!;
+            if (!existing.code && code) existing.code = code;
+            if (!existing.name && name) existing.name = name;
+            if (!existing.address && address) existing.address = address;
+            if (!existing.deliverer && deliverer) existing.deliverer = deliverer;
+          }
+        }
+      }
+
+      for (const r of clientRows) {
+        const name = (r.name || '').trim();
+        const address = (r.region || '').trim();
+        if (address) addressSet.add(address);
+        if (name) {
+          const key = 'name:' + name.toLowerCase();
+          if (!partnerMap.has(key)) {
+            partnerMap.set(key, { id: `client-${counter++}`, code: '', name, address, deliverer: '' });
+          } else {
+            const existing = partnerMap.get(key)!;
+            if (!existing.address && address) existing.address = address;
+          }
+        }
+      }
+
+      for (const r of contractRows) {
+        for (const rawName of [r.supplierName, r.clientName]) {
+          const n = (rawName || '').trim();
+          if (n) {
+            const key = 'name:' + n.toLowerCase();
+            if (!partnerMap.has(key)) {
+              partnerMap.set(key, { id: `contract-${counter++}`, code: '', name: n, address: '', deliverer: '' });
+            }
+          }
+        }
+      }
+
+      for (const r of projectRows) {
+        for (const rawName of [r.clientName, r.investor]) {
+          const n = (rawName || '').trim();
+          if (n) {
+            const key = 'name:' + n.toLowerCase();
+            if (!partnerMap.has(key)) {
+              partnerMap.set(key, { id: `project-${counter++}`, code: '', name: n, address: '', deliverer: '' });
+            }
+          }
+        }
+      }
+
+      res.json({
+        partners: Array.from(partnerMap.values()),
+        deliverers: Array.from(delivererSet),
+        notes: Array.from(noteSet),
+        addresses: Array.from(addressSet),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Failed to fetch partner suggestions' });
+    }
   });
 
   // ── Chứng từ: danh sách ─────────────────────────────────────────────────────
@@ -134,7 +309,17 @@ export function stockRoutes(db: any) {
         if (warehouseId && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
         if (!warehouseId && scope.length === 0) return res.json([]);
       }
-      let query = `SELECT d.*, w.name AS warehouseName FROM stock_documents d LEFT JOIN warehouses w ON w.id = d.warehouseId WHERE 1=1`;
+      let query = `SELECT d.*, 
+          w.name AS warehouseName,
+          sw.name AS sourceWarehouseName,
+          dw.name AS destWarehouseName,
+          u.name AS createdByName
+        FROM stock_documents d 
+        LEFT JOIN warehouses w ON w.id = d.warehouseId 
+        LEFT JOIN warehouses sw ON sw.id = d.sourceWarehouseId
+        LEFT JOIN warehouses dw ON dw.id = d.destWarehouseId
+        LEFT JOIN users u ON u.id = d.createdBy
+        WHERE 1=1`;
       const params: any[] = [];
       if (docType?.trim()) { query += ' AND d.docType = ?'; params.push(docType.trim()); }
       if (status?.trim()) { query += ' AND d.status = ?'; params.push(status.trim()); }
@@ -144,8 +329,201 @@ export function stockRoutes(db: any) {
         params.push(...scope, ...scope, ...scope);
       }
       query += ' ORDER BY d.createdAt DESC';
+      const docPage = paginationOf(req.query as Record<string, string | undefined>);
+      query += ' LIMIT ? OFFSET ?';
+      params.push(docPage.limit, docPage.offset);
       res.json(await db.all(query, params));
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch stock documents' }); }
+  });
+
+  // ── Chứng từ: chi tiết ───────────────────────────────────────────────────────
+
+  router.get('/documents/:id', async (req, res) => {
+    try {
+      const user = req.user;
+      if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      if (normalizeManagementLevel(user.managementLevel) === MANAGEMENT_LEVELS.ADMIN) {
+        return res.status(403).json({ error: 'Admin cannot view business stock data' });
+      }
+      const id = String(req.params.id);
+      const doc = await db.get(
+        `SELECT d.*, 
+           w.name AS warehouseName,
+           sw.name AS sourceWarehouseName,
+           dw.name AS destWarehouseName,
+           u.name AS createdByName
+         FROM stock_documents d 
+         LEFT JOIN warehouses w ON w.id = d.warehouseId 
+         LEFT JOIN warehouses sw ON sw.id = d.sourceWarehouseId
+         LEFT JOIN warehouses dw ON dw.id = d.destWarehouseId
+         LEFT JOIN users u ON u.id = d.createdBy
+         WHERE d.id = ?`,
+        [id]
+      );
+      if (!doc) return res.status(404).json({ error: 'Document not found' });
+      if (!(await canReadDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      const lines = await db.all(
+        `SELECT l.*, 
+           p.name AS productName, p.unit, p.origin, p.category, p.tracking,
+           loc.code AS locationCode, loc.name AS locationName
+         FROM stock_document_lines l
+         LEFT JOIN products p ON p.id = l.productId
+         LEFT JOIN stock_locations loc ON loc.id = l.locationId
+         WHERE l.documentId = ?`,
+        [id]
+      );
+      res.json({ ...doc, lines });
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch document detail' }); }
+  });
+
+  router.post('/documents/:id/cancel', async (req, res) => {
+    try {
+      const user = req.user;
+      if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      if (normalizeManagementLevel(user.managementLevel) === MANAGEMENT_LEVELS.ADMIN) {
+        return res.status(403).json({ error: 'Admin cannot perform stock operations' });
+      }
+      const id = String(req.params.id);
+      const doc = await db.get('SELECT * FROM stock_documents WHERE id = ?', [id]);
+      if (!doc) return res.status(404).json({ error: 'Document not found' });
+      if (!(await canWriteDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      if (doc.status !== 'DRAFT') {
+        return res.status(400).json({ error: 'Only draft documents can be cancelled' });
+      }
+      await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['CANCELLED', new Date().toISOString(), id]);
+      res.json({ success: true });
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to cancel document' }); }
+  });
+
+  router.delete('/documents/:id', async (req, res) => {
+    try {
+      const user = req.user;
+      if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      if (normalizeManagementLevel(user.managementLevel) === MANAGEMENT_LEVELS.ADMIN) {
+        return res.status(403).json({ error: 'Admin cannot perform stock operations' });
+      }
+      const id = String(req.params.id);
+      const doc = await db.get('SELECT * FROM stock_documents WHERE id = ?', [id]);
+      if (!doc) return res.status(404).json({ error: 'Document not found' });
+      if (!(await canWriteDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      if (doc.status !== 'DRAFT' && doc.status !== 'CANCELLED') {
+        return res.status(400).json({ error: 'Cannot delete processed document' });
+      }
+      await beginStockTransaction(db);
+      try {
+        await db.run('DELETE FROM stock_document_lines WHERE documentId = ?', [id]);
+        await db.run('DELETE FROM stock_documents WHERE id = ?', [id]);
+        await db.run('COMMIT');
+      } catch (err) {
+        await db.run('ROLLBACK');
+        throw err;
+      }
+      res.json({ success: true });
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to delete document' }); }
+  });
+
+  router.put('/documents/:id', async (req, res) => {
+    try {
+      const user = req.user;
+      if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      if (normalizeManagementLevel(user.managementLevel) === MANAGEMENT_LEVELS.ADMIN) {
+        return res.status(403).json({ error: 'Admin cannot perform stock operations' });
+      }
+      const id = String(req.params.id);
+      const doc = await db.get('SELECT * FROM stock_documents WHERE id = ?', [id]);
+      if (!doc) return res.status(404).json({ error: 'Document not found' });
+      // Scope theo chứng từ đã lưu (không tin warehouseId trong body).
+      if (!(await canWriteDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      if (doc.status !== 'DRAFT') {
+        return res.status(400).json({ error: 'Only draft documents can be modified' });
+      }
+      const now = new Date().toISOString();
+      const body = req.body;
+      let totalPreTax = doc.totalPreTax;
+      let vatAmount = doc.vatAmount;
+      let totalAmount = doc.totalAmount;
+
+      await beginStockTransaction(db);
+      try {
+        if (Array.isArray(body.lines) && body.lines.length > 0) {
+          const lineWh = doc.warehouseId || doc.sourceWarehouseId || '';
+          const err = await validateLines(body.lines, lineWh);
+          if (err) throw Object.assign(new Error(err), { status: 400 });
+
+          let computedPreTax = 0;
+          let computedVat = 0;
+          await db.run('DELETE FROM stock_document_lines WHERE documentId = ?', [id]);
+          for (const line of body.lines) {
+            const q = Number(line.quantity) || 0;
+            const p = Number(line.unitPrice) || 0;
+            const rate = Number(line.vatRate) || 0;
+            const linePreTax = q * p;
+            const lineVat = line.vatAmount !== undefined ? Number(line.vatAmount) : (linePreTax * rate / 100);
+            const lineTotal = line.totalAmount !== undefined ? Number(line.totalAmount) : (linePreTax + lineVat);
+            computedPreTax += linePreTax;
+            computedVat += lineVat;
+            await db.run(
+              `INSERT INTO stock_document_lines (
+                id, documentId, productId, quantity, unitPrice, locationId, note,
+                accountDebit, accountCredit, vatRate, vatAmount, totalAmount, projectId, costItem, serialLot, costObjectId
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                randomUUID(), id, line.productId, q, p, line.locationId ?? null, line.note ?? null,
+                line.accountDebit || '1561', line.accountCredit || '331',
+                rate, lineVat, lineTotal, line.projectId ?? null, line.costItem ?? null,
+                line.serialLot ?? null, line.costObjectId ?? null
+              ]
+            );
+          }
+          totalPreTax = body.totalPreTax !== undefined ? Number(body.totalPreTax) : computedPreTax;
+          vatAmount = body.vatAmount !== undefined ? Number(body.vatAmount) : computedVat;
+          totalAmount = body.totalAmount !== undefined ? Number(body.totalAmount) : (totalPreTax + vatAmount);
+        }
+
+        const attachmentsStr = body.attachments !== undefined
+          ? (typeof body.attachments === 'string' ? body.attachments : (Array.isArray(body.attachments) ? JSON.stringify(body.attachments) : null))
+          : doc.attachments;
+
+        await db.run(
+          `UPDATE stock_documents SET
+             notes = ?, partnerCode = ?, partnerName = ?, partnerAddress = ?, deliverer = ?,
+             postingDate = ?, docDate = ?, invoiceNumber = ?, invoiceDate = ?,
+             customsDeclarationNumber = ?, invoiceLookupCode = ?, invoiceLookupUrl = ?,
+             totalPreTax = ?, vatRate = ?, vatAmount = ?, totalAmount = ?, shippingFee = ?,
+             paymentStatus = ?, paymentDueDate = ?, attachments = ?, updatedAt = ?
+           WHERE id = ?`,
+          [
+            body.notes ?? doc.notes,
+            body.partnerCode ?? doc.partnerCode,
+            body.partnerName ?? doc.partnerName,
+            body.partnerAddress ?? doc.partnerAddress,
+            body.deliverer ?? doc.deliverer,
+            body.postingDate ?? doc.postingDate,
+            body.docDate ?? doc.docDate,
+            body.invoiceNumber ?? doc.invoiceNumber,
+            body.invoiceDate ?? doc.invoiceDate,
+            body.customsDeclarationNumber ?? doc.customsDeclarationNumber,
+            body.invoiceLookupCode ?? doc.invoiceLookupCode,
+            body.invoiceLookupUrl ?? doc.invoiceLookupUrl,
+            totalPreTax,
+            body.vatRate !== undefined ? Number(body.vatRate) : doc.vatRate,
+            vatAmount,
+            totalAmount,
+            body.shippingFee !== undefined ? Number(body.shippingFee) : doc.shippingFee,
+            body.paymentStatus ?? doc.paymentStatus,
+            body.paymentDueDate ?? doc.paymentDueDate,
+            attachmentsStr,
+            now,
+            id
+          ]
+        );
+        await db.run('COMMIT');
+      } catch (error) {
+        await db.run('ROLLBACK');
+        throw error;
+      }
+      res.json({ success: true });
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to update document' }); }
   });
 
   // ── Chứng từ: tạo ─────────────────────────────────────────────────────────
@@ -156,15 +534,47 @@ export function stockRoutes(db: any) {
     unitPrice: z.number().finite().min(0).max(1_000_000_000_000).optional(),
     locationId: z.string().trim().max(191).nullable().optional(),
     note: z.string().max(2000).nullable().optional(),
+    accountDebit: z.string().max(32).nullable().optional(),
+    accountCredit: z.string().max(32).nullable().optional(),
+    vatRate: z.number().finite().min(0).max(100).optional(),
+    vatAmount: z.number().finite().min(0).optional(),
+    totalAmount: z.number().finite().min(0).optional(),
+    projectId: z.string().max(191).nullable().optional(),
+    costItem: z.string().max(100).nullable().optional(),
+    serialLot: z.string().max(191).nullable().optional(),
+    costObjectId: z.string().max(191).nullable().optional(),
   });
   const ReceiptSchema = z.object({
+    code: z.string().trim().max(100).optional(),
     warehouseId: z.string().trim().min(1).max(191),
     lines: z.array(LineSchema).min(1).max(500),
+    receiptSubType: z.string().max(64).optional(),
+    partnerCode: z.string().max(100).nullable().optional(),
+    partnerName: z.string().max(255).nullable().optional(),
+    partnerAddress: z.string().max(1000).nullable().optional(),
+    deliverer: z.string().max(191).nullable().optional(),
+    purchaserId: z.string().max(191).nullable().optional(),
+    postingDate: z.string().max(191).nullable().optional(),
+    docDate: z.string().max(40).nullable().optional(),
+    invoiceNumber: z.string().max(100).nullable().optional(),
+    invoiceDate: z.string().max(40).nullable().optional(),
+    customsDeclarationNumber: z.string().max(100).nullable().optional(),
+    invoiceLookupCode: z.string().max(100).nullable().optional(),
+    invoiceLookupUrl: z.string().max(1000).nullable().optional(),
+    totalPreTax: z.number().finite().min(0).optional(),
+    vatRate: z.number().finite().min(0).max(100).optional(),
+    vatAmount: z.number().finite().min(0).optional(),
+    totalAmount: z.number().finite().min(0).optional(),
+    shippingFee: z.number().finite().min(0).optional(),
+    paymentStatus: z.string().max(32).optional(),
+    paymentDueDate: z.string().max(40).nullable().optional(),
+    attachments: z.union([z.string(), z.array(z.any())]).nullable().optional(),
     referenceType: z.string().max(64).nullable().optional(),
     referenceId: z.string().max(191).nullable().optional(),
     notes: z.string().max(5000).nullable().optional(),
   });
   const TransferSchema = z.object({
+    code: z.string().trim().max(100).optional(),
     sourceWarehouseId: z.string().trim().min(1).max(191),
     destWarehouseId: z.string().trim().min(1).max(191),
     lines: z.array(LineSchema).min(1).max(500),
@@ -174,24 +584,74 @@ export function stockRoutes(db: any) {
   async function createDocument(docType: string, code: string, warehouses: { warehouseId?: string | null; sourceWarehouseId?: string | null; destWarehouseId?: string | null }, body: any, user: any) {
     const now = new Date().toISOString();
     const id = randomUUID();
+    const finalCode = (typeof body.code === 'string' && body.code.trim()) ? body.code.trim() : code;
+
+    let computedPreTax = 0;
+    let computedVat = 0;
+    for (const line of body.lines) {
+      const q = Number(line.quantity) || 0;
+      const p = Number(line.unitPrice) || 0;
+      const rate = Number(line.vatRate) || 0;
+      const linePreTax = q * p;
+      const lineVat = line.vatAmount !== undefined ? Number(line.vatAmount) : (linePreTax * rate / 100);
+      computedPreTax += linePreTax;
+      computedVat += lineVat;
+    }
+    const totalPreTax = body.totalPreTax !== undefined ? Number(body.totalPreTax) : computedPreTax;
+    const vatAmount = body.vatAmount !== undefined ? Number(body.vatAmount) : computedVat;
+    const totalAmount = body.totalAmount !== undefined ? Number(body.totalAmount) : (totalPreTax + vatAmount);
+    const shippingFee = Number(body.shippingFee) || 0;
+    const attachmentsStr = typeof body.attachments === 'string' ? body.attachments : (Array.isArray(body.attachments) ? JSON.stringify(body.attachments) : null);
+
     await beginStockTransaction(db);
     try {
-    const validationError = await validateLines(body.lines, warehouses.warehouseId || warehouses.sourceWarehouseId || '');
-    if (validationError) throw Object.assign(new Error(validationError), { status: 400 });
-    await db.run(
-      `INSERT INTO stock_documents (id, code, docType, status, warehouseId, sourceWarehouseId, destWarehouseId, referenceType, referenceId, notes, createdBy, createdAt, updatedAt)
-       VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, code, docType, warehouses.warehouseId ?? null, warehouses.sourceWarehouseId ?? null, warehouses.destWarehouseId ?? null,
-        body.referenceType ?? null, body.referenceId ?? null, body.notes ?? null, user.id, now, now]
-    );
-    for (const line of body.lines) {
+      const validationError = await validateLines(body.lines, warehouses.warehouseId || warehouses.sourceWarehouseId || '');
+      if (validationError) throw Object.assign(new Error(validationError), { status: 400 });
+
       await db.run(
-        'INSERT INTO stock_document_lines (id, documentId, productId, quantity, unitPrice, locationId, note) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [randomUUID(), id, line.productId, line.quantity, line.unitPrice ?? 0, line.locationId ?? null, line.note ?? null]
+        `INSERT INTO stock_documents (
+          id, code, docType, status, receiptSubType, warehouseId, sourceWarehouseId, destWarehouseId,
+          partnerCode, partnerName, partnerAddress, deliverer, purchaserId,
+          postingDate, docDate, invoiceNumber, invoiceDate, customsDeclarationNumber,
+          invoiceLookupCode, invoiceLookupUrl, totalPreTax, vatRate, vatAmount, totalAmount, shippingFee,
+          paymentStatus, paymentDueDate, attachments, referenceType, referenceId, notes, createdBy, createdAt, updatedAt
+        ) VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id, finalCode, docType, body.receiptSubType || (docType === 'RECEIPT' ? 'DOMESTIC_PURCHASE' : null),
+          warehouses.warehouseId ?? null, warehouses.sourceWarehouseId ?? null, warehouses.destWarehouseId ?? null,
+          body.partnerCode ?? null, body.partnerName ?? null, body.partnerAddress ?? null,
+          body.deliverer ?? null, body.purchaserId ?? null,
+          body.postingDate ?? now, body.docDate ?? now.slice(0, 10),
+          body.invoiceNumber ?? null, body.invoiceDate ?? null, body.customsDeclarationNumber ?? null,
+          body.invoiceLookupCode ?? null, body.invoiceLookupUrl ?? null,
+          totalPreTax, Number(body.vatRate) || 0, vatAmount, totalAmount, shippingFee,
+          body.paymentStatus || 'UNPAID', body.paymentDueDate ?? null,
+          attachmentsStr, body.referenceType ?? null, body.referenceId ?? null, body.notes ?? null,
+          user.id, now, now
+        ]
       );
-    }
-    await db.run('COMMIT');
-    return { id, code };
+      for (const line of body.lines) {
+        const q = Number(line.quantity) || 0;
+        const p = Number(line.unitPrice) || 0;
+        const rate = Number(line.vatRate) || 0;
+        const linePreTax = q * p;
+        const lineVat = line.vatAmount !== undefined ? Number(line.vatAmount) : (linePreTax * rate / 100);
+        const lineTotal = line.totalAmount !== undefined ? Number(line.totalAmount) : (linePreTax + lineVat);
+        await db.run(
+          `INSERT INTO stock_document_lines (
+            id, documentId, productId, quantity, unitPrice, locationId, note,
+            accountDebit, accountCredit, vatRate, vatAmount, totalAmount, projectId, costItem, serialLot, costObjectId
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            randomUUID(), id, line.productId, q, p, line.locationId ?? null, line.note ?? null,
+            line.accountDebit || '1561', line.accountCredit || '331',
+            rate, lineVat, lineTotal, line.projectId ?? null, line.costItem ?? null,
+            line.serialLot ?? null, line.costObjectId ?? null
+          ]
+        );
+      }
+      await db.run('COMMIT');
+      return { id, code: finalCode };
     } catch (error) {
       await db.run('ROLLBACK');
       throw error;
@@ -234,6 +694,16 @@ export function stockRoutes(db: any) {
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to create transfer' }); }
   });
 
+  router.post('/returns', validate(ReceiptSchema), async (req, res) => {
+    try {
+      const user = req.user;
+      if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      const access = await requireWarehouse(user, req.body.warehouseId);
+      if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      res.status(201).json(await createDocument('RETURN', docCode('PTH'), { warehouseId: req.body.warehouseId }, req.body, user));
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to create return document' }); }
+  });
+
   // ── Chứng từ: hoàn tất (sinh moves + balances, transaction) ────────────────
 
   async function loadDocument(id: string) {
@@ -256,12 +726,55 @@ export function stockRoutes(db: any) {
   async function validateLines(lines: any[], warehouseId: string): Promise<string | null> {
     if (lines.length === 0) return 'Document has no lines';
     for (const line of lines) {
-      const product = await db.get('SELECT id FROM products WHERE id = ?', [line.productId]);
-      if (!product) return `Unknown product: ${line.productId}`;
       if (!Number.isFinite(Number(line.quantity)) || !(Number(line.quantity) > 0)) return `Invalid quantity for product: ${line.productId}`;
-      if (!(await assertLocation(warehouseId, line.locationId))) return `Invalid location for product: ${line.productId}`;
+    }
+    const productIds = [...new Set(lines.map((l: any) => l.productId))];
+    const foundProducts = await db.all(
+      `SELECT id FROM products WHERE id IN (${productIds.map(() => '?').join(', ')})`,
+      productIds
+    ).catch(() => []);
+    const foundSet = new Set((foundProducts || []).map((r: any) => r.id));
+    for (const pid of productIds) {
+      if (!foundSet.has(pid)) return `Unknown product: ${pid}`;
+    }
+    const locationIds = [...new Set(lines.map((l: any) => l.locationId || '').filter(Boolean))];
+    if (locationIds.length > 0) {
+      const locRows = await db.all(
+        `SELECT id FROM stock_locations WHERE warehouseId = ? AND id IN (${locationIds.map(() => '?').join(', ')}) AND isActive = 1`,
+        [warehouseId, ...locationIds]
+      ).catch(() => []);
+      const locSet = new Set((locRows || []).map((r: any) => r.id));
+      for (const lid of locationIds) {
+        if (!locSet.has(lid)) return `Invalid location for product: ${lines.find((l: any) => (l.locationId || '') === lid)?.productId}`;
+      }
     }
     return null;
+  }
+
+  /** Available theo từng (product, location) trong 1 query — thay N lần availableOf. */
+  async function availableMap(warehouseId: string, keys: { productId: string; locationId: string }[]): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    if (keys.length === 0) return out;
+    const pairs = keys.map((k) => `${k.productId}|${k.locationId || ''}`);
+    const uniqPairs = [...new Set(pairs)];
+    const productIds = [...new Set(keys.map((k) => k.productId))];
+    const locationIds = [...new Set(keys.map((k) => k.locationId || '').filter(Boolean))];
+    let query = 'SELECT productId, locationId, onHand, reserved FROM stock_balances WHERE warehouseId = ?';
+    const params: any[] = [warehouseId];
+    query += ` AND productId IN (${productIds.map(() => '?').join(', ')})`;
+    params.push(...productIds);
+    if (locationIds.length > 0) {
+      query += ` AND (locationId = '' OR locationId IN (${locationIds.map(() => '?').join(', ')}))`;
+      params.push(...locationIds);
+    } else {
+      query += ` AND locationId = ''`;
+    }
+    const rows = await db.all(query, params).catch(() => []);
+    for (const r of rows || []) {
+      out.set(`${r.productId}|${r.locationId || ''}`, Number(r.onHand ?? 0) - Number(r.reserved ?? 0));
+    }
+    for (const p of uniqPairs) if (!out.has(p)) out.set(p, 0);
+    return out;
   }
 
   router.post('/receipts/:id/complete', async (req, res) => {
@@ -269,7 +782,9 @@ export function stockRoutes(db: any) {
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
     let transactionOpen = false;
     try {
-      await beginStockTransaction(db);
+      const pre = await loadDocument(String(req.params.id));
+      if (!pre || pre.doc.docType !== 'RECEIPT') return res.status(404).json({ error: 'Receipt not found' });
+      await beginStockTransaction(db, [pre.doc.warehouseId]);
       transactionOpen = true;
       const loaded = await loadDocument(String(req.params.id));
       if (!loaded || loaded.doc.docType !== 'RECEIPT') return res.status(404).json({ error: 'Receipt not found' });
@@ -305,7 +820,9 @@ export function stockRoutes(db: any) {
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
     let transactionOpen = false;
     try {
-      await beginStockTransaction(db);
+      const pre = await loadDocument(String(req.params.id));
+      if (!pre || pre.doc.docType !== 'ISSUE') return res.status(404).json({ error: 'Issue not found' });
+      await beginStockTransaction(db, [pre.doc.warehouseId]);
       transactionOpen = true;
       const loaded = await loadDocument(String(req.params.id));
       if (!loaded || loaded.doc.docType !== 'ISSUE') return res.status(404).json({ error: 'Issue not found' });
@@ -314,10 +831,14 @@ export function stockRoutes(db: any) {
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       const err = await validateLines(loaded.lines, loaded.doc.warehouseId);
       if (err) return res.status(400).json({ error: err });
-      for (const line of aggregateLines(loaded.lines)) {
-        if (!(await isSaleableLocation(loaded.doc.warehouseId, line.locationId || ''))) return res.status(400).json({ error: 'Only saleable stock can be issued' });
-        const available = await availableOf(line.productId, loaded.doc.warehouseId, line.locationId || '');
-        if (available < Number(line.quantity)) {
+      const agg = aggregateLines(loaded.lines);
+      const saleable = await saleableLocationSet(loaded.doc.warehouseId, agg.map((l) => l.locationId || ''));
+      for (const line of agg) {
+        if (!saleable.has(line.locationId || '')) return res.status(400).json({ error: 'Only saleable stock can be issued' });
+      }
+      const avail = await availableMap(loaded.doc.warehouseId, agg.map((l) => ({ productId: l.productId, locationId: l.locationId || '' })));
+      for (const line of agg) {
+        if ((avail.get(`${line.productId}|${line.locationId || ''}`) ?? 0) < Number(line.quantity)) {
           return res.status(400).json({ error: `Insufficient available stock for product: ${line.productId}` });
         }
       }
@@ -348,7 +869,9 @@ export function stockRoutes(db: any) {
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
     let transactionOpen = false;
     try {
-      await beginStockTransaction(db);
+      const pre = await loadDocument(String(req.params.id));
+      if (!pre || pre.doc.docType !== 'TRANSFER') return res.status(404).json({ error: 'Transfer not found' });
+      await beginStockTransaction(db, [pre.doc.sourceWarehouseId, pre.doc.destWarehouseId]);
       transactionOpen = true;
       const loaded = await loadDocument(String(req.params.id));
       if (!loaded || loaded.doc.docType !== 'TRANSFER') return res.status(404).json({ error: 'Transfer not found' });
@@ -358,9 +881,10 @@ export function stockRoutes(db: any) {
       if (!from.ok || !to.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       const err = await validateLines(loaded.lines, loaded.doc.sourceWarehouseId);
       if (err) return res.status(400).json({ error: err });
-      for (const line of aggregateLines(loaded.lines)) {
-        const available = await availableOf(line.productId, loaded.doc.sourceWarehouseId, line.locationId || '');
-        if (available < Number(line.quantity)) {
+      const agg = aggregateLines(loaded.lines);
+      const avail = await availableMap(loaded.doc.sourceWarehouseId, agg.map((l) => ({ productId: l.productId, locationId: l.locationId || '' })));
+      for (const line of agg) {
+        if ((avail.get(`${line.productId}|${line.locationId || ''}`) ?? 0) < Number(line.quantity)) {
           return res.status(400).json({ error: `Insufficient available stock for product: ${line.productId}` });
         }
       }
@@ -391,7 +915,9 @@ export function stockRoutes(db: any) {
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
     let transactionOpen = false;
     try {
-      await beginStockTransaction(db);
+      const pre = await loadDocument(String(req.params.id));
+      if (!pre || pre.doc.docType !== 'TRANSFER') return res.status(404).json({ error: 'Transfer not found' });
+      await beginStockTransaction(db, [pre.doc.destWarehouseId]);
       transactionOpen = true;
       const loaded = await loadDocument(String(req.params.id));
       if (!loaded || loaded.doc.docType !== 'TRANSFER') return res.status(404).json({ error: 'Transfer not found' });
@@ -418,6 +944,93 @@ export function stockRoutes(db: any) {
       }
       res.json({ success: true });
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to receive transfer' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
+  });
+
+  const RelocationSchema = z.object({
+    warehouseId: z.string().trim().min(1).max(191),
+    productId: z.string().trim().min(1).max(191),
+    fromLocationId: z.string().trim().min(1).max(191),
+    toLocationId: z.string().trim().min(1).max(191),
+    quantity: z.number().positive(),
+    notes: z.string().trim().max(500).optional(),
+  });
+
+  router.post('/relocations', validate(RelocationSchema), async (req, res) => {
+    let transactionOpen = false;
+    try {
+      const user = req.user;
+      if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      if (normalizeManagementLevel(user.managementLevel) === MANAGEMENT_LEVELS.ADMIN) {
+        return res.status(403).json({ error: 'Admin cannot perform stock operations' });
+      }
+      const { warehouseId, productId, fromLocationId, toLocationId, quantity, notes } = req.body;
+      if (fromLocationId === toLocationId) {
+        return res.status(400).json({ error: 'Vị trí nguồn và vị trí đích phải khác nhau' });
+      }
+
+      const access = await requireWarehouse(user, warehouseId);
+      if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
+
+      const [fromLoc, toLoc] = await Promise.all([
+        db.get('SELECT * FROM stock_locations WHERE id = ? AND warehouseId = ? AND isActive = 1', [fromLocationId, warehouseId]),
+        db.get('SELECT * FROM stock_locations WHERE id = ? AND warehouseId = ? AND isActive = 1', [toLocationId, warehouseId]),
+      ]);
+      if (!fromLoc) return res.status(400).json({ error: 'Vị trí nguồn không hợp lệ hoặc đã khóa' });
+      if (!toLoc) return res.status(400).json({ error: 'Vị trí đích không hợp lệ hoặc đã khóa' });
+
+      await assertNotCounting(warehouseId);
+
+      const fromBal = await db.get(
+        'SELECT onHand, reserved FROM stock_balances WHERE productId = ? AND warehouseId = ? AND locationId = ?',
+        [productId, warehouseId, fromLocationId]
+      );
+      const onHand = Number(fromBal?.onHand ?? 0);
+      const reserved = Number(fromBal?.reserved ?? 0);
+      const available = onHand - reserved;
+      if (available < quantity) {
+        return res.status(400).json({
+          error: `Số lượng khả dụng tại vị trí ${fromLoc.name || fromLoc.code} không đủ (${available} < ${quantity})`,
+        });
+      }
+
+      const code = docCode('DCV');
+      await beginStockTransaction(db);
+      transactionOpen = true;
+
+      await postMove(db.run.bind(db), {
+        productId,
+        warehouseId,
+        locationId: fromLocationId,
+        quantity: -quantity,
+        moveType: 'INTERNAL_MOVE',
+        referenceType: 'RELOCATION',
+        referenceId: code,
+        documentLineId: null,
+        createdBy: user.id,
+      });
+
+      await postMove(db.run.bind(db), {
+        productId,
+        warehouseId,
+        locationId: toLocationId,
+        quantity: quantity,
+        moveType: 'INTERNAL_MOVE',
+        referenceType: 'RELOCATION',
+        referenceId: code,
+        documentLineId: null,
+        createdBy: user.id,
+      });
+
+      await db.run('COMMIT');
+      transactionOpen = false;
+
+      res.status(201).json({ success: true, code, message: 'Điều chuyển vị trí nội bộ thành công' });
+    } catch (e: any) {
+      if (transactionOpen) await db.run('ROLLBACK');
+      res.status(e.status || 500).json({ error: e.status ? e.message : 'Lỗi khi điều chuyển vị trí' });
+    } finally {
       if (transactionOpen) await db.run('ROLLBACK');
     }
   });
@@ -523,14 +1136,14 @@ export function stockRoutes(db: any) {
         FROM stock_balances b
         LEFT JOIN products p ON p.id = b.productId
         LEFT JOIN warehouses w ON w.id = b.warehouseId
-        LEFT JOIN stock_moves m ON m.productId = b.productId AND m.warehouseId = b.warehouseId
+        LEFT JOIN stock_moves m ON m.productId = b.productId AND m.warehouseId = b.warehouseId AND m.createdAt >= ?
         WHERE 1=1`;
-      const params: any[] = [];
+      const params: any[] = [cutoff];
       if (warehouseId) { query += ' AND b.warehouseId = ?'; params.push(warehouseId); }
       else if (!isDirector(user)) { query += ` AND b.warehouseId IN (${scope.map(() => '?').join(', ')})`; params.push(...scope); }
       query += ` GROUP BY b.productId, b.warehouseId, p.name, w.code, w.name
         HAVING onHand > 0 AND (lastMoveAt IS NULL OR lastMoveAt < ?)
-        ORDER BY lastMoveAt ASC`;
+        ORDER BY lastMoveAt ASC LIMIT 500`;
       params.push(cutoff);
       res.json(await db.all(query, params));
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch slow-moving stock' }); }
@@ -561,6 +1174,9 @@ export function stockRoutes(db: any) {
       else if (!isDirector(user)) { query += ` AND r.warehouseId IN (${scope.map(() => '?').join(', ')})`; params.push(...scope); }
       if (status?.trim()) { query += ' AND r.status = ?'; params.push(status.trim()); }
       query += ' ORDER BY r.createdAt DESC';
+      const resvPage = paginationOf(req.query as Record<string, string | undefined>);
+      query += ' LIMIT ? OFFSET ?';
+      params.push(resvPage.limit, resvPage.offset);
       res.json(await db.all(query, params));
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch reservations' }); }
   });
@@ -793,6 +1409,9 @@ export function stockRoutes(db: any) {
       if (productId?.trim()) { query += ' AND s.productId = ?'; params.push(productId.trim()); }
       if (q?.trim()) { query += ' AND (s.serialNumber LIKE ? OR s.lotCode LIKE ? OR p.name LIKE ?)'; params.push(`%${q.trim()}%`, `%${q.trim()}%`, `%${q.trim()}%`); }
       query += ' ORDER BY s.createdAt DESC';
+      const serialPage = paginationOf(req.query as Record<string, string | undefined>);
+      query += ' LIMIT ? OFFSET ?';
+      params.push(serialPage.limit, serialPage.offset);
       res.json(await db.all(query, params));
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch serials' }); }
   });
@@ -1043,7 +1662,7 @@ export function stockRoutes(db: any) {
       const now = new Date().toISOString();
       if (direction === 1) {
         for (const item of items) {
-          const available = await availableOf(item.productId, warehouseId, '');
+          const available = await saleableAvailableOf(item.productId, warehouseId);
           if (available < Number(item.qtyPerBundle) * qty) {
             return res.status(400).json({ error: `Insufficient stock for component: ${item.productId}` });
           }
@@ -1113,7 +1732,10 @@ export function stockRoutes(db: any) {
       else if (!isDirector(user)) { query += ` AND m.warehouseId IN (${scope.map(() => '?').join(', ')})`; params.push(...scope); }
       if (productId?.trim()) { query += ' AND m.productId = ?'; params.push(productId.trim()); }
       if (moveType?.trim()) { query += ' AND m.moveType = ?'; params.push(moveType.trim()); }
-      query += ' ORDER BY m.createdAt DESC LIMIT 500';
+      query += ' ORDER BY m.createdAt DESC';
+      const movePage = paginationOf(req.query as Record<string, string | undefined>);
+      query += ' LIMIT ? OFFSET ?';
+      params.push(movePage.limit, movePage.offset);
       res.json(await db.all(query, params));
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch stock moves' }); }
   });
@@ -1171,6 +1793,9 @@ export function stockRoutes(db: any) {
       else if (!isDirector(user)) { query += ` AND c.warehouseId IN (${scope.map(() => '?').join(', ')})`; params.push(...scope); }
       if (status?.trim()) { query += ' AND c.status = ?'; params.push(status.trim()); }
       query += ' ORDER BY c.createdAt DESC';
+      const countPage = paginationOf(req.query as Record<string, string | undefined>);
+      query += ' LIMIT ? OFFSET ?';
+      params.push(countPage.limit, countPage.offset);
       res.json(await db.all(query, params));
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch stock counts' }); }
   });
@@ -1451,6 +2076,88 @@ export function stockRoutes(db: any) {
       query += ' ORDER BY createdAt DESC LIMIT 200';
       res.json(await db.all(query, params));
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch MISA sync logs' }); }
+  });
+
+  router.get('/misa-reconcile', async (req, res) => {
+    try {
+      const user = req.user;
+      if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      if (!requireWarehouseManager(user)) return res.status(403).json({ error: 'Warehouse manager access required' });
+      const { warehouseId } = req.query as Record<string, string | undefined>;
+      const scope = await scopeOf(user);
+      if (!isDirector(user)) {
+        if (warehouseId && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      }
+
+      let query = `
+        SELECT 
+          p.id AS productId,
+          p.name AS productName,
+          p.unit AS unit,
+          p.category AS category,
+          p.importPrice AS importPrice,
+          p.defaultPrice AS defaultPrice,
+          w.id AS warehouseId,
+          w.code AS warehouseCode,
+          w.name AS warehouseName,
+          COALESCE(SUM(b.onHand), 0) AS onHand,
+          COALESCE(SUM(b.reserved), 0) AS reserved,
+          COALESCE(SUM(CASE WHEN b.locationId = '' OR (l.isActive = 1 AND l.purpose = 'SALEABLE') THEN b.onHand - b.reserved ELSE 0 END), 0) AS available,
+          mm.misaCode AS misaCode,
+          mm.misaName AS misaName
+        FROM products p
+        LEFT JOIN misa_mappings mm ON mm.entityType = 'product' AND mm.entityId = p.id
+        LEFT JOIN stock_balances b ON b.productId = p.id
+        LEFT JOIN warehouses w ON w.id = b.warehouseId
+        LEFT JOIN stock_locations l ON l.id = b.locationId
+        WHERE (w.isActive = 1 OR w.id IS NULL)
+      `;
+      const params: any[] = [];
+      if (warehouseId?.trim()) {
+        query += ' AND (w.id = ? OR (w.id IS NULL AND mm.misaCode IS NOT NULL))';
+        params.push(warehouseId.trim());
+      } else if (!isDirector(user) && scope.length > 0) {
+        query += ` AND (w.id IN (${scope.map(() => '?').join(', ')}) OR (w.id IS NULL AND mm.misaCode IS NOT NULL))`;
+        params.push(...scope);
+      }
+      query += `
+        GROUP BY p.id, p.name, p.unit, p.category, p.importPrice, p.defaultPrice, w.id, w.code, w.name, mm.misaCode, mm.misaName
+        HAVING onHand != 0 OR reserved != 0 OR mm.misaCode IS NOT NULL
+        ORDER BY w.name ASC, p.name ASC
+      `;
+
+      res.json(await db.all(query, params));
+    } catch (e: any) {
+      res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch MISA reconciliation data' });
+    }
+  });
+
+  router.post('/misa-reconcile/log', async (req, res) => {
+    try {
+      const user = req.user;
+      if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      if (!requireWarehouseManager(user)) return res.status(403).json({ error: 'Warehouse manager access required' });
+      const { itemsCount, matchedCount, mismatchedCount, unmappedCount, notes, warehouseId } = req.body || {};
+      const now = new Date().toISOString();
+      const idempotencyKey = `reconcile-${Date.now()}-${randomUUID().slice(0, 8)}`;
+      const payload = JSON.stringify({
+        warehouseId: warehouseId || 'ALL',
+        itemsCount: Number(itemsCount || 0),
+        matchedCount: Number(matchedCount || 0),
+        mismatchedCount: Number(mismatchedCount || 0),
+        unmappedCount: Number(unmappedCount || 0),
+        notes: notes || '',
+        reconciledBy: user.name || user.id,
+      });
+      const status = Number(mismatchedCount || 0) > 0 ? 'DISCREPANCY' : 'MATCHED';
+      await db.run(
+        'INSERT INTO misa_sync_logs (id, direction, entityType, entityId, idempotencyKey, status, payload, error, createdAt, finishedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [randomUUID(), 'RECONCILE', 'stock_balance', warehouseId || 'ALL', idempotencyKey, status, payload, null, now, now]
+      );
+      res.status(201).json({ success: true, idempotencyKey });
+    } catch (e: any) {
+      res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to log MISA reconciliation' });
+    }
   });
 
   return router;

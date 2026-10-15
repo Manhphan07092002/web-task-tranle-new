@@ -23,20 +23,58 @@ export interface Warehouse {
   isActive: boolean;
 }
 
-export async function getStockBalances(params: { warehouseId?: string; q?: string; purpose?: string } = {}): Promise<StockBalanceRow[]> {
+export async function getStockBalances(params: { warehouseId?: string; q?: string; purpose?: string; limit?: number; offset?: number } = {}): Promise<StockBalanceRow[]> {
   const qs = new URLSearchParams();
   if (params.warehouseId) qs.set('warehouseId', params.warehouseId);
   if (params.q) qs.set('q', params.q);
   if (params.purpose) qs.set('purpose', params.purpose);
+  if (params.limit !== undefined) qs.set('limit', String(params.limit));
+  if (params.offset) qs.set('offset', String(params.offset));
   const res = await apiFetch(`/api/stock/balances${qs.toString() ? `?${qs}` : ''}`);
   if (!res.ok) throw new Error('Không tải được tồn kho');
   return res.json();
 }
 
+let warehouseCache: { at: number; data: Warehouse[] } | null = null;
+const WAREHOUSE_CACHE_TTL = 60_000;
+
 export async function getWarehouses(): Promise<Warehouse[]> {
+  if (warehouseCache && Date.now() - warehouseCache.at < WAREHOUSE_CACHE_TTL) return warehouseCache.data;
   const res = await apiFetch('/api/warehouses');
   if (!res.ok) throw new Error('Không tải được danh sách kho');
-  return res.json();
+  const data = await res.json();
+  warehouseCache = { at: Date.now(), data };
+  return data;
+}
+
+export function invalidateWarehousesCache(): void {
+  warehouseCache = null;
+}
+
+export async function createWarehouse(body: { code: string; name: string; region?: string | null; address?: string | null }): Promise<{ id: string }> {
+  const res = await apiFetch('/api/warehouses', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Tạo kho thất bại');
+  invalidateWarehousesCache();
+  return data;
+}
+
+export async function updateWarehouse(id: string, body: Partial<{ code: string; name: string; region: string | null; address: string | null; isActive: boolean }>): Promise<void> {
+  const res = await apiFetch(`/api/warehouses/${id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Cập nhật kho thất bại');
+  invalidateWarehousesCache();
+}
+
+export async function deleteWarehouse(id: string): Promise<void> {
+  const res = await apiFetch(`/api/warehouses/${id}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Xóa kho thất bại');
+  invalidateWarehousesCache();
 }
 
 export interface StockDocument {
@@ -52,6 +90,51 @@ export interface StockDocument {
   notes?: string | null;
   createdBy?: string | null;
   createdAt: string;
+  partnerCode?: string | null;
+  partnerName?: string | null;
+  invoiceNumber?: string | null;
+  invoiceDate?: string | null;
+  postingDate?: string | null;
+  accountingDate?: string | null;
+  docDate?: string | null;
+  paymentStatus?: string | null;
+  paymentDueDate?: string | null;
+  partnerAddress?: string | null;
+  deliverer?: string | null;
+  purchaserId?: string | null;
+  vatRate?: number | null;
+  vatAmount?: number | null;
+  totalVat?: number | null;
+  totalPreTax?: number | null;
+  totalPreVat?: number | null;
+  totalAmount?: number | null;
+  shippingFee?: number | null;
+  invoiceLookupCode?: string | null;
+  invoiceLookupUrl?: string | null;
+  customsDeclarationNumber?: string | null;
+  attachments?: string | string[] | null;
+  warehouseName?: string | null;
+  sourceWarehouseName?: string | null;
+  destWarehouseName?: string | null;
+  createdByName?: string | null;
+  lines?: StockDocDetailLine[];
+}
+
+export interface StockDocDetailLine extends StockDocLine {
+  id?: string;
+  documentId?: string;
+  productName?: string;
+  productSku?: string;
+  productCode?: string;
+  unit?: string;
+  uom?: string;
+  locationCode?: string;
+  locationName?: string;
+  origin?: string;
+  category?: string;
+  tracking?: string;
+  preVatAmount?: number;
+  notes?: string | null;
 }
 
 export interface StockDocLine {
@@ -60,13 +143,46 @@ export interface StockDocLine {
   unitPrice?: number;
   locationId?: string | null;
   note?: string | null;
+  vatRate?: number;
+  vatAmount?: number;
+  totalAmount?: number;
+  accountDebit?: string | null;
+  accountCredit?: string | null;
+  projectId?: string | null;
+  costItem?: string | null;
+  serialLot?: string | null;
+  unit?: string | null;
 }
 
-export async function getStockDocuments(params: { docType?: string; status?: string; warehouseId?: string } = {}): Promise<StockDocument[]> {
+export interface ReceiptDocBody {
+  warehouseId: string;
+  lines: StockDocLine[];
+  notes?: string;
+  receiptSubType?: string;
+  partnerCode?: string | null;
+  partnerName?: string | null;
+  partnerAddress?: string | null;
+  deliverer?: string | null;
+  purchaserId?: string | null;
+  postingDate?: string | null;
+  docDate?: string | null;
+  invoiceNumber?: string | null;
+  invoiceDate?: string | null;
+  customsDeclarationNumber?: string | null;
+  invoiceLookupCode?: string | null;
+  invoiceLookupUrl?: string | null;
+  paymentStatus?: string;
+  paymentDueDate?: string | null;
+  attachments?: string | string[] | null;
+}
+
+export async function getStockDocuments(params: { docType?: string; status?: string; warehouseId?: string; limit?: number; offset?: number } = {}): Promise<StockDocument[]> {
   const qs = new URLSearchParams();
   if (params.docType) qs.set('docType', params.docType);
   if (params.status) qs.set('status', params.status);
   if (params.warehouseId) qs.set('warehouseId', params.warehouseId);
+  if (params.limit !== undefined) qs.set('limit', String(params.limit));
+  if (params.offset) qs.set('offset', String(params.offset));
   const res = await apiFetch(`/api/stock/documents${qs.toString() ? `?${qs}` : ''}`);
   if (!res.ok) throw new Error('Không tải được chứng từ kho');
   return res.json();
@@ -79,9 +195,9 @@ async function postDoc(path: string, body: unknown): Promise<{ id: string; code:
   return data;
 }
 
-export const createReceipt = (body: { warehouseId: string; lines: StockDocLine[]; notes?: string }) =>
+export const createReceipt = (body: ReceiptDocBody) =>
   postDoc('/api/stock/receipts', body);
-export const createIssue = (body: { warehouseId: string; lines: StockDocLine[]; notes?: string }) =>
+export const createIssue = (body: ReceiptDocBody) =>
   postDoc('/api/stock/issues', body);
 export const createTransfer = (body: { sourceWarehouseId: string; destWarehouseId: string; lines: StockDocLine[]; notes?: string }) =>
   postDoc('/api/stock/transfers', body);
@@ -177,12 +293,14 @@ export interface StockSerial {
   warehouseName?: string | null;
 }
 
-export async function getStockSerials(params: { q?: string; status?: string; warehouseId?: string; productId?: string } = {}): Promise<StockSerial[]> {
+export async function getStockSerials(params: { q?: string; status?: string; warehouseId?: string; productId?: string; limit?: number; offset?: number } = {}): Promise<StockSerial[]> {
   const qs = new URLSearchParams();
   if (params.q) qs.set('q', params.q);
   if (params.status) qs.set('status', params.status);
   if (params.warehouseId) qs.set('warehouseId', params.warehouseId);
   if (params.productId) qs.set('productId', params.productId);
+  if (params.limit !== undefined) qs.set('limit', String(params.limit));
+  if (params.offset) qs.set('offset', String(params.offset));
   const res = await apiFetch(`/api/stock/serials${qs.toString() ? `?${qs}` : ''}`);
   if (!res.ok) throw new Error('Không tải được serial/lô');
   return res.json();
@@ -280,11 +398,13 @@ export interface StockMove {
   createdByName?: string | null;
 }
 
-export async function getStockMoves(params: { warehouseId?: string; productId?: string; moveType?: string } = {}): Promise<StockMove[]> {
+export async function getStockMoves(params: { warehouseId?: string; productId?: string; moveType?: string; limit?: number; offset?: number } = {}): Promise<StockMove[]> {
   const qs = new URLSearchParams();
   if (params.warehouseId) qs.set('warehouseId', params.warehouseId);
   if (params.productId) qs.set('productId', params.productId);
   if (params.moveType) qs.set('moveType', params.moveType);
+  if (params.limit !== undefined) qs.set('limit', String(params.limit));
+  if (params.offset) qs.set('offset', String(params.offset));
   const res = await apiFetch(`/api/stock/moves${qs.toString() ? `?${qs}` : ''}`);
   if (!res.ok) throw new Error('Không tải được lịch sử hàng hóa');
   return res.json();
@@ -373,10 +493,12 @@ export interface StockCount {
   lines?: CountLine[];
 }
 
-export async function getStockCounts(warehouseId?: string, status?: string): Promise<StockCount[]> {
+export async function getStockCounts(warehouseId?: string, status?: string, page?: { limit?: number; offset?: number }): Promise<StockCount[]> {
   const qs = new URLSearchParams();
   if (warehouseId) qs.set('warehouseId', warehouseId);
   if (status) qs.set('status', status);
+  if (page?.limit !== undefined) qs.set('limit', String(page.limit));
+  if (page?.offset) qs.set('offset', String(page.offset));
   const res = await apiFetch(`/api/stock/counts${qs.toString() ? `?${qs}` : ''}`);
   if (!res.ok) throw new Error('Không tải được đợt kiểm kê');
   return res.json();
@@ -422,3 +544,44 @@ export async function approveCount(id: string): Promise<void> {
 export async function cancelCount(id: string): Promise<void> {
   await postDoc(`/api/stock/counts/${id}/cancel`, {});
 }
+
+export interface PartnerSuggestion {
+  id: string;
+  code: string;
+  name: string;
+  address?: string;
+  deliverer?: string;
+}
+
+export interface PartnerSuggestionsData {
+  partners: PartnerSuggestion[];
+  deliverers: string[];
+  notes: string[];
+  addresses: string[];
+}
+
+export async function getPartnerSuggestions(): Promise<PartnerSuggestionsData> {
+  const res = await apiFetch('/api/stock/partner-suggestions');
+  if (!res.ok) throw new Error('Không tải được gợi ý đối tác');
+  return res.json();
+}
+
+export async function getStockDocument(id: string): Promise<StockDocument & { lines: StockDocDetailLine[] }> {
+  const res = await apiFetch(`/api/stock/documents/${id}`);
+  if (!res.ok) throw new Error('Không tải được chi tiết chứng từ');
+  return res.json();
+}
+
+export async function cancelStockDocument(id: string): Promise<void> {
+  const res = await apiFetch(`/api/stock/documents/${id}/cancel`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Hủy chứng từ thất bại');
+}
+
+export async function deleteStockDocument(id: string): Promise<void> {
+  const res = await apiFetch(`/api/stock/documents/${id}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Xóa chứng từ thất bại');
+}
+
+

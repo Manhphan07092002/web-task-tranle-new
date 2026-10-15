@@ -58,7 +58,7 @@ export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
   };
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Kho vận · Vận hành</p>
@@ -210,7 +210,7 @@ function CountDetailModal({ count, onClose, onChanged, onError }: {
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
         </div>
-        <div className="flex-1 overflow-y-auto px-6 py-4">
+        <div className="flex-1 overflow-y-auto overflow-x-auto px-6 py-4">
           {err && <div className="flex items-center gap-2 p-3 mb-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm"><AlertCircle size={14} />{err}</div>}
           <table className="w-full text-sm">
             <thead>
@@ -227,11 +227,11 @@ function CountDetailModal({ count, onClose, onChanged, onError }: {
                 const v = varianceOf(l);
                 return (
                   <tr key={l.id}>
-                    <td className="py-2.5 pr-2">
+                    <td className="py-1.5 pr-2">
                       <p className="font-medium text-gray-800 text-[13px]">{l.productName || l.productId}</p>
                     </td>
-                    {!blind && <td className="py-2.5 text-right text-gray-400">{l.expectedQty ?? '—'}</td>}
-                    <td className="py-2.5 text-right">
+                    {!blind && <td className="py-1.5 text-right text-gray-400">{l.expectedQty ?? '—'}</td>}
+                    <td className="py-1.5 text-right">
                       {l.actualQty != null && !open ? (
                         <span className="font-bold text-gray-800">{l.actualQty}</span>
                       ) : open ? (
@@ -243,12 +243,12 @@ function CountDetailModal({ count, onClose, onChanged, onError }: {
                         <span className="text-gray-400">—</span>
                       )}
                     </td>
-                    <td className="py-2.5 text-right">
+                    <td className="py-1.5 text-right">
                       {v == null ? <span className="text-gray-300">—</span>
                         : v === 0 ? <span className="text-emerald-600 font-bold text-xs">Khớp</span>
                           : <span className={`font-bold text-xs ${v > 0 ? 'text-blue-600' : 'text-red-500'}`}>{v > 0 ? '+' : ''}{v}</span>}
                     </td>
-                    <td className="py-2.5 text-right">
+                    <td className="py-1.5 text-right">
                       {open && (
                         <input type="checkbox" checked={checked.includes(l.id)}
                           onChange={() => setChecked((c) => (c.includes(l.id) ? c.filter((x) => x !== l.id) : [...c, l.id]))}

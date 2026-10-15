@@ -13,11 +13,18 @@ export function stockReportRoutes(db: any) {
     if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from >= to || to.getTime() - from.getTime() > 366 * 86400000) {
       return res.status(400).json({ error: 'Supply a valid reporting period of at most 366 days' });
     }
+    if (from.getTime() > Date.now()) {
+      return res.status(400).json({ error: 'Reporting period cannot start in the future' });
+    }
     try {
       const scope = await getWarehouseScope(db, req.user);
       const warehouseId = typeof req.query.warehouseId === 'string' ? req.query.warehouseId : '';
       if (level < MANAGEMENT_LEVELS.DIRECTOR && warehouseId && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
       if (level < MANAGEMENT_LEVELS.DIRECTOR && !scope.length) return res.json([]);
+      if (warehouseId && typeof db.get === 'function') {
+        const exists = await db.get('SELECT id FROM warehouses WHERE id = ?', [warehouseId]).catch(() => null);
+        if (!exists) return res.json([]);
+      }
       const fromIso = from.toISOString(), toIso = to.toISOString();
       const params: any[] = [fromIso, toIso, fromIso, toIso, fromIso, toIso, fromIso, toIso];
       let filter = '';

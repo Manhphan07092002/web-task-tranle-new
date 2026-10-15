@@ -40,7 +40,7 @@ export default function SlowStockPage({ deptKey }: { deptKey: DeptKey }) {
   };
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Kho vận · Kiểm soát</p>
@@ -92,10 +92,10 @@ export default function SlowStockPage({ deptKey }: { deptKey: DeptKey }) {
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm / Kho</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Tồn</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Khả dụng</th>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Di chuyển cuối</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm / Kho</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Tồn</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Khả dụng</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Di chuyển cuối</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -103,13 +103,13 @@ export default function SlowStockPage({ deptKey }: { deptKey: DeptKey }) {
                   const idle = daysIdle(r.lastMoveAt);
                   return (
                     <tr key={`${r.productId}|${r.warehouseId}`} className="hover:bg-gray-50/70">
-                      <td className="py-3 px-5">
+                      <td className="py-2 px-5">
                         <p className="font-semibold text-gray-800">{r.productName || r.productId}</p>
                         <p className="text-xs text-gray-400">{r.warehouseName || r.warehouseId}</p>
                       </td>
-                      <td className="py-3 px-4 text-right font-black text-gray-900">{Number(r.onHand).toLocaleString('vi-VN')}</td>
-                      <td className="py-3 px-4 text-right text-gray-500">{Number(r.available).toLocaleString('vi-VN')}</td>
-                      <td className="py-3 px-5 text-xs">
+                      <td className="py-2 px-4 text-right font-black text-gray-900">{Number(r.onHand).toLocaleString('vi-VN')}</td>
+                      <td className="py-2 px-4 text-right text-gray-500">{Number(r.available).toLocaleString('vi-VN')}</td>
+                      <td className="py-2 px-5 text-xs">
                         {idle == null
                           ? <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 font-bold">Chưa từng di chuyển</span>
                           : <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-bold">{idle} ngày trước</span>}

@@ -7,6 +7,8 @@ import { getWarehouses, type Warehouse } from '../../services/stockService';
 import { getProducts, type Product } from '../../services/productService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
+import { useAuth } from '../../contexts/AuthContext';
+import { levelOf, LEVELS } from '../../utils/rbac';
 
 const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
   HELD: { label: 'Đang giữ', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
@@ -21,6 +23,8 @@ const SOURCE_LABEL: Record<string, string> = {
 // Giữ hàng / phân bổ TP (§21): giữ từ available, giải phóng khi hủy/hết hạn,
 // consume khi xuất xong. Không tạo move khi giữ.
 export default function ReservationsPage({ deptKey }: { deptKey: DeptKey }) {
+  const { user } = useAuth();
+  const canManage = levelOf(user) >= LEVELS.MANAGER && levelOf(user) !== LEVELS.ADMIN;
   const [rows, setRows] = useState<Reservation[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -61,12 +65,12 @@ export default function ReservationsPage({ deptKey }: { deptKey: DeptKey }) {
   };
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Kho vận · Vận hành</p>
           <h1 className="text-2xl font-bold text-gray-800 mt-1">Giữ hàng / Phân bổ</h1>
-          <p className="text-gray-500 text-sm mt-1">Chỉ giữ từ tồn khả dụng — giải phóng khi hủy, xuất khi bàn giao.</p>
+          <p className="text-gray-500 text-sm mt-1">Chỉ giữ từ tồn khả dụng — giải phóng khi hủy, xuất khi bàn giao.{canManage ? '' : ' Bạn đang ở chế độ xem (cần quyền quản lý kho để thao tác).'}</p>
         </div>
         <div className="flex gap-2">
           <div className="flex bg-gray-100 rounded-xl p-1">
@@ -77,10 +81,12 @@ export default function ReservationsPage({ deptKey }: { deptKey: DeptKey }) {
               </button>
             ))}
           </div>
-          <button onClick={() => setShowCreate(true)}
-            className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-md transition-colors">
-            <PlusCircle size={16} /> Giữ hàng
-          </button>
+          {canManage && (
+            <button onClick={() => setShowCreate(true)}
+              className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-md transition-colors">
+              <PlusCircle size={16} /> Giữ hàng
+            </button>
+          )}
         </div>
       </div>
 
@@ -106,11 +112,11 @@ export default function ReservationsPage({ deptKey }: { deptKey: DeptKey }) {
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Hàng / Kho</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Số lượng</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Nguồn</th>
-                  <th className="text-center py-3 px-4 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
-                  <th className="text-right py-3 px-5 text-xs font-bold text-gray-500 uppercase">Thao tác</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Hàng / Kho</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Số lượng</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase hidden md:table-cell">Nguồn</th>
+                  <th className="text-center py-2 px-4 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
+                  <th className="text-right py-2 px-5 text-xs font-bold text-gray-500 uppercase">Thao tác</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -118,15 +124,15 @@ export default function ReservationsPage({ deptKey }: { deptKey: DeptKey }) {
                   const st = STATUS_LABEL[r.status] || STATUS_LABEL.HELD;
                   return (
                     <tr key={r.id} className="hover:bg-gray-50/70">
-                      <td className="py-3 px-5">
+                      <td className="py-2 px-5">
                         <p className="font-semibold text-gray-800">{r.productName || r.productId}</p>
                         <p className="text-xs text-gray-400">{r.warehouseName || r.warehouseId}</p>
                       </td>
-                      <td className="py-3 px-4 text-right font-black text-gray-900">{Number(r.quantity).toLocaleString('vi-VN')}</td>
-                      <td className="py-3 px-4 text-xs text-gray-500">{SOURCE_LABEL[r.sourceType] || r.sourceType}{r.sourceId ? ` · ${r.sourceId}` : ''}</td>
-                      <td className="py-3 px-4 text-center"><span className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${st.cls}`}>{st.label}</span></td>
-                      <td className="py-3 px-5">
-                        {r.status === 'HELD' && (
+                      <td className="py-2 px-4 text-right font-black text-gray-900">{Number(r.quantity).toLocaleString('vi-VN')}</td>
+                      <td className="py-2 px-4 text-xs text-gray-500 hidden md:table-cell">{SOURCE_LABEL[r.sourceType] || r.sourceType}{r.sourceId ? ` · ${r.sourceId}` : ''}</td>
+                      <td className="py-2 px-4 text-center"><span className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${st.cls}`}>{st.label}</span></td>
+                      <td className="py-2 px-5">
+                        {r.status === 'HELD' && canManage && (
                           <div className="flex justify-end gap-2">
                             <button disabled={actingId === r.id} onClick={() => act(r.id, 'release')}
                               className="flex items-center gap-1.5 px-3 py-1.5 border border-gray-200 hover:bg-gray-50 text-gray-600 rounded-lg text-xs font-bold disabled:opacity-60">
