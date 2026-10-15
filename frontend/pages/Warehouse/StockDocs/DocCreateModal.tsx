@@ -242,17 +242,17 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
   }, { pre: 0, vat: 0 });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className={`bg-white rounded-2xl shadow-2xl w-full ${moneyKind ? 'max-w-[79.2rem]' : 'max-w-3xl'} flex flex-col`} style={{ maxHeight: '92vh' }}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
-          <div>
-            <h3 className="font-bold text-gray-900">Tạo phiếu {KIND_META[kind].title.toLowerCase()} ({KIND_META[kind].code})</h3>
+    <div className="fixed inset-0 z-50 flex items-stretch sm:items-center justify-center bg-black/40 backdrop-blur-sm p-0 sm:p-4 overflow-y-auto">
+      <div className={`bg-white shadow-2xl w-full h-[100dvh] rounded-none sm:h-auto sm:rounded-2xl sm:max-h-[92vh] flex flex-col ${moneyKind ? 'sm:max-w-[79.2rem]' : 'sm:max-w-3xl'}`}>
+        <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-4 border-b border-gray-100 flex-shrink-0">
+          <div className="min-w-0">
+            <h3 className="font-bold text-gray-900 text-sm sm:text-base truncate">Tạo phiếu {KIND_META[kind].title.toLowerCase()} ({KIND_META[kind].code})</h3>
             {moneyKind && <p className="text-sm font-extrabold text-emerald-700 font-mono mt-0.5">Tổng: {(totals.pre + totals.vat).toLocaleString('vi-VN')} ₫</p>}
           </div>
           <div className="flex items-center gap-2">
             {kind === 'RECEIPT' && (
               <select value={receiptSubType} onChange={(e) => setReceiptSubType(e.target.value)} title="Loại chứng từ"
-                className="px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none max-w-[280px]">
+                className="px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none max-w-[150px] sm:max-w-[280px] truncate">
                 <option value="DOMESTIC_PURCHASE">Mua hàng trong nước nhập kho</option>
                 <option value="IMPORT_PURCHASE">Mua hàng nhập khẩu nhập kho</option>
                 <option value="OTHER_RECEIPT">Nhập kho khác</option>
@@ -262,11 +262,11 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
           </div>
         </div>
         <form onSubmit={submit} className="flex flex-col flex-1 min-h-0">
-          <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+          <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 sm:py-5 space-y-4">
             {err && <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm"><AlertCircle size={14} />{err}</div>}
             <div className={`grid gap-4 ${kind === 'TRANSFER' ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'}`}>
-              <div className="flex items-center gap-3">
-                <label className="text-xs font-bold text-gray-600 uppercase tracking-wider whitespace-nowrap shrink-0 min-w-[70px]">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
+                <label className="text-xs font-bold text-gray-600 uppercase tracking-wider whitespace-nowrap shrink-0 sm:min-w-[70px]">
                   {kind === 'TRANSFER' ? 'Kho gửi' : 'Kho'} <span className="text-red-500 font-bold">*</span>
                 </label>
                 <div className="flex-1 min-w-0">
@@ -283,8 +283,8 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                 </div>
               </div>
               {kind === 'TRANSFER' && (
-                <div className="flex items-center gap-3">
-                  <label className="text-xs font-bold text-gray-600 uppercase tracking-wider whitespace-nowrap shrink-0 min-w-[70px]">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
+                  <label className="text-xs font-bold text-gray-600 uppercase tracking-wider whitespace-nowrap shrink-0 sm:min-w-[70px]">
                     Kho nhận <span className="text-red-500 font-bold">*</span>
                   </label>
                   <div className="flex-1 min-w-0">
@@ -306,7 +306,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Nhà cung cấp</p>
-                  <div className="grid grid-cols-3 gap-x-3 gap-y-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-3 gap-y-2">
                     <div>
                       <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Mã NCC/KH</label>
                       <PartnerSuggestInput
@@ -319,7 +319,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                         className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500 transition-colors"
                       />
                     </div>
-                    <div className="col-span-2">
+                    <div className="sm:col-span-2">
                       <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Tên NCC/KH</label>
                       <PartnerSuggestInput
                         mode="name"
@@ -331,7 +331,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                         className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500 transition-colors"
                       />
                     </div>
-                    <div className="col-span-3">
+                    <div className="sm:col-span-3">
                       <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Địa chỉ</label>
                       <TextSuggestInput
                         value={partnerAddress}
@@ -351,7 +351,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                         className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500 transition-colors"
                       />
                     </div>
-                    <div className="col-span-2">
+                    <div className="sm:col-span-2">
                       <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Nhân viên mua hàng</label>
                       <select value={purchaserId} onChange={(e) => setPurchaserId(e.target.value)}
                         className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none">
@@ -359,7 +359,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                         {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
                       </select>
                     </div>
-                    <div className="col-span-3">
+                    <div className="sm:col-span-3">
                       <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Diễn giải</label>
                       <TextSuggestInput
                         as="textarea"
@@ -378,11 +378,11 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                         className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none resize-none focus:border-emerald-500 transition-colors"
                       />
                     </div>
-                    <div className="col-span-3">
+                    <div className="sm:col-span-3">
                       <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Tham chiếu</label>
-                      <div className="flex gap-2">
+                      <div className="flex flex-col sm:flex-row gap-2">
                         <select value={referenceType} onChange={(e) => setReferenceType(e.target.value)} title="Loại tham chiếu"
-                          className="w-36 px-2 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none">
+                          className="w-full sm:w-36 px-2 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none">
                           <option value="PO">PO mua hàng</option>
                           <option value="CONTRACT">Hợp đồng MB</option>
                           <option value="INVOICE">Hóa đơn</option>
@@ -398,7 +398,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                 </div>
                 <div>
                   <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Chứng từ</p>
-                  <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-2">
                     <div>
                       <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Ngày hạch toán <span className="text-red-500 font-bold">*</span></label>
                       <input type="date" value={postingDate} onChange={(e) => setPostingDate(e.target.value)}
@@ -409,7 +409,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                       <input type="date" value={docDate} onChange={(e) => setDocDate(e.target.value)}
                         className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none" />
                     </div>
-                    <div className="col-span-2">
+                    <div className="sm:col-span-2">
                       <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Số phiếu</label>
                       <input readOnly disabled value="Tự động" title="Số phiếu do hệ thống sinh khi lưu"
                         className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-gray-50 text-sm text-gray-400 outline-none" />
@@ -643,7 +643,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                     <FormattedNumberInput
                       value={Number(shippingFee) || 0}
                       onChange={(v) => setShippingFee(v > 0 ? String(v) : '')}
-                      className="w-64 px-3 py-2 border border-gray-200 rounded-none text-sm outline-none text-right tabular-nums focus:border-emerald-500"
+                      className="w-full sm:w-64 px-3 py-2 border border-gray-200 rounded-none text-sm outline-none text-right tabular-nums focus:border-emerald-500"
                       title="Chi phí mua hàng"
                       placeholder="0"
                     />
@@ -675,7 +675,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
             {moneyKind && (
               <div>
                 <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Hạch toán (áp dụng cho mọi dòng)</p>
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-x-3 gap-y-2 border border-gray-100 rounded-2xl px-4 py-3 bg-white">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-x-3 gap-y-2 border border-gray-100 rounded-2xl px-4 py-3 bg-white">
                   <div>
                     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">TK Kho / Nợ</label>
                     <input value={tkKho} onChange={(e) => setTkKho(e.target.value)}
@@ -776,10 +776,10 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
               </div>
             )}
           </div>
-          <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-100 bg-gray-50 rounded-b-2xl flex-shrink-0">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-xl">Hủy</button>
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sm:gap-3 px-4 sm:px-6 py-4 border-t border-gray-100 bg-gray-50 sm:rounded-b-2xl flex-shrink-0">
+            <button type="button" onClick={onClose} className="w-full sm:w-auto px-4 py-2.5 sm:py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-xl text-center">Hủy</button>
             <button type="submit" disabled={saving}
-              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60 flex items-center gap-2">
+              className="w-full sm:w-auto px-5 py-2.5 sm:py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60 flex items-center justify-center gap-2">
               {saving ? <><RefreshCw size={14} className="animate-spin" />Đang tạo...</> : 'Tạo phiếu nháp'}
             </button>
           </div>

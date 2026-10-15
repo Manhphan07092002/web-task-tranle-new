@@ -93,10 +93,10 @@ export function DocDetailModal({
   const meta = KIND_META[kind];
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-5xl w-full max-h-[92vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+    <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-stretch sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
+      <div className="bg-white shadow-2xl w-full h-[100dvh] rounded-none sm:h-auto sm:rounded-2xl sm:max-w-5xl sm:max-h-[92vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gray-50/70">
+        <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-4 border-b border-gray-100 bg-gray-50/70">
           <div className="flex items-center gap-3">
             <span className="px-2.5 py-1 rounded-lg text-xs font-black tracking-wider uppercase bg-emerald-100 text-emerald-800">
               {meta.code}
@@ -394,7 +394,7 @@ export function DocDetailModal({
         </div>
 
         {/* Footer Actions */}
-        <div className="flex items-center justify-between px-6 py-4 border-t border-gray-100 bg-gray-50/70">
+        <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-4 border-t border-gray-100 bg-gray-50/70">
           <div>
             {doc?.status === 'DRAFT' && (
               <button
