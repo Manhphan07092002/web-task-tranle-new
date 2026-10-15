@@ -573,6 +573,10 @@ export async function getNextDocCode(docType: 'RECEIPT' | 'ISSUE' | 'TRANSFER' |
   return data;
 }
 
+export function countLinesMissingSerials(lines: { productId?: string | null; quantity?: number | null; serialLot?: string | null }[]): number {
+  return lines.filter((l) => l.productId && Number(l.quantity) > 0 && !(l.serialLot || '').trim()).length;
+}
+
 export async function getStockDocument(id: string): Promise<StockDocument & { lines: StockDocDetailLine[] }> {
   const res = await apiFetch(`/api/stock/documents/${id}`);
   if (!res.ok) throw new Error('Không tải được chi tiết chứng từ');

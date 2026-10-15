@@ -13,6 +13,7 @@ export interface Product {
   salePrice?: number;
   importCode?: string;
   invoiceDate?: string;
+  warrantyMonths?: number;
   createdAt: string;
 }
 

@@ -8,7 +8,7 @@ import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageChec
 import { Card } from '../../components/UI';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
-  advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, deleteStockDocument,
+  advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, deleteStockDocument, countLinesMissingSerials,
   type StockDocument, type StockDocLine, type Warehouse,
   type PartnerSuggestion, type PartnerSuggestionsData, type StockDocDetailLine,
 } from '../../services/stockService';
@@ -67,6 +67,18 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
   };
 
   const whName = (id: string | null) => warehouses.find((w) => w.id === id)?.name || id || '—';
+
+  const completeWithCheck = async (d: StockDocument, fn: () => Promise<unknown>, failMsg: string) => {
+    // NV tự quyết từng dòng: chỉ cảnh báo khi thiếu serial, không chặn cứng.
+    if (d.docType !== 'TRANSFER') {
+      try {
+        const detail = await getStockDocument(d.id);
+        const missing = countLinesMissingSerials(detail.lines || []);
+        if (missing > 0 && !window.confirm(`Có ${missing} dòng chưa nhập serial/bảo hành. Vẫn hoàn thành phiếu?`)) return;
+      } catch { /* không tải được chi tiết thì vẫn cho hoàn thành */ }
+    }
+    await act(d.id, fn, failMsg);
+  };
 
   // Menu chuột phải: mặc định click = xem, chuột phải chọn Nhân bản / Sửa / Xóa.
   const [menu, setMenu] = useState<{ x: number; y: number; docId: string } | null>(null);
@@ -243,7 +255,7 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                       <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-center gap-1.5">
                           {d.status === 'DRAFT' && kind !== 'TRANSFER' && (
-                            <button disabled={actingId === d.id} onClick={() => act(d.id, () => advanceDocument(kind === 'RECEIPT' ? 'receipts' : 'issues', d.id, 'complete'), 'Hoàn tất thất bại')}
+                            <button disabled={actingId === d.id} onClick={() => completeWithCheck(d, () => advanceDocument(kind === 'RECEIPT' ? 'receipts' : 'issues', d.id, 'complete'), 'Hoàn tất thất bại')}
                               className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors shadow-sm whitespace-nowrap">
                               {actingId === d.id ? <RefreshCw size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}{meta.actionDone}
                             </button>

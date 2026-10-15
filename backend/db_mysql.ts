@@ -401,7 +401,7 @@ CREATE TABLE IF NOT EXISTS products (
   id VARCHAR(191) PRIMARY KEY, name VARCHAR(191) NOT NULL, unit TEXT, origin TEXT,
   defaultPrice DOUBLE DEFAULT 0, createdAt TEXT NOT NULL, category VARCHAR(191),
   importQuantity INT DEFAULT 0, remainingQuantity INT DEFAULT 0,
-  importPrice DOUBLE DEFAULT 0, salePrice DOUBLE DEFAULT 0, importCode VARCHAR(191), invoiceDate TEXT
+  importPrice DOUBLE DEFAULT 0, salePrice DOUBLE DEFAULT 0, importCode VARCHAR(191), invoiceDate TEXT, warrantyMonths INT NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS mail_quotas (
@@ -1280,6 +1280,11 @@ export async function initDbMysql(): Promise<MysqlDb> {
         await ensureIndex31('stock_documents', 'idx_sdoc_source', 'sourceWarehouseId');
         await ensureIndex31('stock_documents', 'idx_sdoc_dest', 'destWarehouseId');
         await ensureColumn('stock_count_lines', 'countedBy', '`countedBy` VARCHAR(191) NULL');
+      });
+
+      await runVersionedMigration(db, 32, 'product_warranty_months', async () => {
+        // Số tháng bảo hành theo từng sản phẩm — phiếu nhập tự lấy khi đăng ký serial.
+        await ensureColumn('products', 'warrantyMonths', '`warrantyMonths` INT NOT NULL DEFAULT 0');
       });
 
 

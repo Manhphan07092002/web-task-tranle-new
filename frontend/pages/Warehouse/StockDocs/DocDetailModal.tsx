@@ -8,7 +8,7 @@ import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageChec
 import { Card } from '../../../components/UI';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
-  advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument,
+  advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, countLinesMissingSerials,
   type StockDocument, type StockDocLine, type Warehouse,
   type PartnerSuggestion, type PartnerSuggestionsData, type StockDocDetailLine,
 } from '../../../services/stockService';
@@ -87,6 +87,10 @@ export function DocDetailModal({
 
   const handleAdvanceDoc = async () => {
     if (!doc) return;
+    if (doc.docType !== 'TRANSFER') {
+      const missing = countLinesMissingSerials(doc.lines || []);
+      if (missing > 0 && !window.confirm(`Có ${missing} dòng chưa nhập serial/bảo hành. Vẫn hoàn thành phiếu?`)) return;
+    }
     setActionLoading(true);
     try {
       if (doc.docType === 'TRANSFER') {

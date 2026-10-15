@@ -16,6 +16,7 @@ const ProductBodySchema = z.object({
   salePrice: z.coerce.number().finite().min(0).max(1_000_000_000_000).optional(),
   importCode: z.string().max(191).optional(),
   invoiceDate: z.string().max(40).nullable().optional(),
+  warrantyMonths: z.coerce.number().int().min(0).max(1200).optional(),
 });
 const ProductCreateSchema = z.union([ProductBodySchema, z.array(ProductBodySchema).min(1).max(100)]);
 
@@ -179,15 +180,16 @@ export const productRoutes = (db: any) => {
       const createdAt = new Date().toISOString();
 
       for (const item of payloads) {
-        const { name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate } = item;
+        const { name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate, warrantyMonths } = item;
         const finalImportPrice = Number(importPrice) || 0;
         const finalSalePrice = Number(salePrice) || Number(defaultPrice) || 0;
+        const finalWarranty = Math.min(Math.max(Number(warrantyMonths) || 0, 0), 1200);
         
         const id = 'prod-' + Math.random().toString(36).substr(2, 9);
         
         await db.run(
-          'INSERT INTO products (id, name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [id, name, unit, origin, defaultPrice || 0, category || '', importQuantity || 0, remainingQuantity || 0, finalImportPrice, finalSalePrice, importCode || '', invoiceDate || null, createdAt]
+          'INSERT INTO products (id, name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate, warrantyMonths, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [id, name, unit, origin, defaultPrice || 0, category || '', importQuantity || 0, remainingQuantity || 0, finalImportPrice, finalSalePrice, importCode || '', invoiceDate || null, finalWarranty, createdAt]
         );
 
         const prod = await db.get('SELECT * FROM products WHERE id = ?', [id]);
@@ -216,7 +218,7 @@ export const productRoutes = (db: any) => {
   router.put('/:id', requireWarehousePerm, validate(ProductBodySchema), async (req, res) => {
     try {
       const { id } = req.params;
-      const { name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate } = req.body;
+      const { name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate, warrantyMonths } = req.body;
       
       if (!name) return res.status(400).json({ error: 'Tên sản phẩm là bắt buộc' });
 
@@ -247,8 +249,8 @@ export const productRoutes = (db: any) => {
       }
 
       await db.run(
-        'UPDATE products SET name = ?, unit = ?, origin = ?, defaultPrice = ?, category = ?, importQuantity = ?, remainingQuantity = ?, importPrice = ?, salePrice = ?, importCode = ?, invoiceDate = ? WHERE id = ?',
-        [name, unit, origin, defaultPrice || 0, category || '', importQuantity || 0, remainingQuantity || 0, finalImportPrice, finalSalePrice, importCode || '', invoiceDate || null, id]
+        'UPDATE products SET name = ?, unit = ?, origin = ?, defaultPrice = ?, category = ?, importQuantity = ?, remainingQuantity = ?, importPrice = ?, salePrice = ?, importCode = ?, invoiceDate = ?, warrantyMonths = ? WHERE id = ?',
+        [name, unit, origin, defaultPrice || 0, category || '', importQuantity || 0, remainingQuantity || 0, finalImportPrice, finalSalePrice, importCode || '', invoiceDate || null, Math.min(Math.max(Number(warrantyMonths ?? oldProduct.warrantyMonths) || 0, 0), 1200), id]
       );
 
       // Sync to active output contracts if salePrice, name, unit, or origin changed

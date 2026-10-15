@@ -4,7 +4,7 @@ import { apiFetch } from '../../../services/api';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, FileText, Calendar, Building2, User } from 'lucide-react';
+import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, FileText, Calendar, Building2, User, ScanLine } from 'lucide-react';
 import { Card } from '../../../components/UI';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
@@ -20,6 +20,7 @@ import type { DeptKey } from '../../../components/layout/menus/menuTypes';
 
 import { KIND_META, type Kind } from './meta';
 import { SearchCombo, FormattedNumberInput, UnitSuggestInput, PartnerSuggestInput, TextSuggestInput } from './controls';
+import { SerialEditorModal, parseSerialList } from './SerialEditorModal';
 
 export function DocCreateModal({ kind, warehouses, products, users, onClose, onDone, onError, editingId }: {
   kind: Kind; warehouses: Warehouse[]; products: Product[]; users: { id: string; name: string }[];
@@ -41,6 +42,8 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
   useEffect(() => { setLocalProducts(products); }, [products]);
   // Tạo nhanh sản phẩm mới khi gõ tên/mã chưa có trong danh mục.
   const [quickCreate, setQuickCreate] = useState<{ line: number; name: string; code: string } | null>(null);
+  // Editor serial/lot cho từng dòng.
+  const [serialEdit, setSerialEdit] = useState<number | null>(null);
   const [partnerSuggestions, setPartnerSuggestions] = useState<PartnerSuggestionsData>({
     partners: [],
     deliverers: [],
@@ -768,8 +771,25 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                               <td className="py-1 px-2 text-right text-gray-600 tabular-nums text-xs min-w-[85px]">{vatAmount.toLocaleString('vi-VN')}</td>
                               <td className="py-1 px-2 text-right font-bold text-emerald-700 tabular-nums text-xs min-w-[100px]">{totalLine.toLocaleString('vi-VN')}</td>
                               <td className="py-1 px-1 text-center w-28">
-                                <input value={l.serialLot || ''} onChange={(e) => setLine(i, { serialLot: e.target.value })}
-                                  className="w-28 px-1.5 py-1 border border-gray-200 rounded-none text-xs outline-none text-center mx-auto" title="Serial/Lot" />
+                                {(() => {
+                                  const n = parseSerialList(l.serialLot || '').length;
+                                  const qty = Number(l.quantity) || 0;
+                                  const ok = n === 0 || n === qty || (n === 1 && qty > 1);
+                                  return (
+                                    <button type="button" onClick={() => setSerialEdit(i)}
+                                      title={n === 0 ? 'Nhập/quét serial' : `${n} serial (SL ${qty}) — bấm để sửa`}
+                                      className={`w-28 px-1.5 py-1 border rounded-none text-xs outline-none text-center mx-auto transition-colors flex items-center justify-center gap-1 ${
+                                        n === 0
+                                          ? 'border-dashed border-gray-300 text-gray-400 hover:border-emerald-400 hover:text-emerald-600'
+                                          : ok
+                                          ? 'border-emerald-300 bg-emerald-50/60 text-emerald-800 font-bold'
+                                          : 'border-amber-400 bg-amber-50 text-amber-800 font-bold'
+                                      }`}>
+                                      <ScanLine size={12} className="shrink-0" />
+                                      <span className="tabular-nums">{n === 0 ? 'Quét' : `${n}/${qty}`}</span>
+                                    </button>
+                                  );
+                                })()}
                               </td>
                             </>
                           )}
@@ -954,6 +974,18 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
           onCreated={(p) => handleCreatedProduct(quickCreate.line, p)}
         />
       )}
+      {serialEdit !== null && lines[serialEdit] && (
+        <SerialEditorModal
+          key={`serial-${serialEdit}`}
+          initial={lines[serialEdit].serialLot || ''}
+          quantity={Number(lines[serialEdit].quantity) || 0}
+          productId={lines[serialEdit].productId}
+          warehouseId={kind === 'TRANSFER' ? destWarehouseId : warehouseId}
+          mode={kind === 'ISSUE' ? 'issue' : 'receipt'}
+          onSave={(v) => { setLine(serialEdit, { serialLot: v || undefined }); setSerialEdit(null); }}
+          onClose={() => setSerialEdit(null)}
+        />
+      )}
     </div>
   );
 }
@@ -967,6 +999,7 @@ function QuickCreateProductModal({ initialName, initialCode, unit, unitPrice, un
   const [punit, setPunit] = useState(unit || 'Cái');
   const [importPrice, setImportPrice] = useState(unitPrice);
   const [salePrice, setSalePrice] = useState(unitPrice);
+  const [warrantyMonths, setWarrantyMonths] = useState(24);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
   const [suggesting, setSuggesting] = useState(false);
@@ -1003,6 +1036,7 @@ function QuickCreateProductModal({ initialName, initialCode, unit, unitPrice, un
         importPrice,
         salePrice,
         defaultPrice: salePrice,
+        warrantyMonths: Math.min(Math.max(warrantyMonths || 0, 0), 1200),
       });
       onCreated(created);
     } catch (e: any) {
@@ -1037,7 +1071,7 @@ function QuickCreateProductModal({ initialName, initialCode, unit, unitPrice, un
               </button>
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <div>
               <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">ĐVT</label>
               <input value={punit} onChange={(e) => setPunit(e.target.value)} list="qc-units"
@@ -1052,6 +1086,11 @@ function QuickCreateProductModal({ initialName, initialCode, unit, unitPrice, un
             <div>
               <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Giá bán <span className="text-red-500">*</span></label>
               <input type="number" min={0} value={salePrice} onChange={(e) => setSalePrice(Number(e.target.value))}
+                className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none text-right tabular-nums focus:border-emerald-500" />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">BH (tháng)</label>
+              <input type="number" min={0} max={1200} value={warrantyMonths} onChange={(e) => setWarrantyMonths(Number(e.target.value))}
                 className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none text-right tabular-nums focus:border-emerald-500" />
             </div>
           </div>

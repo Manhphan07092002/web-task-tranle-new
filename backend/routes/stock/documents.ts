@@ -519,6 +519,109 @@ export function documentsRoutes(ctx: StockContext) {
     return out;
   }
 
+  /** Tách serial/lot từ ô serialLot của dòng (phân tách , ; xuống dòng), khử trùng. */
+  function parseSerials(serialLot: string | null | undefined): string[] {
+    if (!serialLot) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const part of String(serialLot).split(/[,;\n]+/)) {
+      const s = part.trim();
+      if (s && !seen.has(s.toLowerCase())) { seen.add(s.toLowerCase()); out.push(s); }
+    }
+    return out;
+  }
+
+  function serialError(message: string, status: number): Error {
+    return Object.assign(new Error(message), { status });
+  }
+
+  /** Đăng ký serial/lot khi hoàn tất NHẬP: dòng nào NV đã nhập serial thì lưu
+   * vết bảo hành (warrantyStart = ngày hạch toán, months theo sản phẩm).
+   * 1 mã cho cả dòng SL>1 -> lưu dạng lô; nhiều mã -> mỗi mã 1 serial và
+   * số lượng mã phải khớp số lượng (khi đã nhập). */
+  async function registerReceiptSerials(doc: any, lines: any[], user: any): Promise<void> {
+    const withSerials = lines.filter((l) => parseSerials(l.serialLot).length > 0);
+    if (withSerials.length === 0) return;
+    const productIds = [...new Set(withSerials.map((l) => l.productId))];
+    const products = await db.all(
+      `SELECT id, warrantyMonths FROM products WHERE id IN (${productIds.map(() => '?').join(', ')})`,
+      productIds
+    ).catch(() => []);
+    const warrantyByProduct = new Map((products || []).map((p: any) => [p.id, Math.max(0, Number(p.warrantyMonths) || 0)]));
+    const warrantyStart = String(doc.postingDate || doc.docDate || new Date().toISOString()).slice(0, 10);
+    const now = new Date().toISOString();
+    for (const line of withSerials) {
+      const serials = parseSerials(line.serialLot);
+      const qty = Number(line.quantity);
+      if (serials.length === 1 && qty > 1) {
+        await db.run(
+          `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt)
+           VALUES (?, ?, NULL, ?, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?)`,
+          [randomUUID(), line.productId, serials[0], doc.warehouseId, line.locationId || null,
+            doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now]
+        );
+        continue;
+      }
+      if (serials.length !== qty) {
+        throw serialError(`Dòng ${line.productId}: đã nhập ${serials.length} serial nhưng số lượng ${qty} — quét đủ serial từng chiếc`, 400);
+      }
+      const dupes = await db.all(
+        `SELECT serialNumber FROM stock_serials WHERE serialNumber IN (${serials.map(() => '?').join(', ')})`,
+        serials
+      ).catch(() => []);
+      if (dupes.length > 0) {
+        throw serialError(`Serial ${(dupes[0] as any).serialNumber} đã tồn tại trong hệ thống`, 409);
+      }
+      for (const sn of serials) {
+        try {
+          await db.run(
+            `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt)
+             VALUES (?, ?, ?, NULL, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?)`,
+            [randomUUID(), line.productId, sn, doc.warehouseId, line.locationId || null,
+              doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now]
+          );
+        } catch (e: any) {
+          if (e.message?.includes('Duplicate')) throw serialError(`Serial ${sn} đã tồn tại trong hệ thống`, 409);
+          throw e;
+        }
+      }
+    }
+  }
+
+  /** Trừ serial khi hoàn tất XUẤT: serial đã nhập phải tồn tại (SALEABLE,
+   * đúng kho) và đủ số lượng dòng -> đánh dấu SOLD + khách hàng.
+   * Token khớp lotCode (hàng lô) được chấp nhận theo vết, không đổi trạng thái. */
+  async function consumeIssueSerials(doc: any, lines: any[], user: any): Promise<void> {
+    const withSerials = lines.filter((l) => parseSerials(l.serialLot).length > 0);
+    if (withSerials.length === 0) return;
+    for (const line of withSerials) {
+      const serials = parseSerials(line.serialLot);
+      const qty = Number(line.quantity);
+      if (serials.length === 1 && qty > 1) {
+        const lot = await db.get(
+          `SELECT id FROM stock_serials WHERE lotCode = ? AND productId = ? AND warehouseId = ? AND status = 'SALEABLE' LIMIT 1`,
+          [serials[0], line.productId, doc.warehouseId]
+        );
+        if (!lot) throw serialError(`Dòng ${line.productId}: lô ${serials[0]} không có trong tồn bán được`, 400);
+        continue;
+      }
+      if (serials.length !== qty) {
+        throw serialError(`Dòng ${line.productId}: đã nhập ${serials.length} serial nhưng số lượng ${qty} — chọn đúng từng chiếc xuất`, 400);
+      }
+      for (const sn of serials) {
+        const row = await db.get(
+          `SELECT id FROM stock_serials WHERE serialNumber = ? AND productId = ? AND warehouseId = ? AND status = 'SALEABLE' LIMIT 1 FOR UPDATE`,
+          [sn, line.productId, doc.warehouseId]
+        );
+        if (!row) throw serialError(`Serial ${sn} không có trong tồn bán được của kho`, 400);
+        await db.run(
+          `UPDATE stock_serials SET status = 'SOLD', customerName = ?, updatedAt = ? WHERE id = ?`,
+          [doc.partnerName ?? null, new Date().toISOString(), (row as any).id]
+        );
+      }
+    }
+  }
+
   router.post('/receipts/:id/complete', async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
@@ -537,6 +640,7 @@ export function documentsRoutes(ctx: StockContext) {
       if (err) return res.status(400).json({ error: err });
 
       try {
+        await registerReceiptSerials(loaded.doc, loaded.lines, user);
         for (const line of loaded.lines) {
           await postMove(db.run.bind(db), {
             productId: line.productId, warehouseId: loaded.doc.warehouseId, locationId: line.locationId || '',
@@ -586,6 +690,7 @@ export function documentsRoutes(ctx: StockContext) {
       }
 
       try {
+        await consumeIssueSerials(loaded.doc, loaded.lines, user);
         for (const line of loaded.lines) {
           await postMove(db.run.bind(db), {
             productId: line.productId, warehouseId: loaded.doc.warehouseId, locationId: line.locationId || '',

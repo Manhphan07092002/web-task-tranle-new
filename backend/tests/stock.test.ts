@@ -372,6 +372,90 @@ describe('scoped warehouse locks', () => {
   });
 });
 
+describe('serial tracking on complete', () => {
+  function serialDb(opts: { docType: string; lines: any[]; existingSerials?: string[]; stockSerials?: Record<string, any> }) {
+    const calls: [string, any[]][] = [];
+    const db: any = {
+      calls,
+      all: vi.fn(async (sql: string) => {
+        if (String(sql).includes('FROM user_warehouse_scopes')) return [{ warehouseId: 'wh-hn' }];
+        if (String(sql).includes('FROM stock_document_lines')) return opts.lines;
+        if (String(sql).includes('FROM products')) return opts.lines.map((l) => ({ id: l.productId, warrantyMonths: 24 }));
+        if (String(sql).includes('SELECT serialNumber FROM stock_serials')) {
+          return (opts.existingSerials ?? []).map((sn) => ({ serialNumber: sn }));
+        }
+        if (String(sql).includes('FROM stock_balances')) {
+          return [{ productId: 'p1', locationId: '', onHand: 10, reserved: 0 }];
+        }
+        return [];
+      }),
+      get: vi.fn(async (sql: string, params?: any[]) => {
+        if (String(sql).includes('FROM stock_documents')) {
+          return { id: 'doc1', docType: opts.docType, status: 'DRAFT', warehouseId: 'wh-hn', referenceType: null, partnerName: 'NCC A', postingDate: '2026-10-15' };
+        }
+        if (String(sql).includes('FROM products')) return { id: 'p1' };
+        if (String(sql).includes('FROM stock_locations')) return { warehouseId: 'wh-hn', isActive: 1, purpose: 'SALEABLE' };
+        if (String(sql).includes('FROM stock_balances')) return { onHand: 10, reserved: 0 };
+        if (String(sql).includes('FROM stock_serials')) {
+          const hit = (opts.stockSerials ?? {})[params?.[0]];
+          return hit ? { id: hit } : undefined;
+        }
+        return undefined;
+      }),
+      run: vi.fn(async (sql: string, params?: any[]) => { calls.push([sql, params ?? []]); return { changes: 1 }; }),
+    };
+    return db;
+  }
+
+  const receiptLines = [{ id: 'l1', productId: 'p1', quantity: 2, locationId: null, serialLot: 'SN1\nSN2' }];
+
+  it('registers serials with product warranty on receipt complete', async () => {
+    const db = serialDb({ docType: 'RECEIPT', lines: receiptLines });
+    await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(200);
+    const inserts = db.calls.filter(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_serials'));
+    expect(inserts).toHaveLength(2);
+    for (const [, params] of inserts) {
+      expect(params).toContain('NCC A');
+      expect(params).toContain('2026-10-15');
+      expect(params).toContain(24);
+    }
+    expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(true);
+  });
+
+  it('rejects mismatched serial counts on receipt', async () => {
+    const db = serialDb({ docType: 'RECEIPT', lines: [{ ...receiptLines[0], serialLot: 'SN1\nSN2\nSN3' }] });
+    await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(400);
+    expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
+  });
+
+  it('stores a single code as lot for multi-quantity receipt lines', async () => {
+    const db = serialDb({ docType: 'RECEIPT', lines: [{ ...receiptLines[0], serialLot: 'LOT9' }] });
+    await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(200);
+    const inserts = db.calls.filter(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_serials'));
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0][1][2]).toBe('LOT9');
+  });
+
+  it('rejects duplicate serials on receipt', async () => {
+    const db = serialDb({ docType: 'RECEIPT', lines: receiptLines, existingSerials: ['SN1'] });
+    await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(409);
+  });
+
+  it('marks specific serials SOLD on issue complete', async () => {
+    const db = serialDb({ docType: 'ISSUE', lines: receiptLines, stockSerials: { SN1: 's1', SN2: 's2' } });
+    await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(200);
+    const solds = db.calls.filter(([s]: [string, any[]]) => String(s).includes("SET status = 'SOLD'"));
+    expect(solds).toHaveLength(2);
+    expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(true);
+  });
+
+  it('rejects issue serials missing from saleable stock', async () => {
+    const db = serialDb({ docType: 'ISSUE', lines: receiptLines, stockSerials: { SN1: 's1' } });
+    await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(400);
+    expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
+  });
+});
+
 describe('reservations hold, release and consume', () => {
   const tp = { id: 'tp', role: 'Manager', department: 'Kho', managementLevel: 20, permissions: [] };
 
