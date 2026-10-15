@@ -562,20 +562,30 @@ export function documentsRoutes(ctx: StockContext) {
   }
 
   /** Chốt hoàn tất theo từng dòng, tính lại từ DB (không tin client):
-   * SERIAL phải đủ serial, LOT/QUANTITY qua. */
+   * SERIAL phải đủ serial; LOT đủ khi text hợp lệ hoặc lô đã đăng ký phủ đủ SL;
+   * QUANTITY qua (số trên dòng là xác nhận, confirm-qty là tường minh thêm). */
   async function canComplete(doc: any, lines: any[]): Promise<{ ok: boolean; message?: string }> {
     const trackings = await productTrackings(lines.map((l: any) => l.productId));
     for (const line of lines) {
-      if (trackings.get(line.productId) !== 'SERIAL') continue;
+      const tracking = trackings.get(line.productId);
+      if (tracking !== 'SERIAL' && tracking !== 'LOT') continue;
       const serials = parseSerials(line.serialLot);
       const qty = Number(line.quantity);
       const label = line.productId;
+      const textOk = serials.length === qty || (serials.length === 1 && qty > 1);
+      if (textOk) continue;
+      if (tracking === 'LOT') {
+        const covered = await db.all(
+          'SELECT COALESCE(SUM(initialQty), 0) AS covered FROM stock_lots WHERE receiptDocumentId = ? AND receiptLineId = ?',
+          [doc.id, line.id]
+        ).catch(() => []);
+        if (Number(covered?.[0]?.covered ?? 0) >= qty) continue;
+        return { ok: false, message: `Chưa đủ Lô: ${label} — đăng ký lô/cuộn cho đủ ${qty}` };
+      }
       if (serials.length === 0) {
         return { ok: false, message: `Chưa đủ Serial: ${label} (0/${qty}) — hàng SERIAL bắt buộc quét đủ mới được hoàn tất` };
       }
-      if (!(serials.length === 1 && qty > 1) && serials.length !== qty) {
-        return { ok: false, message: `Chưa đủ Serial: ${label} (${serials.length}/${qty})` };
-      }
+      return { ok: false, message: `Chưa đủ Serial: ${label} (${serials.length}/${qty})` };
     }
     return { ok: true };
   }
@@ -640,6 +650,12 @@ export function documentsRoutes(ctx: StockContext) {
     const warrantyStart = String(doc.postingDate || doc.docDate || new Date().toISOString()).slice(0, 10);
     const now = new Date().toISOString();
     for (const line of withSerials) {
+      // Dòng đã đăng ký entity LOT riêng thì không persist đè sang stock_serials.
+      const lotRows = await db.all(
+        'SELECT id FROM stock_lots WHERE receiptDocumentId = ? AND receiptLineId = ? LIMIT 1',
+        [doc.id, line.id]
+      ).catch(() => []);
+      if (lotRows.length > 0) continue;
       const serials = parseSerials(line.serialLot);
       const qty = Number(line.quantity);
       if (serials.length === 1 && qty > 1) {
@@ -734,6 +750,12 @@ export function documentsRoutes(ctx: StockContext) {
     const warrantyStart = String(doc.postingDate || doc.docDate || new Date().toISOString()).slice(0, 10);
     const now = new Date().toISOString();
     for (const line of withSerials) {
+      // Dòng đã đăng ký entity LOT riêng thì không persist đè sang stock_serials.
+      const lotRows = await db.all(
+        'SELECT id FROM stock_lots WHERE receiptDocumentId = ? AND receiptLineId = ? LIMIT 1',
+        [doc.id, line.id]
+      ).catch(() => []);
+      if (lotRows.length > 0) continue;
       const serials = parseSerials(line.serialLot);
       const qty = Number(line.quantity);
       if (serials.length === 1 && qty > 1) {
@@ -1261,6 +1283,184 @@ export function documentsRoutes(ctx: StockContext) {
         throw e;
       }
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to scan serial for issue' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
+  });
+  // ── Tiến độ xử lý + xác nhận số lượng + đăng ký lô ──────────────────────────
+
+  /** Tiến độ từng dòng để SerialPage hiển thị: Yêu cầu / Đã xử lý / Còn thiếu / Đủ. */
+  router.get('/documents/:id/progress', async (req, res) => {
+    try {
+      const user = req.user;
+      if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      const id = String(req.params.id);
+      const doc = await db.get('SELECT * FROM stock_documents WHERE id = ?', [id]);
+      if (!doc) return res.status(404).json({ error: 'Document not found' });
+      if (!(await canReadDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      const lines = await db.all(
+        `SELECT l.*, p.name AS productName, p.tracking FROM stock_document_lines l
+         LEFT JOIN products p ON p.id = l.productId WHERE l.documentId = ?`,
+        [id]
+      );
+      const out = [];
+      for (const line of lines || []) {
+        const tracking = resolveTracking((line as any).tracking);
+        const required = Number(line.quantity);
+        let processed = 0;
+        let lots: any[] = [];
+        if (tracking === 'SERIAL' || tracking === 'LOT') {
+          const serials = parseSerials(line.serialLot);
+          processed = serials.length;
+          if (tracking === 'LOT') {
+            lots = await db.all(
+              'SELECT id, lotCode, coilCode, initialQty, remainingQty, unit, status FROM stock_lots WHERE receiptDocumentId = ? AND receiptLineId = ? ORDER BY createdAt ASC',
+              [id, line.id]
+            ).catch(() => []);
+            const covered = (lots || []).reduce((s: number, r: any) => s + Number(r.initialQty || 0), 0);
+            if (covered > 0) processed = Math.min(covered, required);
+          }
+        } else {
+          processed = line.actualQty === null || line.actualQty === undefined ? 0 : Number(line.actualQty);
+        }
+        const completed = tracking === 'QUANTITY'
+          ? (line.processingStatus === 'COMPLETED')
+          : tracking === 'LOT'
+            ? (processed === required || (processed === 1 && required > 1))
+            : processed === required;
+        out.push({
+          lineId: line.id, productId: line.productId,
+          productName: (line as any).productName || line.productId,
+          required, processed, tracking, lots,
+          serials: (tracking === 'SERIAL' || tracking === 'LOT') ? parseSerials(line.serialLot) : [],
+          actualQty: line.actualQty ?? null, varianceQty: line.varianceQty ?? null,
+          status: completed ? 'COMPLETED' : (processed > 0 ? 'PARTIAL' : 'PENDING'),
+        });
+      }
+      res.json({
+        documentId: id, code: doc.code, status: doc.status,
+        lines: out, allCompleted: out.length > 0 && out.every((l: any) => l.status === 'COMPLETED'),
+      });
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch processing progress' }); }
+  });
+
+  router.post('/lines/:id/confirm-qty', validate(z.object({
+    actualQty: z.number().finite().min(0).max(1_000_000_000),
+    varianceReason: z.string().trim().max(500).nullable().optional(),
+  })), async (req, res) => {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    let transactionOpen = false;
+    try {
+      const line = await db.get('SELECT * FROM stock_document_lines WHERE id = ?', [String(req.params.id)]);
+      if (!line) return res.status(404).json({ error: 'Document line not found' });
+      const doc = await db.get('SELECT * FROM stock_documents WHERE id = ?', [line.documentId]);
+      if (!doc) return res.status(404).json({ error: 'Document not found' });
+      if (!(await canWriteDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING') return res.status(400).json({ error: 'Only draft documents can be processed' });
+      const trackings = await productTrackings([line.productId]);
+      if (trackings.get(line.productId) !== 'QUANTITY') {
+        return res.status(400).json({ error: 'Chỉ hàng quản lý theo số lượng mới xác nhận tay (SERIAL/LOT phải quét/đăng ký)' });
+      }
+      const actual = Number(req.body.actualQty);
+      const variance = actual - Number(line.quantity);
+      if (variance !== 0 && !req.body.varianceReason?.trim()) {
+        return res.status(400).json({ error: 'Số thực nhận lệch chứng từ — vui lòng nhập lý do chênh lệch' });
+      }
+      await beginStockTransaction(db, [doc.warehouseId || doc.sourceWarehouseId].filter(Boolean) as string[]);
+      transactionOpen = true;
+      try {
+        await db.run(
+          `UPDATE stock_document_lines SET actualQty = ?, varianceQty = ?, varianceReason = ?, processingStatus = 'COMPLETED' WHERE id = ?`,
+          [actual, variance, req.body.varianceReason?.trim() || null, line.id]
+        );
+        await touchProcessing(doc.id);
+        await db.run('COMMIT'); transactionOpen = false;
+        res.json({ actualQty: actual, varianceQty: variance });
+      } catch (e) {
+        await db.run('ROLLBACK'); transactionOpen = false;
+        throw e;
+      }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to confirm quantity' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
+  });
+
+  router.post('/lots/register', validate(z.object({
+    documentId: z.string().trim().min(1).max(191),
+    documentLineId: z.string().trim().min(1).max(191),
+    lotCode: z.string().trim().min(1).max(191),
+    coilCode: z.string().trim().max(191).nullable().optional(),
+    quantity: z.number().finite().positive().max(1_000_000_000),
+    unit: z.string().trim().max(32).nullable().optional(),
+    manufacturedAt: z.string().trim().max(40).nullable().optional(),
+    supplier: z.string().trim().max(300).nullable().optional(),
+  })), async (req, res) => {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    let transactionOpen = false;
+    try {
+      const { documentId, documentLineId, lotCode, coilCode, quantity, unit, manufacturedAt, supplier } = req.body;
+      const code = String(lotCode).trim();
+      const doc = await db.get('SELECT * FROM stock_documents WHERE id = ?', [documentId]);
+      if (!doc || doc.docType !== 'RECEIPT') return res.status(404).json({ error: 'Receipt not found' });
+      if (!(await canWriteDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING') return res.status(400).json({ error: 'Only draft receipts can be processed' });
+      const line = await db.get('SELECT * FROM stock_document_lines WHERE id = ? AND documentId = ?', [documentLineId, documentId]);
+      if (!line) return res.status(404).json({ error: 'Document line not found' });
+      const trackings = await productTrackings([line.productId]);
+      if (trackings.get(line.productId) !== 'LOT') {
+        return res.status(400).json({ error: 'Sản phẩm không quản lý theo Lô/Cuộn' });
+      }
+      const qty = Number(quantity);
+      await beginStockTransaction(db, [doc.warehouseId]);
+      transactionOpen = true;
+      try {
+        const dup = await db.get(
+          'SELECT id FROM stock_lots WHERE productId = ? AND warehouseId = ? AND lotCode = ? LIMIT 1',
+          [line.productId, doc.warehouseId, code]
+        );
+        if (dup) {
+          await db.run('ROLLBACK'); transactionOpen = false;
+          return res.status(409).json({ error: `Lô ${code} đã tồn tại trong kho` });
+        }
+        const now = new Date().toISOString();
+        const lotId = randomUUID();
+        await db.run(
+          `INSERT INTO stock_lots (id, productId, lotCode, coilCode, warehouseId, locationId, initialQty, remainingQty, unit, manufacturedAt, supplier, receiptDocumentId, receiptLineId, status, createdBy, createdAt, updatedAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`,
+          [lotId, line.productId, code, coilCode?.trim() || null, doc.warehouseId, line.locationId || null,
+            qty, qty, unit?.trim() || null, manufacturedAt?.trim() || null, supplier?.trim() || doc.partnerName || null,
+            documentId, documentLineId, user.id, now, now]
+        );
+        await db.run(
+          `INSERT INTO stock_lot_movements (id, lotId, productId, warehouseId, quantity, moveType, referenceType, referenceId, documentLineId, createdBy, createdAt)
+           VALUES (?, ?, ?, ?, ?, 'RECEIPT', 'RECEIPT', ?, ?, ?, ?)`,
+          [randomUUID(), lotId, line.productId, doc.warehouseId, qty, documentId, documentLineId, user.id, now]
+        );
+        // Giữ text serialLot đồng bộ để luồng complete-time tương thích.
+        const fresh = await db.get('SELECT serialLot FROM stock_document_lines WHERE id = ? FOR UPDATE', [documentLineId]);
+        const existing = parseSerials(fresh?.serialLot);
+        if (!existing.some((s) => s.toLowerCase() === code.toLowerCase())) {
+          await db.run('UPDATE stock_document_lines SET serialLot = ? WHERE id = ?',
+            [existing.length > 0 ? `${fresh.serialLot}\n${code}` : code, documentLineId]);
+        }
+        const covered = await db.all(
+          'SELECT COALESCE(SUM(initialQty), 0) AS covered FROM stock_lots WHERE receiptDocumentId = ? AND receiptLineId = ?',
+          [documentId, documentLineId]
+        ).catch(() => []);
+        const total = Number(covered?.[0]?.covered ?? 0);
+        await db.run(
+          `UPDATE stock_document_lines SET processingStatus = ? WHERE id = ?`,
+          [total >= Number(line.quantity) ? 'COMPLETED' : 'PARTIAL', documentLineId]
+        );
+        await touchProcessing(documentId);
+        await db.run('COMMIT'); transactionOpen = false;
+        res.status(201).json({ lotId, lotCode: code, covered: total, required: Number(line.quantity) });
+      } catch (e) {
+        await db.run('ROLLBACK'); transactionOpen = false;
+        throw e;
+      }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to register lot' }); } finally {
       if (transactionOpen) await db.run('ROLLBACK');
     }
   });

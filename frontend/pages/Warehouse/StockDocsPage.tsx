@@ -3,8 +3,8 @@ import { ReceiveTransferButton } from './ReceiveTransferButton';
 import { apiFetch } from '../../services/api';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Link } from 'react-router-dom';
-import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, Copy, Trash2, Camera, FileText, Calendar, Building2, User } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, Copy, Trash2, Camera, ListChecks, FileText, Calendar, Building2, User } from 'lucide-react';
 import { Card } from '../../components/UI';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
@@ -15,6 +15,7 @@ import {
 import { getProducts, type Product } from '../../services/productService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import { useData } from '../../contexts/DataContext';
+import { useNotifications } from '../../contexts/NotificationContext';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
 
 
@@ -36,6 +37,11 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const { users } = useData();
+  const navigate = useNavigate();
+  const { showToast } = useNotifications();
+
+  const serialProcessPath = (docId: string) =>
+    `${getDeptHomePath(deptKey) || '/dept/warehouse'}?m=wh_serial&documentId=${docId}`;
 
   const fetchAll = async () => {
     setLoading(true); setError(null);
@@ -55,13 +61,16 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
 
   useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [kind]);
 
-  const act = async (id: string, fn: () => Promise<unknown>, doneMsg: string) => {
+  const act = async (id: string, fn: () => Promise<unknown>, doneMsg: string, okToast?: { title: string; message: string }) => {
     setActingId(id); setError(null);
     try {
       await fn();
       await fetchAll();
+      if (okToast) showToast({ type: 'success', title: okToast.title, message: okToast.message });
+      return true;
     } catch (e: any) {
       setError(e.message || doneMsg);
+      return false;
     } finally {
       setActingId(null);
     }
@@ -79,7 +88,15 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
         if (missing > 0 && !window.confirm(`Có ${missing} dòng chưa nhập serial/bảo hành. Vẫn hoàn thành phiếu?`)) return;
       } catch { /* không tải được chi tiết thì vẫn cho hoàn thành */ }
     }
-    await act(d.id, fn, failMsg);
+    const ok = await act(d.id, fn, failMsg);
+    if (ok) {
+      const done = d.docType === 'RECEIPT' ? 'nhập kho' : d.docType === 'ISSUE' ? 'xuất kho' : 'điều chuyển';
+      showToast({
+        type: 'success',
+        title: `✅ Hoàn tất ${d.docType === 'RECEIPT' ? 'nhập kho' : d.docType === 'ISSUE' ? 'giao hàng' : 'điều chuyển'}`,
+        message: `Phiếu ${d.code || d.id.slice(0, 8)} đã ${done} thành công. Tồn kho và serial đã được cập nhật.`,
+      });
+    }
   };
 
   const [serialBulkId, setSerialBulkId] = useState<string | null>(null);
@@ -294,6 +311,16 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                           >
                             <Eye size={15} />
                           </button>
+                          {(d.status === 'DRAFT' || d.status === 'PROCESSING') && kind !== 'TRANSFER' && (
+                            <button
+                              type="button"
+                              onClick={() => navigate(serialProcessPath(d.id))}
+                              className="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
+                              title="Xử lý Serial / Lô"
+                            >
+                              <ListChecks size={15} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -320,7 +347,19 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
         <DocCreateModal
           kind={kind} warehouses={warehouses} products={products} users={users.map((u: any) => ({ id: u.id, name: u.name }))}
           onClose={() => setShowCreate(false)}
-          onDone={async () => { setShowCreate(false); await fetchAll(); }}
+          onDone={async (created) => {
+            setShowCreate(false);
+            await fetchAll();
+            // Tạo xong chuyển thẳng sang xử lý Serial/Lô (phiếu nhập/xuất).
+            if (created?.id && kind !== 'TRANSFER') {
+              showToast({
+                type: 'success',
+                title: `Đã tạo phiếu ${created.code || ''}`.trim(),
+                message: 'Chuyển sang xử lý Serial/Lô — đủ hàng mới được bấm Hoàn tất.',
+              });
+              navigate(serialProcessPath(created.id));
+            }
+          }}
           onError={setError}
         />
       )}

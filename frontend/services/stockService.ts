@@ -567,6 +567,56 @@ export async function getPartnerSuggestions(): Promise<PartnerSuggestionsData> {
   return res.json();
 }
 
+export interface DocLineProgress {
+  lineId: string;
+  productId: string;
+  productName: string;
+  required: number;
+  processed: number;
+  tracking: 'SERIAL' | 'LOT' | 'QUANTITY';
+  lots: { id: string; lotCode: string; coilCode?: string | null; initialQty: number; remainingQty: number; unit?: string | null; status: string }[];
+  serials: string[];
+  actualQty: number | null;
+  varianceQty: number | null;
+  status: 'PENDING' | 'PARTIAL' | 'COMPLETED';
+}
+
+export interface DocProgress {
+  documentId: string;
+  code: string | null;
+  status: string;
+  lines: DocLineProgress[];
+  allCompleted: boolean;
+}
+
+export async function getDocumentProgress(id: string): Promise<DocProgress> {
+  const res = await apiFetch(`/api/stock/documents/${id}/progress`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Không tải được tiến độ xử lý');
+  return data;
+}
+
+async function postStock(path: string, body: unknown): Promise<any> {
+  const res = await apiFetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Thao tác thất bại');
+  return data;
+}
+
+export const scanSerial = (documentId: string, documentLineId: string, serial: string) =>
+  postStock('/api/stock/serials/scan', { documentId, documentLineId, serial });
+
+export const scanOutSerial = (documentId: string, documentLineId: string, serial: string) =>
+  postStock('/api/stock/serials/scan-out', { documentId, documentLineId, serial });
+
+export const confirmLineQty = (lineId: string, body: { actualQty: number; varianceReason?: string }) =>
+  postStock(`/api/stock/lines/${lineId}/confirm-qty`, body);
+
+export const registerLot = (body: {
+  documentId: string; documentLineId: string; lotCode: string; coilCode?: string;
+  quantity: number; unit?: string; manufacturedAt?: string; supplier?: string;
+}) => postStock('/api/stock/lots/register', body);
+
 export async function getNextDocCode(docType: 'RECEIPT' | 'ISSUE' | 'TRANSFER' | 'RETURN'): Promise<{ code: string; docType: string }> {
   const res = await apiFetch(`/api/stock/next-code?docType=${docType}`);
   const data = await res.json().catch(() => ({}));

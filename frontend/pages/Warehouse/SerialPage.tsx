@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { ScanLine, PlusCircle, RefreshCw, AlertCircle, X, ChevronDown, Pencil } from 'lucide-react';
 import { Card } from '../../components/UI';
 import {
@@ -11,6 +11,7 @@ import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
 import { useAuth } from '../../contexts/AuthContext';
 import { levelOf, LEVELS } from '../../utils/rbac';
+import SerialDocMode from './SerialDocMode';
 
 const STATUSES: SerialStatus[] = ['SALEABLE', 'WARRANTY', 'DAMAGED', 'DEMO', 'QUARANTINE', 'SOLD'];
 const STATUS_LABEL: Record<string, string> = {
@@ -21,6 +22,9 @@ const STATUS_LABEL: Record<string, string> = {
 // Serial / Lô (§22): tìm kiếm chung + chi tiết + đổi trạng thái (TP).
 export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
   const { user } = useAuth();
+  const [params] = useSearchParams();
+  // Chế độ xử lý theo phiếu (?documentId=...) — tách khỏi danh sách chung.
+  const docModeId = params.get('documentId');
   const canManage = levelOf(user) >= LEVELS.MANAGER && levelOf(user) !== LEVELS.ADMIN;
   const [rows, setRows] = useState<StockSerial[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -55,6 +59,10 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
   };
 
   useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [debouncedQ, status]);
+
+  if (docModeId) {
+    return <SerialDocMode deptKey={deptKey} />;
+  }
 
   return (
     <div className="w-full max-w-[1400px] mx-auto space-y-4">

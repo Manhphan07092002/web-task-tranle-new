@@ -24,7 +24,7 @@ import { SerialEditorModal, parseSerialList } from './SerialEditorModal';
 
 export function DocCreateModal({ kind, warehouses, products, users, onClose, onDone, onError, editingId }: {
   kind: Kind; warehouses: Warehouse[]; products: Product[]; users: { id: string; name: string }[];
-  onClose: () => void; onDone: () => Promise<void>; onError: (m: string) => void;
+  onClose: () => void; onDone: (created?: { id: string; code?: string }) => Promise<void>; onError: (m: string) => void;
   editingId?: string;
 }) {
   const isEditing = Boolean(editingId);
@@ -351,10 +351,17 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
       const attachUrls = attachments.map((a) => a.url);
       if (isEditing && editingId) {
         await updateStockDocument(editingId, { lines: clean, notes: notes || undefined, ...header, ...(attachUrls.length > 0 ? { attachments: attachUrls } : {}) });
-      } else if (kind === 'RECEIPT') await createReceipt({ warehouseId, lines: clean, notes: notes || undefined, ...header, ...(attachUrls.length > 0 ? { attachments: attachUrls } : {}) });
-      else if (kind === 'ISSUE') await createIssue({ warehouseId, lines: clean, notes: notes || undefined, ...header, ...(attachUrls.length > 0 ? { attachments: attachUrls } : {}) });
-      else await createTransfer({ sourceWarehouseId: warehouseId, destWarehouseId, lines: clean, notes: notes || undefined });
-      await onDone();
+        await onDone();
+      } else if (kind === 'RECEIPT') {
+        const created = await createReceipt({ warehouseId, lines: clean, notes: notes || undefined, ...header, ...(attachUrls.length > 0 ? { attachments: attachUrls } : {}) });
+        await onDone(created);
+      } else if (kind === 'ISSUE') {
+        const created = await createIssue({ warehouseId, lines: clean, notes: notes || undefined, ...header, ...(attachUrls.length > 0 ? { attachments: attachUrls } : {}) });
+        await onDone(created);
+      } else {
+        const created = await createTransfer({ sourceWarehouseId: warehouseId, destWarehouseId, lines: clean, notes: notes || undefined });
+        await onDone(created);
+      }
     } catch (e: any) {
       const msg = e.message || (isEditing ? 'Lưu thay đổi thất bại.' : 'Tạo phiếu thất bại.');
       setErr(msg); onError(msg);

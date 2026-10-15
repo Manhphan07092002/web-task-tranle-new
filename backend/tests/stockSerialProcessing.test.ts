@@ -19,6 +19,8 @@ interface ProcOpts {
   lines?: any[];
   trackings?: Record<string, string>;
   serials?: Record<string, any>;
+  lots?: any[];
+  lotHit?: any;
 }
 
 // Stateful fixture: doc/lines/serials mutate through run() like a real ledger.
@@ -30,7 +32,7 @@ function procDb(opts: ProcOpts = {}) {
     destWarehouseId: 'wh-hcm', referenceType: null, partnerName: 'NCC A',
   };
   const lines: any[] = (opts.lines || [
-    { id: 'l1', productId: 'p1', quantity: 2, locationId: null, serialLot: '', processingStatus: 'PENDING' },
+    { id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 2, locationId: null, serialLot: '', processingStatus: 'PENDING' },
   ]).map((l) => ({ ...l }));
   const serials: Record<string, any> = {};
   for (const [sn, row] of Object.entries(opts.serials || {})) serials[sn] = { serialNumber: sn, ...row };
@@ -41,7 +43,7 @@ function procDb(opts: ProcOpts = {}) {
       if (sql.includes('FROM user_warehouse_scopes')) return [{ warehouseId: 'wh-hn' }, { warehouseId: 'wh-hcm' }];
       if (sql.includes('FROM stock_document_lines')) {
         if (sql.includes('processingStatus')) return lines.filter((l) => l.processingStatus !== 'PENDING');
-        return lines.map((l) => ({ ...l }));
+        return lines.map((l) => ({ ...l, tracking: opts.trackings?.[l.productId] }));
       }
       if (sql.includes('SELECT id, tracking FROM products')) {
         return params.map((id) => ({ id, tracking: opts.trackings?.[id] }));
@@ -56,6 +58,7 @@ function procDb(opts: ProcOpts = {}) {
       if (sql.includes('FROM stock_balances')) {
         return [{ productId: 'p1', locationId: '', onHand: 10, reserved: 0 }];
       }
+      if (sql.includes('FROM stock_lots')) return opts.lots ?? [];
       if (sql.includes('FROM warehouses')) return [{ id: 'wh-hn' }, { id: 'wh-hcm' }];
       return [];
     }),
@@ -83,6 +86,7 @@ function procDb(opts: ProcOpts = {}) {
         return undefined;
       }
       if (sql.includes('FROM stock_locations')) return { warehouseId: 'wh-hn', isActive: 1, purpose: 'SALEABLE' };
+      if (sql.includes('FROM stock_lots')) return opts.lotHit;
       if (sql.includes('FROM stock_balances')) return { onHand: 10, reserved: 0 };
       return undefined;
     }),
@@ -123,29 +127,35 @@ describe('SERIAL gating on complete (Phase 2)', () => {
     const db = procDb({ trackings: { p1: 'SERIAL' } });
     const res = await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(400);
     expect(res.body.error).toMatch(/Chưa đủ Serial/);
-    expect(db.calls.some(([s]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
+    expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
   });
 
   it('passes SERIAL lines with matching serials', async () => {
     const db = procDb({
       trackings: { p1: 'SERIAL' },
-      lines: [{ id: 'l1', productId: 'p1', quantity: 2, locationId: null, serialLot: 'A\nB', processingStatus: 'COMPLETED' }],
+      lines: [{ id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 2, locationId: null, serialLot: 'A\nB', processingStatus: 'COMPLETED' }],
     });
     await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(200);
   });
 
-  it('lets LOT/QUANTITY lines through without serials', async () => {
-    for (const tracking of ['LOT', 'QUANTITY', undefined]) {
+  it('lets QUANTITY lines through without serials; LOT needs coverage', async () => {
+    for (const tracking of ['QUANTITY', undefined]) {
       const db = procDb({ trackings: tracking ? { p1: tracking } : {} });
       const res = await request(appFor(tp, db)).post('/receipts/doc1/complete').send({});
       expect(res.status).toBe(200);
     }
+    // LOT line with nothing registered is blocked...
+    const dbEmpty = procDb({ trackings: { p1: 'LOT' } });
+    await request(appFor(tp, dbEmpty)).post('/receipts/doc1/complete').send({}).expect(400);
+    // ...but passes once registered lots cover the quantity
+    const dbCovered = procDb({ trackings: { p1: 'LOT' }, lots: [{ covered: 2 }] });
+    await request(appFor(tp, dbCovered)).post('/receipts/doc1/complete').send({}).expect(200);
   });
 
   it('completes PROCESSING documents', async () => {
     const db = procDb({
       status: 'PROCESSING', trackings: { p1: 'SERIAL' },
-      lines: [{ id: 'l1', productId: 'p1', quantity: 2, locationId: null, serialLot: 'A\nB', processingStatus: 'COMPLETED' }],
+      lines: [{ id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 2, locationId: null, serialLot: 'A\nB', processingStatus: 'COMPLETED' }],
     });
     await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(200);
     expect(db.doc.status).toBe('DONE');
@@ -200,7 +210,7 @@ describe('POST /serials/scan-out (Phase 2)', () => {
     const db = issueDb({ 'SN-X': { ...stocked } });
     const res = await request(appFor(tp, db)).post('/serials/scan-out').send(base).expect(201);
     expect(res.body).toMatchObject({ serial: 'SN-X', count: 1, required: 2 });
-    expect(db.calls.some(([s]) => String(s).includes("stockStatus = 'RESERVED'"))).toBe(true);
+    expect(db.calls.some(([s]: [string, any[]]) => String(s).includes("stockStatus = 'RESERVED'"))).toBe(true);
   });
 
   it('404s unknown serials and 400s mismatches with clear messages', async () => {
@@ -275,7 +285,66 @@ describe('idempotent complete (Phase 2)', () => {
     // doc fixture reloads DRAFT from the static mock... emulate DONE:
     db.doc.status = 'DONE';
     await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(400);
-    const moves = db.calls.filter(([s]) => String(s).includes('INSERT INTO stock_moves'));
+    const moves = db.calls.filter(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'));
     expect(moves.length).toBeGreaterThan(0);
+  });
+});
+
+describe('progress + confirm-qty + lots (Phase 3 backend)', () => {
+  const multiLines = [
+    { id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 2, locationId: null, serialLot: 'A', processingStatus: 'PARTIAL' },
+    { id: 'l2', documentId: 'doc1', productId: 'p2', quantity: 100, locationId: null, serialLot: '', processingStatus: 'PENDING' },
+    { id: 'l3', documentId: 'doc1', productId: 'p3', quantity: 500, locationId: null, serialLot: '', processingStatus: 'PENDING', actualQty: null },
+  ];
+  const trackings = { p1: 'SERIAL', p2: 'LOT', p3: 'QUANTITY' };
+
+  it('reports per-line progress', async () => {
+    const db = procDb({ lines: multiLines, trackings });
+    const res = await request(appFor(tp, db)).get('/documents/doc1/progress').expect(200);
+    expect(res.body.allCompleted).toBe(false);
+    const byId: Record<string, any> = Object.fromEntries(res.body.lines.map((l: any) => [l.lineId, l]));
+    expect(byId.l1).toMatchObject({ required: 2, processed: 1, tracking: 'SERIAL', status: 'PARTIAL' });
+    expect(byId.l2).toMatchObject({ required: 100, processed: 0, tracking: 'LOT', status: 'PENDING' });
+    expect(byId.l3).toMatchObject({ required: 500, processed: 0, tracking: 'QUANTITY', status: 'PENDING' });
+  });
+
+  it('confirms quantity with variance reason', async () => {
+    const db = procDb({ lines: multiLines, trackings });
+    const res = await request(appFor(tp, db)).post('/lines/l3/confirm-qty')
+      .send({ actualQty: 495, varianceReason: 'Hao hut van chuyen' }).expect(200);
+    expect(res.body).toEqual({ actualQty: 495, varianceQty: -5 });
+    await request(appFor(tp, db)).post('/lines/l3/confirm-qty').send({ actualQty: 490 }).expect(400);
+  });
+
+  it('rejects confirm-qty on SERIAL lines', async () => {
+    const db = procDb({ lines: multiLines, trackings });
+    await request(appFor(tp, db)).post('/lines/l1/confirm-qty').send({ actualQty: 2 }).expect(400);
+  });
+
+  it('registers lots and completes when covered', async () => {
+    const db = procDb({ lines: multiLines, trackings });
+    const r1 = await request(appFor(tp, db)).post('/lots/register').send({
+      documentId: 'doc1', documentLineId: 'l2', lotCode: 'LAPP-01', quantity: 60, unit: 'm',
+    }).expect(201);
+    expect(r1.body.lotCode).toBe('LAPP-01');
+    // duplicate lot code in same warehouse
+    const dbDup = procDb({ lines: multiLines, trackings, lotHit: { id: 'lot9' } });
+    await request(appFor(tp, dbDup)).post('/lots/register').send({
+      documentId: 'doc1', documentLineId: 'l2', lotCode: 'LAPP-01', quantity: 60,
+    }).expect(409);
+    // LOT line covered by registered lots passes complete gating
+    const dbCovered = procDb({
+      lines: [{ id: 'l2', documentId: 'doc1', productId: 'p2', quantity: 100, locationId: null, serialLot: '', processingStatus: 'PENDING' }],
+      trackings: { p2: 'LOT' },
+      lots: [{ covered: 100 }],
+    });
+    await request(appFor(tp, dbCovered)).post('/receipts/doc1/complete').send({}).expect(200);
+  });
+
+  it('rejects lot registration on non-LOT products', async () => {
+    const db = procDb({ lines: multiLines, trackings });
+    await request(appFor(tp, db)).post('/lots/register').send({
+      documentId: 'doc1', documentLineId: 'l1', lotCode: 'X-01', quantity: 1,
+    }).expect(400);
   });
 });
