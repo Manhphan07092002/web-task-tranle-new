@@ -27,7 +27,7 @@ export default function InTransitPage({ deptKey }: { deptKey: DeptKey }) {
   useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/await-in-effect */ }, []);
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div>
         <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Kho vận · Báo cáo</p>
         <h1 className="text-2xl font-bold text-gray-800 mt-1">Đang vận chuyển</h1>
@@ -56,17 +56,17 @@ export default function InTransitPage({ deptKey }: { deptKey: DeptKey }) {
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Mã phiếu</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Ngày gửi</th>
-                  <th className="text-right py-3 px-5 text-xs font-bold text-gray-500 uppercase">Nhận hàng</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Mã phiếu</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Ngày gửi</th>
+                  <th className="text-right py-2 px-5 text-xs font-bold text-gray-500 uppercase">Nhận hàng</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {rows.map((d) => (
                   <tr key={d.id} className="hover:bg-gray-50/70">
-                    <td className="py-3 px-5 font-mono font-bold text-gray-800 text-[13px]">{d.code || d.id.slice(0, 8)}</td>
-                    <td className="py-3 px-4 text-xs text-gray-400">{d.createdAt ? new Date(d.createdAt).toLocaleString('vi-VN') : ''}</td>
-                    <td className="py-3 px-5 text-right">
+                    <td className="py-2 px-5 font-mono font-bold text-gray-800 text-[13px]">{d.code || d.id.slice(0, 8)}</td>
+                    <td className="py-2 px-4 text-xs text-gray-400">{d.createdAt ? new Date(d.createdAt).toLocaleString('vi-VN') : ''}</td>
+                    <td className="py-2 px-5 text-right">
                       <ReceiveTransferButton id={d.id} warehouseId={d.destWarehouseId!} onDone={fetchAll} />
                     </td>
                   </tr>

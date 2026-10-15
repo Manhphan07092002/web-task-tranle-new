@@ -1,32 +1,28 @@
 import { getStockLocations, type StockLocation } from '../../services/locationService';
 import { ReceiveTransferButton } from './ReceiveTransferButton';
-import React, { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck } from 'lucide-react';
+import { apiFetch } from '../../services/api';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, Copy, Trash2, Camera, ListChecks, FileText, Calendar, Building2, User } from 'lucide-react';
 import { Card } from '../../components/UI';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
-  advanceDocument, advanceTransfer,
+  advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, deleteStockDocument, countLinesMissingSerials,
   type StockDocument, type StockDocLine, type Warehouse,
+  type PartnerSuggestion, type PartnerSuggestionsData, type StockDocDetailLine,
 } from '../../services/stockService';
 import { getProducts, type Product } from '../../services/productService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
+import { useData } from '../../contexts/DataContext';
+import { useNotifications } from '../../contexts/NotificationContext';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
 
-type Kind = 'RECEIPT' | 'ISSUE' | 'TRANSFER';
 
-const KIND_META: Record<Kind, { title: string; code: string; actionDone: string }> = {
-  RECEIPT: { title: 'Nhập kho', code: 'PNK', actionDone: 'Hoàn tất nhận hàng' },
-  ISSUE: { title: 'Xuất kho', code: 'PXK', actionDone: 'Hoàn tất xuất hàng' },
-  TRANSFER: { title: 'Điều chuyển', code: 'DCK', actionDone: 'Xác nhận' },
-};
-
-const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
-  DRAFT: { label: 'Nháp', cls: 'bg-gray-100 text-gray-600 border-gray-200' },
-  IN_TRANSIT: { label: 'Đang vận chuyển', cls: 'bg-blue-50 text-blue-700 border-blue-200' },
-  DONE: { label: 'Hoàn tất', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-  CANCELLED: { label: 'Đã hủy', cls: 'bg-red-50 text-red-600 border-red-200' },
-};
+import { KIND_META, STATUS_LABEL, type Kind } from './StockDocs/meta';
+import { DocDetailModal } from './StockDocs/DocDetailModal';
+import { DocCreateModal } from './StockDocs/DocCreateModal';
+import { SerialBulkModal } from './StockDocs/SerialBulkModal';
 
 // Trang chứng từ kho dùng chung cho Nhập/Xuất/Điều chuyển (§13–18).
 export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kind: Kind }) {
@@ -38,6 +34,14 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
   const [error, setError] = useState<string | null>(null);
   const [actingId, setActingId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const { users } = useData();
+  const navigate = useNavigate();
+  const { showToast } = useNotifications();
+
+  const serialProcessPath = (docId: string) =>
+    `${getDeptHomePath(deptKey) || '/dept/warehouse'}?m=wh_serial&documentId=${docId}`;
 
   const fetchAll = async () => {
     setLoading(true); setError(null);
@@ -57,13 +61,16 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
 
   useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [kind]);
 
-  const act = async (id: string, fn: () => Promise<unknown>, doneMsg: string) => {
+  const act = async (id: string, fn: () => Promise<unknown>, doneMsg: string, okToast?: { title: string; message: string }) => {
     setActingId(id); setError(null);
     try {
       await fn();
       await fetchAll();
+      if (okToast) showToast({ type: 'success', title: okToast.title, message: okToast.message });
+      return true;
     } catch (e: any) {
       setError(e.message || doneMsg);
+      return false;
     } finally {
       setActingId(null);
     }
@@ -71,8 +78,113 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
 
   const whName = (id: string | null) => warehouses.find((w) => w.id === id)?.name || id || '—';
 
+  const completeWithCheck = async (d: StockDocument, fn: () => Promise<unknown>, failMsg: string) => {
+    // NV tự quyết từng dòng: chỉ cảnh báo khi thiếu serial, không chặn cứng.
+    // (Luồng chính đã bắt quét đủ serial trước nút Hoàn tất; đây là lưới an toàn.)
+    if (d.docType !== 'TRANSFER') {
+      try {
+        const detail = await getStockDocument(d.id);
+        const missing = countLinesMissingSerials(detail.lines || []);
+        if (missing > 0 && !window.confirm(`Có ${missing} dòng chưa nhập serial/bảo hành. Vẫn hoàn thành phiếu?`)) return;
+      } catch { /* không tải được chi tiết thì vẫn cho hoàn thành */ }
+    }
+    const ok = await act(d.id, fn, failMsg);
+    if (ok) {
+      const done = d.docType === 'RECEIPT' ? 'nhập kho' : d.docType === 'ISSUE' ? 'xuất kho' : 'điều chuyển';
+      showToast({
+        type: 'success',
+        title: `✅ Hoàn tất ${d.docType === 'RECEIPT' ? 'nhập kho' : d.docType === 'ISSUE' ? 'giao hàng' : 'điều chuyển'}`,
+        message: `Phiếu ${d.code || d.id.slice(0, 8)} đã ${done} thành công. Tồn kho và serial đã được cập nhật.`,
+      });
+    }
+  };
+
+  const [serialBulkId, setSerialBulkId] = useState<string | null>(null);
+
+  // Menu chuột phải: mặc định click = xem, chuột phải chọn Nhân bản / Sửa / Xóa.
+  const [menu, setMenu] = useState<{ x: number; y: number; docId: string } | null>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenu(null); };
+    document.addEventListener('click', close);
+    window.addEventListener('resize', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('click', close);
+      window.removeEventListener('resize', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menu]);
+
+  const openMenu = (e: React.MouseEvent, docId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const w = 200;
+    setMenu({
+      x: Math.min(e.clientX, window.innerWidth - w - 12),
+      y: Math.min(e.clientY, window.innerHeight - 180),
+      docId,
+    });
+  };
+
+  const cloneDoc = async (d: StockDocument) => {
+    setMenu(null);
+    setActingId(d.id); setError(null);
+    try {
+      const detail = await getStockDocument(d.id);
+      const cleanLines = (detail.lines || []).map((l) => ({
+        productId: l.productId,
+        quantity: Number(l.quantity),
+        unitPrice: Number((l as any).unitPrice) || 0,
+        locationId: (l as any).locationId ?? null,
+        note: (l as any).note ?? null,
+        vatRate: Number((l as any).vatRate ?? 8),
+        vatAmount: (l as any).vatAmount ?? undefined,
+        totalAmount: (l as any).totalAmount ?? undefined,
+        serialLot: (l as any).serialLot ?? undefined,
+        accountDebit: (l as any).accountDebit || undefined,
+        accountCredit: (l as any).accountCredit || undefined,
+        projectId: (l as any).projectId || undefined,
+        costItem: (l as any).costItem || undefined,
+        costObjectId: (l as any).costObjectId || undefined,
+      }));
+      const notes = `Nhân bản từ ${detail.code || detail.id.slice(0, 8)}${detail.notes ? ` — ${detail.notes}` : ''}`;
+      let created: { id: string };
+      if (detail.docType === 'TRANSFER') {
+        created = await createTransfer({ sourceWarehouseId: detail.sourceWarehouseId!, destWarehouseId: detail.destWarehouseId!, lines: cleanLines, notes });
+      } else {
+        const header = {
+          partnerCode: detail.partnerCode || undefined,
+          partnerName: detail.partnerName || undefined,
+          partnerAddress: detail.partnerAddress || undefined,
+          deliverer: detail.deliverer || undefined,
+          purchaserId: detail.purchaserId || undefined,
+          postingDate: (detail.postingDate || '').slice(0, 10) || undefined,
+          docDate: (detail.docDate || '').slice(0, 10) || undefined,
+          invoiceNumber: detail.invoiceNumber || undefined,
+          invoiceDate: (detail.invoiceDate || '').slice(0, 10) || undefined,
+          paymentStatus: detail.paymentStatus || undefined,
+          paymentDueDate: (detail.paymentDueDate || '').slice(0, 10) || undefined,
+          shippingFee: detail.shippingFee !== undefined && detail.shippingFee !== null ? Number(detail.shippingFee) : undefined,
+        };
+        created = detail.docType === 'RECEIPT'
+          ? await createReceipt({ warehouseId: detail.warehouseId!, lines: cleanLines, notes, ...header })
+          : await createIssue({ warehouseId: detail.warehouseId!, lines: cleanLines, notes, ...header });
+      }
+      await fetchAll();
+      // Mở form sửa của phiếu mới để duyệt lại như khi tạo mới, thay vì màn chi tiết.
+      setEditingId(created.id);
+    } catch (e: any) {
+      setError(e.message || 'Nhân bản phiếu thất bại');
+    } finally {
+      setActingId(null);
+    }
+  };
+
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Kho vận · {meta.title}</p>
@@ -104,13 +216,20 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
         <Card className="overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50">
+              <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Mã phiếu</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Tuyến</th>
-                  <th className="text-center py-3 px-4 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Ngày tạo</th>
-                  <th className="text-right py-3 px-5 text-xs font-bold text-gray-500 uppercase">Thao tác</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Mã phiếu</th>
+                  <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">{kind === 'TRANSFER' ? 'Tuyến điều chuyển' : 'Kho'}</th>
+                  {kind !== 'TRANSFER' && (
+                    <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">Đối tác / NCC</th>
+                  )}
+                  {kind !== 'TRANSFER' && (
+                    <th className="text-right py-2 px-3 text-xs font-bold text-gray-500 uppercase">Tổng tiền</th>
+                  )}
+                  <th className="text-center py-2 px-3 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
+                  <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">Ngày tạo</th>
+                  <th className="text-center py-2 px-3 text-xs font-bold text-gray-500 uppercase">Duyệt phiếu</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Thao tác</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -118,27 +237,89 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                   const st = STATUS_LABEL[d.status] || STATUS_LABEL.DRAFT;
                   const route = d.docType === 'TRANSFER' ? `${whName(d.sourceWarehouseId)} → ${whName(d.destWarehouseId)}` : whName(d.warehouseId);
                   return (
-                    <tr key={d.id} className="hover:bg-gray-50/70">
-                      <td className="py-3 px-5 font-bold text-gray-800 font-mono text-[13px]">{d.code || d.id.slice(0, 8)}</td>
-                      <td className="py-3 px-4 text-gray-500 text-xs">{route}</td>
-                      <td className="py-3 px-4 text-center"><span className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${st.cls}`}>{st.label}</span></td>
-                      <td className="py-3 px-4 text-gray-400 text-xs">{d.createdAt ? new Date(d.createdAt).toLocaleString('vi-VN') : '—'}</td>
-                      <td className="py-3 px-5">
-                        <div className="flex justify-end gap-2">
-                          {d.status === 'DRAFT' && kind !== 'TRANSFER' && (
-                            <button disabled={actingId === d.id} onClick={() => act(d.id, () => advanceDocument(kind === 'RECEIPT' ? 'receipts' : 'issues', d.id, 'complete'), 'Hoàn tất thất bại')}
-                              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors">
-                              {actingId === d.id ? <RefreshCw size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}{meta.actionDone}
+                    <tr
+                      key={d.id}
+                      onClick={() => setSelectedDocId(d.id)}
+                      onContextMenu={(e) => openMenu(e, d.id)}
+                      className="hover:bg-emerald-50/40 transition-colors cursor-pointer group"
+                    >
+                      <td className="py-2.5 px-4 font-bold text-gray-800 font-mono text-[13px] group-hover:text-emerald-700">
+                        {d.code || d.id.slice(0, 8)}
+                      </td>
+                      <td className="py-2.5 px-3 text-gray-600 text-xs">{route}</td>
+                      {kind !== 'TRANSFER' && (
+                        <td className="py-2.5 px-3 text-gray-700 text-xs">
+                          {d.partnerName ? (
+                            <div className="font-medium text-gray-800 truncate max-w-[220px]" title={d.partnerName}>
+                              {d.partnerName}
+                            </div>
+                          ) : d.partnerCode ? (
+                            <span className="text-gray-500">{d.partnerCode}</span>
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
+                        </td>
+                      )}
+                      {kind !== 'TRANSFER' && (
+                        <td className="py-2.5 px-3 text-right font-mono font-bold text-xs text-gray-800">
+                          {d.totalAmount !== undefined && d.totalAmount !== null
+                            ? Number(d.totalAmount).toLocaleString('vi-VN') + ' ₫'
+                            : '—'}
+                        </td>
+                      )}
+                      <td className="py-2.5 px-3 text-center">
+                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${st.cls}`}>{st.label}</span>
+                      </td>
+                      <td className="py-2.5 px-3 text-gray-400 text-xs">
+                        {d.createdAt ? new Date(d.createdAt).toLocaleString('vi-VN') : '—'}
+                      </td>
+                      <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-center gap-1.5">
+                          {d.status === 'DRAFT' && kind !== 'TRANSFER' && (Number(d.missingSerials) || 0) > 0 && (
+                            <button disabled={actingId === d.id} onClick={() => setSerialBulkId(d.id)}
+                              className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors shadow-sm whitespace-nowrap">
+                              <Camera size={12} />Quét serial ({Number(d.missingSerials)})
+                            </button>
+                          )}
+                          {d.status === 'DRAFT' && kind !== 'TRANSFER' && !((Number(d.missingSerials) || 0) > 0) && (
+                            <button disabled={actingId === d.id} onClick={() => completeWithCheck(d, () => advanceDocument(kind === 'RECEIPT' ? 'receipts' : 'issues', d.id, 'complete'), 'Hoàn tất thất bại')}
+                              className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors shadow-sm whitespace-nowrap">
+                              {actingId === d.id ? <RefreshCw size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}{meta.actionDone}
                             </button>
                           )}
                           {d.status === 'DRAFT' && kind === 'TRANSFER' && (
                             <button disabled={actingId === d.id} onClick={() => act(d.id, () => advanceTransfer(d.id, 'ship'), 'Gửi hàng thất bại')}
-                              className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors">
-                              {actingId === d.id ? <RefreshCw size={13} className="animate-spin" /> : <Truck size={13} />}Xác nhận gửi
+                              className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors shadow-sm whitespace-nowrap">
+                              {actingId === d.id ? <RefreshCw size={12} className="animate-spin" /> : <Truck size={12} />}Xác nhận gửi
                             </button>
                           )}
                           {d.status === 'IN_TRANSIT' && kind === 'TRANSFER' && (
                             <ReceiveTransferButton id={d.id} warehouseId={d.destWarehouseId!} onDone={fetchAll} />
+                          )}
+                          {d.status !== 'DRAFT' && !(d.status === 'IN_TRANSIT' && kind === 'TRANSFER') && (
+                            <span className="text-gray-300 text-xs">—</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-4" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedDocId(d.id)}
+                            className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                            title="Xem chi tiết"
+                          >
+                            <Eye size={15} />
+                          </button>
+                          {(d.status === 'DRAFT' || d.status === 'PROCESSING') && kind !== 'TRANSFER' && (
+                            <button
+                              type="button"
+                              onClick={() => navigate(serialProcessPath(d.id))}
+                              className="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
+                              title="Xử lý Serial / Lô"
+                            >
+                              <ListChecks size={15} />
+                            </button>
                           )}
                         </div>
                       </td>
@@ -151,14 +332,118 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
         </Card>
       )}
 
+      {selectedDocId && (
+        <DocDetailModal
+          docId={selectedDocId}
+          warehouses={warehouses}
+          kind={kind}
+          onClose={() => setSelectedDocId(null)}
+          onUpdated={fetchAll}
+          onEdit={(id) => { setSelectedDocId(null); setEditingId(id); }}
+        />
+      )}
+
       {showCreate && (
         <DocCreateModal
-          kind={kind} warehouses={warehouses} products={products}
+          kind={kind} warehouses={warehouses} products={products} users={users.map((u: any) => ({ id: u.id, name: u.name }))}
           onClose={() => setShowCreate(false)}
-          onDone={async () => { setShowCreate(false); await fetchAll(); }}
+          onDone={async (created) => {
+            setShowCreate(false);
+            await fetchAll();
+            // Tạo xong chuyển thẳng sang xử lý Serial/Lô (phiếu nhập/xuất).
+            if (created?.id && kind !== 'TRANSFER') {
+              showToast({
+                type: 'success',
+                title: `Đã tạo phiếu ${created.code || ''}`.trim(),
+                message: 'Chuyển sang xử lý Serial/Lô — đủ hàng mới được bấm Hoàn tất.',
+              });
+              navigate(serialProcessPath(created.id));
+            }
+          }}
           onError={setError}
         />
       )}
+
+      {serialBulkId && (
+        <SerialBulkModal
+          key={serialBulkId}
+          docId={serialBulkId}
+          kind={kind === 'TRANSFER' ? 'RECEIPT' : kind}
+          onClose={() => setSerialBulkId(null)}
+          onCompleted={async () => { setSerialBulkId(null); await fetchAll(); }}
+        />
+      )}
+
+      {editingId && (
+        <DocCreateModal
+          key={editingId}
+          kind={kind} warehouses={warehouses} products={products} users={users.map((u: any) => ({ id: u.id, name: u.name }))}
+          editingId={editingId}
+          onClose={() => setEditingId(null)}
+          onDone={async () => { setEditingId(null); await fetchAll(); }}
+          onError={setError}
+        />
+      )}
+
+      {menu && (() => {
+        const target = docs.find((x) => x.id === menu.docId);
+        if (!target) return null;
+        const canModify = target.status === 'DRAFT' || target.status === 'CANCELLED';
+        const itemCls = 'w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm transition-colors text-left disabled:opacity-40';
+        return (
+          <div
+            className="fixed z-[80] w-[200px] bg-white border border-gray-200 rounded-xl shadow-2xl py-1.5 animate-in fade-in zoom-in-95 duration-100"
+            style={{ left: menu.x, top: menu.y }}
+            onClick={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <p className="px-3.5 py-1.5 text-[11px] font-bold text-gray-400 uppercase tracking-wider truncate border-b border-gray-100 mb-1">
+              {target.code || target.id.slice(0, 8)}
+            </p>
+            <button
+              type="button"
+              disabled={actingId === target.id}
+              onClick={() => { setMenu(null); setSelectedDocId(target.id); }}
+              className={`${itemCls} text-gray-700 hover:bg-gray-50`}
+            >
+              <Eye size={15} className="text-gray-400" /> Xem chi tiết
+            </button>
+            <button
+              type="button"
+              disabled={actingId === target.id}
+              onClick={() => cloneDoc(target)}
+              className={`${itemCls} text-gray-700 hover:bg-gray-50`}
+            >
+              <Copy size={15} className="text-gray-400" /> Nhân bản
+            </button>
+            {target.status === 'DRAFT' && (
+              <button
+                type="button"
+                disabled={actingId === target.id}
+                onClick={() => { setMenu(null); setEditingId(target.id); }}
+                className={`${itemCls} text-blue-700 hover:bg-blue-50`}
+              >
+                <Pencil size={15} className="text-blue-400" /> Sửa
+              </button>
+            )}
+            {canModify && (
+              <button
+                type="button"
+                disabled={actingId === target.id}
+                onClick={() => {
+                  setMenu(null);
+                  if (window.confirm(`Xóa hẳn phiếu ${target.code || target.id.slice(0, 8)}? Hành động này không thể hoàn tác.`)) {
+                    act(target.id, () => deleteStockDocument(target.id), 'Xóa phiếu thất bại');
+                  }
+                }}
+                className={`${itemCls} text-red-600 hover:bg-red-50`}
+              >
+                <Trash2 size={15} className="text-red-400" /> Xóa
+              </button>
+            )}
+          </div>
+        );
+      })()}
 
       <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">
         ← Về tổng quan kho vận
@@ -167,129 +452,3 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
   );
 }
 
-function DocCreateModal({ kind, warehouses, products, onClose, onDone, onError }: {
-  kind: Kind; warehouses: Warehouse[]; products: Product[];
-  onClose: () => void; onDone: () => Promise<void>; onError: (m: string) => void;
-}) {
-  const [warehouseId, setWarehouseId] = useState('');
-  const [destWarehouseId, setDestWarehouseId] = useState('');
-  const [notes, setNotes] = useState('');
-  const [lines, setLines] = useState<StockDocLine[]>([{ productId: '', quantity: 1 }]);
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState('');
-  const [locations, setLocations] = useState<StockLocation[]>([]);
-  useEffect(() => {
-    let active = true;
-    setLocations([]);
-    setLines(lines => lines.map(line => ({ ...line, locationId: '' })));
-    if (warehouseId) getStockLocations(warehouseId)
-      .then(rows => { if (active) setLocations(rows.filter(row => row.isActive)); })
-      .catch(error => { if (active) setErr(error.message); });
-    return () => { active = false; };
-  }, [warehouseId]);
-
-  const setLine = (i: number, patch: Partial<StockDocLine>) =>
-    setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const clean = lines.filter((l) => l.productId && Number(l.quantity) > 0).map((l) => ({ ...l, quantity: Number(l.quantity) }));
-    if (clean.length === 0) { setErr('Thêm ít nhất 1 dòng hàng hợp lệ.'); return; }
-    if (kind === 'TRANSFER' && (!warehouseId || !destWarehouseId || warehouseId === destWarehouseId)) {
-      setErr('Chọn kho gửi và kho nhận khác nhau.'); return;
-    }
-    if (kind !== 'TRANSFER' && !warehouseId) { setErr('Chọn kho.'); return; }
-    setSaving(true); setErr('');
-    try {
-      if (kind === 'RECEIPT') await createReceipt({ warehouseId, lines: clean, notes: notes || undefined });
-      else if (kind === 'ISSUE') await createIssue({ warehouseId, lines: clean, notes: notes || undefined });
-      else await createTransfer({ sourceWarehouseId: warehouseId, destWarehouseId, lines: clean, notes: notes || undefined });
-      await onDone();
-    } catch (e: any) {
-      const msg = e.message || 'Tạo phiếu thất bại.';
-      setErr(msg); onError(msg);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const productName = (id: string) => products.find((p) => p.id === id)?.name || '';
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col" style={{ maxHeight: '92vh' }}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
-          <h3 className="font-bold text-gray-900">Tạo phiếu {KIND_META[kind].title.toLowerCase()} ({KIND_META[kind].code})</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
-        </div>
-        <form onSubmit={submit} className="flex flex-col flex-1 min-h-0">
-          <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
-            {err && <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm"><AlertCircle size={14} />{err}</div>}
-            <div className={`grid gap-3 ${kind === 'TRANSFER' ? 'grid-cols-2' : 'grid-cols-1'}`}>
-              <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">{kind === 'TRANSFER' ? 'Kho gửi' : 'Kho'}</label>
-                <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} required
-                  className="w-full px-4 py-2.5 border border-gray-200 rounded-xl bg-white text-sm outline-none">
-                  <option value="">-- Chọn kho --</option>
-                  {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-                </select>
-              </div>
-              {kind === 'TRANSFER' && (
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Kho nhận</label>
-                  <select value={destWarehouseId} onChange={(e) => setDestWarehouseId(e.target.value)} required
-                    className="w-full px-4 py-2.5 border border-gray-200 rounded-xl bg-white text-sm outline-none">
-                    <option value="">-- Chọn kho --</option>
-                    {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-                  </select>
-                </div>
-              )}
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Dòng hàng</label>
-              <div className="space-y-2">
-                {lines.map((l, i) => (
-                  <div key={i} className="flex gap-2">
-                    <select value={l.productId} onChange={(e) => setLine(i, { productId: e.target.value })}
-                      className="flex-1 min-w-0 px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none">
-                      <option value="">-- Chọn hàng --</option>
-                      {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
-                    <select aria-label="Vị trí hàng" value={l.locationId || ''} onChange={e => setLine(i, { locationId: e.target.value })} className="min-w-0 w-36 border rounded-xl px-2 text-sm">
-                      <option value="">Chưa phân vị trí</option>
-                      {locations.filter(location => kind !== 'ISSUE' || location.purpose === 'SALEABLE').map(location => <option key={location.id} value={location.id}>{location.code}</option>)}
-                    </select>
-                    <input type="number" min={0.000001} step="any" value={l.quantity}
-                      onChange={(e) => setLine(i, { quantity: Number(e.target.value) })}
-                      className="w-24 px-3 py-2 border border-gray-200 rounded-xl text-sm outline-none" title="Số lượng" />
-                    <button type="button" onClick={() => setLines((ls) => ls.filter((_, j) => j !== i))}
-                      className="p-2 text-gray-300 hover:text-red-500 transition-colors" title="Xóa dòng">
-                      <X size={16} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-              <button type="button" onClick={() => setLines((ls) => [...ls, { productId: '', quantity: 1 }])}
-                className="mt-2 text-xs font-bold text-emerald-600 hover:underline">+ Thêm dòng</button>
-              {lines.some((l) => l.productId) && (
-                <p className="text-xs text-gray-400 mt-1">Đang chọn: {lines.filter((l) => l.productId).map((l) => productName(l.productId)).join(', ')}</p>
-              )}
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Ghi chú</label>
-              <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
-                className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm outline-none resize-none" />
-            </div>
-          </div>
-          <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-100 bg-gray-50 rounded-b-2xl flex-shrink-0">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-xl">Hủy</button>
-            <button type="submit" disabled={saving}
-              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60 flex items-center gap-2">
-              {saving ? <><RefreshCw size={14} className="animate-spin" />Đang tạo...</> : 'Tạo phiếu nháp'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}

@@ -26,19 +26,32 @@ export default function MovesPage({ deptKey }: { deptKey: DeptKey }) {
   const [warehouseId, setWarehouseId] = useState('');
   const [moveType, setMoveType] = useState('');
   const [q, setQ] = useState('');
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const PAGE_SIZE = 100;
 
-  const fetchAll = async () => {
-    setLoading(true); setError(null);
+  const fetchAll = async (append = false) => {
+    if (append) setLoadingMore(true);
+    else { setLoading(true); setError(null); }
     try {
-      const [m, w] = await Promise.all([
-        getStockMoves({ warehouseId: warehouseId || undefined, moveType: moveType || undefined }),
-        getWarehouses().catch(() => [] as Warehouse[]),
-      ]);
-      setRows(m); setWarehouses(w);
+      const movesParams = { warehouseId: warehouseId || undefined, moveType: moveType || undefined, limit: PAGE_SIZE, offset: append ? rows.length : 0 };
+      if (append) {
+        const m = await getStockMoves(movesParams);
+        setRows((prev) => [...prev, ...m]);
+        setHasMore(m.length === PAGE_SIZE);
+      } else {
+        const [m, w] = await Promise.all([
+          getStockMoves(movesParams),
+          (warehouses.length > 0 ? Promise.resolve(warehouses) : getWarehouses().catch(() => [] as Warehouse[])),
+        ]);
+        setRows(m); setWarehouses(w);
+        setHasMore(m.length === PAGE_SIZE);
+      }
     } catch (e: any) {
-      setError(e.message || 'Không tải được lịch sử');
+      if (!append) setError(e.message || 'Không tải được lịch sử');
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   };
 
@@ -49,12 +62,12 @@ export default function MovesPage({ deptKey }: { deptKey: DeptKey }) {
     : rows;
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kho vận · Báo cáo</p>
           <h1 className="text-2xl font-bold text-gray-800 mt-1">Lịch sử hàng hóa</h1>
-          <p className="text-gray-500 text-sm mt-1">Mọi biến động tồn đều để lại dấu vết (tối đa 500 dòng mới nhất).</p>
+          <p className="text-gray-500 text-sm mt-1">Mọi biến động tồn đều để lại dấu vết (100 dòng/trang).</p>
         </div>
         <div className="flex gap-2 flex-wrap">
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Lọc theo hàng / người tạo..."
@@ -75,7 +88,7 @@ export default function MovesPage({ deptKey }: { deptKey: DeptKey }) {
             </select>
             <ChevronDown className="absolute right-2.5 top-3 text-gray-400 pointer-events-none" size={14} />
           </div>
-          <button onClick={fetchAll} className="p-2.5 border border-gray-200 rounded-xl hover:bg-gray-50 text-gray-500 shadow-sm" title="Tải lại">
+          <button onClick={() => fetchAll()} className="p-2.5 border border-gray-200 rounded-xl hover:bg-gray-50 text-gray-500 shadow-sm" title="Tải lại">
             <RefreshCw size={16} />
           </button>
         </div>
@@ -123,6 +136,14 @@ export default function MovesPage({ deptKey }: { deptKey: DeptKey }) {
               );
             })}
           </ol>
+          {hasMore && !q.trim() && (
+            <div className="pt-4 text-center">
+              <button onClick={() => fetchAll(true)} disabled={loadingMore}
+                className="px-5 py-2 text-sm font-medium text-emerald-700 bg-emerald-50 rounded-xl hover:bg-emerald-100 disabled:opacity-50">
+                {loadingMore ? 'Đang tải...' : `Xem thêm (${rows.length} dòng)`}
+              </button>
+            </div>
+          )}
         </Card>
       )}
 

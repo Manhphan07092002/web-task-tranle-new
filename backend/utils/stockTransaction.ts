@@ -1,12 +1,21 @@
 /** Keep stock checks and writes in the same transaction. Warehouse row locks
- * also coordinate stock writers in separate application processes. Lock order
- * is stable; this deliberately matches the adapter's serialized write model. */
-export async function beginStockTransaction(db: any): Promise<void> {
+ * coordinate stock writers in separate application processes. Lock order
+ * is stable (ORDER BY id); callers should pass only the warehouse ids they
+ * touch so unrelated warehouses are not serialized. */
+export async function beginStockTransaction(db: any, warehouseIds: string[] = []): Promise<void> {
   await db.run('START TRANSACTION');
   try {
-    await db.all('SELECT id FROM warehouses ORDER BY id FOR UPDATE');
+    const ids = [...new Set((warehouseIds || []).filter(Boolean))].sort();
+    if (ids.length > 0) {
+      await db.all(
+        `SELECT id FROM warehouses WHERE id IN (${ids.map(() => '?').join(', ')}) ORDER BY id FOR UPDATE`,
+        ids
+      );
+    } else {
+      await db.all('SELECT id FROM warehouses ORDER BY id FOR UPDATE');
+    }
   } catch (error) {
-    await db.run('ROLLBACK');
+    await db.run('ROLLBACK').catch(() => undefined);
     throw error;
   }
 }

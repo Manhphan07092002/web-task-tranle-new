@@ -19,6 +19,9 @@ export default function InventoryPage({ deptKey }: { deptKey: DeptKey }) {
   const [debouncedQ, setDebouncedQ] = useState('');
   const [warehouseId, setWarehouseId] = useState('');
   const [purpose, setPurpose] = useState('');
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const PAGE_SIZE = 100;
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(q.trim()), 350);
@@ -29,14 +32,21 @@ export default function InventoryPage({ deptKey }: { deptKey: DeptKey }) {
     getWarehouses().then(setWarehouses).catch(() => {});
   }, []);
 
-  const fetchRows = async () => {
-    setLoading(true); setError(null);
+  const fetchRows = async (append = false) => {
+    if (append) setLoadingMore(true);
+    else { setLoading(true); setError(null); }
     try {
-      setRows(await getStockBalances({ warehouseId: warehouseId || undefined, q: debouncedQ || undefined, purpose: purpose || undefined }));
+      const page = await getStockBalances({
+        warehouseId: warehouseId || undefined, q: debouncedQ || undefined, purpose: purpose || undefined,
+        limit: PAGE_SIZE, offset: append ? rows.length : 0,
+      });
+      setRows((prev) => (append ? [...prev, ...page] : page));
+      setHasMore(page.length === PAGE_SIZE);
     } catch (e: any) {
-      setError(e.message || 'Không tải được tồn kho');
+      if (!append) setError(e.message || 'Không tải được tồn kho');
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   };
 
@@ -61,7 +71,7 @@ export default function InventoryPage({ deptKey }: { deptKey: DeptKey }) {
   };
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div>
         <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Kho vận · Tồn kho</p>
         <h1 className="text-2xl font-bold text-gray-800 dark:text-slate-100 mt-1">Tồn kho</h1>
@@ -105,7 +115,7 @@ export default function InventoryPage({ deptKey }: { deptKey: DeptKey }) {
           </select>
           <ChevronDown className="absolute right-2.5 top-3 text-gray-400 pointer-events-none" size={14} />
         </div>
-        <button onClick={fetchRows} className="p-2.5 border border-gray-200 rounded-xl hover:bg-gray-50 text-gray-500 shadow-sm" title="Tải lại">
+        <button onClick={() => fetchRows()} className="p-2.5 border border-gray-200 rounded-xl hover:bg-gray-50 text-gray-500 shadow-sm" title="Tải lại">
           <RefreshCw size={16} />
         </button>
       </div>
@@ -118,7 +128,7 @@ export default function InventoryPage({ deptKey }: { deptKey: DeptKey }) {
       ) : error ? (
         <div className="flex flex-col items-center py-20 gap-3 text-red-500">
           <AlertCircle size={36} strokeWidth={1.5} /><p className="text-sm font-medium">{error}</p>
-          <button onClick={fetchRows} className="px-4 py-2 bg-red-50 rounded-xl text-sm">Thử lại</button>
+          <button onClick={() => fetchRows()} className="px-4 py-2 bg-red-50 rounded-xl text-sm">Thử lại</button>
         </div>
       ) : rows.length === 0 ? (
         <Card className="py-16 text-center text-gray-400">
@@ -132,12 +142,11 @@ export default function InventoryPage({ deptKey }: { deptKey: DeptKey }) {
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Kho / Vị trí</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Khả dụng</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Đã giữ</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Thực tồn</th>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm</th>                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Kho / Vị trí</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Khả dụng</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase hidden lg:table-cell">Đã giữ</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Thực tồn</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -145,24 +154,32 @@ export default function InventoryPage({ deptKey }: { deptKey: DeptKey }) {
                   const st = statusOf(r);
                   return (
                     <tr key={`${r.productId}|${r.warehouseId}|${r.locationId}`} className="hover:bg-gray-50/70">
-                      <td className="py-3 px-5">
+                      <td className="py-2 px-5">
                         <p className="font-semibold text-gray-800">{r.productName || r.productId}</p>
                         <p className="text-xs text-gray-400 font-mono">{r.productId}</p>
                       </td>
-                      <td className="py-3 px-4 text-gray-500 text-xs">
+                      <td className="py-2 px-4 text-gray-500 text-xs">
                         {r.warehouseName || r.warehouseId}
                         {r.locationCode && <span className="text-gray-400"> · {r.locationCode}</span>}
                       </td>
-                      <td className="py-3 px-4 text-right font-black text-gray-900">{Number(r.available).toLocaleString('vi-VN')}</td>
-                      <td className="py-3 px-4 text-right text-gray-500">{Number(r.reserved).toLocaleString('vi-VN')}</td>
-                      <td className="py-3 px-4 text-right text-gray-500">{Number(r.onHand).toLocaleString('vi-VN')}</td>
-                      <td className="py-3 px-5"><span className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${st.cls}`}>{st.label}</span></td>
+                      <td className="py-2 px-4 text-right font-black text-gray-900">{Number(r.available).toLocaleString('vi-VN')}</td>
+                      <td className="py-2 px-4 text-right text-gray-500 hidden lg:table-cell">{Number(r.reserved).toLocaleString('vi-VN')}</td>
+                      <td className="py-2 px-4 text-right text-gray-500">{Number(r.onHand).toLocaleString('vi-VN')}</td>
+                      <td className="py-2 px-5"><span className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${st.cls}`}>{st.label}</span></td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
+          {hasMore && (
+            <div className="p-3 text-center border-t border-gray-100">
+              <button onClick={() => fetchRows(true)} disabled={loadingMore}
+                className="px-5 py-2 text-sm font-medium text-emerald-700 bg-emerald-50 rounded-xl hover:bg-emerald-100 disabled:opacity-50">
+                {loadingMore ? 'Đang tải...' : `Xem thêm (${rows.length} dòng)`}
+              </button>
+            </div>
+          )}
         </Card>
       )}
 

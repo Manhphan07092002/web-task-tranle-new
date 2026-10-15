@@ -32,7 +32,7 @@ export default function MinMaxPage({ deptKey }: { deptKey: DeptKey }) {
   useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [warehouseId]);
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kho vận · Báo cáo</p>
@@ -77,24 +77,24 @@ export default function MinMaxPage({ deptKey }: { deptKey: DeptKey }) {
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm / Kho</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Min</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Điểm đặt</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Max</th>
-                  <th className="text-right py-3 px-5 text-xs font-bold text-gray-500 uppercase">Lead (ngày)</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm / Kho</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Min</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Điểm đặt</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Max</th>
+                  <th className="text-right py-2 px-5 text-xs font-bold text-gray-500 uppercase">Lead (ngày)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {rows.map((r) => (
                   <tr key={`${r.productId}|${r.warehouseId}`} className="hover:bg-gray-50/70">
-                    <td className="py-3 px-5">
+                    <td className="py-2 px-5">
                       <p className="font-semibold text-gray-800">{r.productName || r.productId}</p>
                       <p className="text-xs text-gray-400">{r.warehouseName || r.warehouseId}</p>
                     </td>
-                    <td className="py-3 px-4 text-right text-gray-700">{Number(r.minStock).toLocaleString('vi-VN')}</td>
-                    <td className="py-3 px-4 text-right text-gray-700">{Number(r.reorderPoint).toLocaleString('vi-VN')}</td>
-                    <td className="py-3 px-4 text-right text-gray-700">{Number(r.maxStock).toLocaleString('vi-VN')}</td>
-                    <td className="py-3 px-5 text-right text-gray-500">{r.leadTimeDays}</td>
+                    <td className="py-2 px-4 text-right text-gray-700">{Number(r.minStock).toLocaleString('vi-VN')}</td>
+                    <td className="py-2 px-4 text-right text-gray-700">{Number(r.reorderPoint).toLocaleString('vi-VN')}</td>
+                    <td className="py-2 px-4 text-right text-gray-700">{Number(r.maxStock).toLocaleString('vi-VN')}</td>
+                    <td className="py-2 px-5 text-right text-gray-500">{r.leadTimeDays}</td>
                   </tr>
                 ))}
               </tbody>

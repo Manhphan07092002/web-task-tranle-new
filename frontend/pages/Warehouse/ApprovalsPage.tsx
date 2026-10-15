@@ -55,7 +55,7 @@ export default function ApprovalsPage({ deptKey }: { deptKey: DeptKey }) {
   const whName = (id: string | null) => warehouses.find((w) => w.id === id)?.name || id || '—';
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Kho vận · Phê duyệt</p>
@@ -100,20 +100,20 @@ export default function ApprovalsPage({ deptKey }: { deptKey: DeptKey }) {
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Phiếu</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Loại / Tuyến</th>
-                  <th className="text-center py-3 px-4 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
-                  <th className="text-right py-3 px-5 text-xs font-bold text-gray-500 uppercase">Duyệt</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Phiếu</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Loại / Tuyến</th>
+                  <th className="text-center py-2 px-4 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
+                  <th className="text-right py-2 px-5 text-xs font-bold text-gray-500 uppercase">Duyệt</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {docs.map((d) => (
                   <tr key={d.id} className="hover:bg-gray-50/70">
-                    <td className="py-3 px-5">
+                    <td className="py-2 px-5">
                       <p className="font-bold text-gray-800 font-mono text-[13px]">{d.code || d.id.slice(0, 8)}</p>
                       <p className="text-xs text-gray-400">{d.createdAt ? new Date(d.createdAt).toLocaleString('vi-VN') : ''}</p>
                     </td>
-                    <td className="py-3 px-4 text-xs text-gray-500">
+                    <td className="py-2 px-4 text-xs text-gray-500">
                       {TYPE_LABEL[d.docType] || d.docType}
                       <span className="block text-gray-400">
                         {d.docType === 'TRANSFER'
@@ -121,12 +121,12 @@ export default function ApprovalsPage({ deptKey }: { deptKey: DeptKey }) {
                           : whName(d.warehouseId)}
                       </span>
                     </td>
-                    <td className="py-3 px-4 text-center">
+                    <td className="py-2 px-4 text-center">
                       <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${d.status === 'DRAFT' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
                         {d.status === 'DRAFT' ? 'Nháp' : 'Đang vận chuyển'}
                       </span>
                     </td>
-                    <td className="py-3 px-5">
+                    <td className="py-2 px-5">
                       <div className="flex justify-end gap-2">
                         {d.status === 'DRAFT' && d.docType !== 'TRANSFER' && (
                           <button disabled={actingId === d.id}
