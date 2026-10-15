@@ -4,11 +4,11 @@ import { apiFetch } from '../../services/api';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, FileText, Calendar, Building2, User } from 'lucide-react';
+import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, Copy, Trash2, FileText, Calendar, Building2, User } from 'lucide-react';
 import { Card } from '../../components/UI';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
-  advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument,
+  advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, deleteStockDocument,
   type StockDocument, type StockDocLine, type Warehouse,
   type PartnerSuggestion, type PartnerSuggestionsData, type StockDocDetailLine,
 } from '../../services/stockService';
@@ -68,6 +68,87 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
 
   const whName = (id: string | null) => warehouses.find((w) => w.id === id)?.name || id || '—';
 
+  // Menu chuột phải: mặc định click = xem, chuột phải chọn Nhân bản / Sửa / Xóa.
+  const [menu, setMenu] = useState<{ x: number; y: number; docId: string } | null>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenu(null); };
+    document.addEventListener('click', close);
+    window.addEventListener('resize', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('click', close);
+      window.removeEventListener('resize', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menu]);
+
+  const openMenu = (e: React.MouseEvent, docId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const w = 200;
+    setMenu({
+      x: Math.min(e.clientX, window.innerWidth - w - 12),
+      y: Math.min(e.clientY, window.innerHeight - 180),
+      docId,
+    });
+  };
+
+  const cloneDoc = async (d: StockDocument) => {
+    setMenu(null);
+    setActingId(d.id); setError(null);
+    try {
+      const detail = await getStockDocument(d.id);
+      const cleanLines = (detail.lines || []).map((l) => ({
+        productId: l.productId,
+        quantity: Number(l.quantity),
+        unitPrice: Number((l as any).unitPrice) || 0,
+        locationId: (l as any).locationId ?? null,
+        note: (l as any).note ?? null,
+        vatRate: Number((l as any).vatRate ?? 8),
+        vatAmount: (l as any).vatAmount ?? undefined,
+        totalAmount: (l as any).totalAmount ?? undefined,
+        serialLot: (l as any).serialLot ?? undefined,
+        accountDebit: (l as any).accountDebit || undefined,
+        accountCredit: (l as any).accountCredit || undefined,
+        projectId: (l as any).projectId || undefined,
+        costItem: (l as any).costItem || undefined,
+        costObjectId: (l as any).costObjectId || undefined,
+      }));
+      const notes = `Nhân bản từ ${detail.code || detail.id.slice(0, 8)}${detail.notes ? ` — ${detail.notes}` : ''}`;
+      let created: { id: string };
+      if (detail.docType === 'TRANSFER') {
+        created = await createTransfer({ sourceWarehouseId: detail.sourceWarehouseId!, destWarehouseId: detail.destWarehouseId!, lines: cleanLines, notes });
+      } else {
+        const header = {
+          partnerCode: detail.partnerCode || undefined,
+          partnerName: detail.partnerName || undefined,
+          partnerAddress: detail.partnerAddress || undefined,
+          deliverer: detail.deliverer || undefined,
+          purchaserId: detail.purchaserId || undefined,
+          postingDate: (detail.postingDate || '').slice(0, 10) || undefined,
+          docDate: (detail.docDate || '').slice(0, 10) || undefined,
+          invoiceNumber: detail.invoiceNumber || undefined,
+          invoiceDate: (detail.invoiceDate || '').slice(0, 10) || undefined,
+          paymentStatus: detail.paymentStatus || undefined,
+          paymentDueDate: (detail.paymentDueDate || '').slice(0, 10) || undefined,
+          shippingFee: detail.shippingFee !== undefined && detail.shippingFee !== null ? Number(detail.shippingFee) : undefined,
+        };
+        created = detail.docType === 'RECEIPT'
+          ? await createReceipt({ warehouseId: detail.warehouseId!, lines: cleanLines, notes, ...header })
+          : await createIssue({ warehouseId: detail.warehouseId!, lines: cleanLines, notes, ...header });
+      }
+      await fetchAll();
+      setSelectedDocId(created.id);
+    } catch (e: any) {
+      setError(e.message || 'Nhân bản phiếu thất bại');
+    } finally {
+      setActingId(null);
+    }
+  };
+
   return (
     <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -125,6 +206,7 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                     <tr
                       key={d.id}
                       onClick={() => setSelectedDocId(d.id)}
+                      onContextMenu={(e) => openMenu(e, d.id)}
                       className="hover:bg-emerald-50/40 transition-colors cursor-pointer group"
                     >
                       <td className="py-2.5 px-4 font-bold text-gray-800 font-mono text-[13px] group-hover:text-emerald-700">
@@ -189,30 +271,6 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                           >
                             <Eye size={15} />
                           </button>
-                          {d.status === 'DRAFT' && (
-                            <button
-                              disabled={actingId === d.id}
-                              onClick={() => setEditingId(d.id)}
-                              className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-60"
-                              title="Sửa phiếu nháp"
-                            >
-                              <Pencil size={15} />
-                            </button>
-                          )}
-                          {d.status === 'DRAFT' && (
-                            <button
-                              disabled={actingId === d.id}
-                              onClick={() => {
-                                if (window.confirm('Bạn có chắc muốn hủy phiếu nháp này?')) {
-                                  act(d.id, () => cancelStockDocument(d.id), 'Hủy phiếu thất bại');
-                                }
-                              }}
-                              className="p-1.5 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                              title="Hủy phiếu"
-                            >
-                              <Ban size={15} />
-                            </button>
-                          )}
                         </div>
                       </td>
                     </tr>
@@ -254,6 +312,66 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
           onError={setError}
         />
       )}
+
+      {menu && (() => {
+        const target = docs.find((x) => x.id === menu.docId);
+        if (!target) return null;
+        const canModify = target.status === 'DRAFT' || target.status === 'CANCELLED';
+        const itemCls = 'w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm transition-colors text-left disabled:opacity-40';
+        return (
+          <div
+            className="fixed z-[80] w-[200px] bg-white border border-gray-200 rounded-xl shadow-2xl py-1.5 animate-in fade-in zoom-in-95 duration-100"
+            style={{ left: menu.x, top: menu.y }}
+            onClick={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <p className="px-3.5 py-1.5 text-[11px] font-bold text-gray-400 uppercase tracking-wider truncate border-b border-gray-100 mb-1">
+              {target.code || target.id.slice(0, 8)}
+            </p>
+            <button
+              type="button"
+              disabled={actingId === target.id}
+              onClick={() => { setMenu(null); setSelectedDocId(target.id); }}
+              className={`${itemCls} text-gray-700 hover:bg-gray-50`}
+            >
+              <Eye size={15} className="text-gray-400" /> Xem chi tiết
+            </button>
+            <button
+              type="button"
+              disabled={actingId === target.id}
+              onClick={() => cloneDoc(target)}
+              className={`${itemCls} text-gray-700 hover:bg-gray-50`}
+            >
+              <Copy size={15} className="text-gray-400" /> Nhân bản
+            </button>
+            {target.status === 'DRAFT' && (
+              <button
+                type="button"
+                disabled={actingId === target.id}
+                onClick={() => { setMenu(null); setEditingId(target.id); }}
+                className={`${itemCls} text-blue-700 hover:bg-blue-50`}
+              >
+                <Pencil size={15} className="text-blue-400" /> Sửa
+              </button>
+            )}
+            {canModify && (
+              <button
+                type="button"
+                disabled={actingId === target.id}
+                onClick={() => {
+                  setMenu(null);
+                  if (window.confirm(`Xóa hẳn phiếu ${target.code || target.id.slice(0, 8)}? Hành động này không thể hoàn tác.`)) {
+                    act(target.id, () => deleteStockDocument(target.id), 'Xóa phiếu thất bại');
+                  }
+                }}
+                className={`${itemCls} text-red-600 hover:bg-red-50`}
+              >
+                <Trash2 size={15} className="text-red-400" /> Xóa
+              </button>
+            )}
+          </div>
+        );
+      })()}
 
       <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">
         ← Về tổng quan kho vận
