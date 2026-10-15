@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
 import { normalizeManagementLevel, MANAGEMENT_LEVELS } from '../../middleware/auth.js';
 import { beginStockTransaction } from '../../utils/stockTransaction.js';
+import { resolveTracking } from '../../utils/tracking.js';
 import type { StockContext } from './context.js';
 
 export function documentsRoutes(ctx: StockContext) {
@@ -100,9 +101,10 @@ export function documentsRoutes(ctx: StockContext) {
       const doc = await db.get('SELECT * FROM stock_documents WHERE id = ?', [id]);
       if (!doc) return res.status(404).json({ error: 'Document not found' });
       if (!(await canWriteDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
-      if (doc.status !== 'DRAFT') {
+      if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING') {
         return res.status(400).json({ error: 'Only draft documents can be cancelled' });
       }
+      await releaseReservedSerials(id);
       await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['CANCELLED', new Date().toISOString(), id]);
       res.json({ success: true });
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to cancel document' }); }
@@ -119,11 +121,12 @@ export function documentsRoutes(ctx: StockContext) {
       const doc = await db.get('SELECT * FROM stock_documents WHERE id = ?', [id]);
       if (!doc) return res.status(404).json({ error: 'Document not found' });
       if (!(await canWriteDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
-      if (doc.status !== 'DRAFT' && doc.status !== 'CANCELLED') {
+      if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING' && doc.status !== 'CANCELLED') {
         return res.status(400).json({ error: 'Cannot delete processed document' });
       }
       await beginStockTransaction(db);
       try {
+        await releaseReservedSerials(id);
         await db.run('DELETE FROM stock_document_lines WHERE documentId = ?', [id]);
         await db.run('DELETE FROM stock_documents WHERE id = ?', [id]);
         await db.run('COMMIT');
@@ -147,17 +150,27 @@ export function documentsRoutes(ctx: StockContext) {
       if (!doc) return res.status(404).json({ error: 'Document not found' });
       // Scope theo chứng từ đã lưu (không tin warehouseId trong body).
       if (!(await canWriteDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
-      if (doc.status !== 'DRAFT') {
+      if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING') {
         return res.status(400).json({ error: 'Only draft documents can be modified' });
       }
       const now = new Date().toISOString();
       const body = req.body;
+      // Phiếu đã bắt đầu xử lý Serial/Lot: khóa kho/sản phẩm/số lượng. Muốn đổi
+      // các trường này phải gửi resetProcessing để làm lại từ đầu.
+      if (Array.isArray(body.lines) && body.lines.length > 0 && (await processingStarted(id)) && !body.resetProcessing) {
+        const old = await db.all('SELECT productId, locationId, quantity FROM stock_document_lines WHERE documentId = ?', [id]);
+        const sig = (ls: any[]) => ls.map((l: any) => `${l.productId}|${l.locationId || ''}|${Number(l.quantity)}`).sort().join(';');
+        if (sig(old) !== sig(body.lines)) {
+          return res.status(400).json({ error: 'Phiếu đã bắt đầu xử lý Serial/Lot — chỉ được sửa ghi chú/thông tin phụ, hoặc gửi resetProcessing để làm lại' });
+        }
+      }
       let totalPreTax = doc.totalPreTax;
       let vatAmount = doc.vatAmount;
       let totalAmount = doc.totalAmount;
 
       await beginStockTransaction(db);
       try {
+        if (body.resetProcessing) await resetDocProcessing(id);
         if (Array.isArray(body.lines) && body.lines.length > 0) {
           const lineWh = doc.warehouseId || doc.sourceWarehouseId || '';
           const err = await validateLines(body.lines, lineWh);
@@ -537,6 +550,80 @@ export function documentsRoutes(ctx: StockContext) {
     return Object.assign(new Error(message), { status });
   }
 
+  /** Tracking từng sản phẩm (batch 1 query). Thiếu tracking (hàng cũ/mock) = QUANTITY. */
+  async function productTrackings(productIds: string[]): Promise<Map<string, string>> {
+    const uniq = [...new Set((productIds || []).filter(Boolean))];
+    if (uniq.length === 0) return new Map();
+    const rows = await db.all(
+      `SELECT id, tracking FROM products WHERE id IN (${uniq.map(() => '?').join(', ')})`,
+      uniq
+    ).catch(() => []);
+    return new Map((rows || []).map((r: any) => [r.id, resolveTracking(r.tracking)]));
+  }
+
+  /** Chốt hoàn tất theo từng dòng, tính lại từ DB (không tin client):
+   * SERIAL phải đủ serial, LOT/QUANTITY qua. */
+  async function canComplete(doc: any, lines: any[]): Promise<{ ok: boolean; message?: string }> {
+    const trackings = await productTrackings(lines.map((l: any) => l.productId));
+    for (const line of lines) {
+      if (trackings.get(line.productId) !== 'SERIAL') continue;
+      const serials = parseSerials(line.serialLot);
+      const qty = Number(line.quantity);
+      const label = line.productId;
+      if (serials.length === 0) {
+        return { ok: false, message: `Chưa đủ Serial: ${label} (0/${qty}) — hàng SERIAL bắt buộc quét đủ mới được hoàn tất` };
+      }
+      if (!(serials.length === 1 && qty > 1) && serials.length !== qty) {
+        return { ok: false, message: `Chưa đủ Serial: ${label} (${serials.length}/${qty})` };
+      }
+    }
+    return { ok: true };
+  }
+
+  async function assertProcessable(doc: any, lines: any[]): Promise<void> {
+    const r = await canComplete(doc, lines);
+    if (!r.ok) throw Object.assign(new Error(r.message), { status: 400 });
+  }
+
+  /** Phiếu đã bắt đầu xử lý Serial/Lot? (serial đã gắn hoặc dòng đã PARTIAL/COMPLETED) */
+  async function processingStarted(documentId: string): Promise<boolean> {
+    const s = await db.get(
+      'SELECT id FROM stock_serials WHERE receiptDocumentId = ? OR issueDocumentId = ? LIMIT 1',
+      [documentId, documentId]
+    ).catch(() => undefined);
+    if (s) return true;
+    const l = await db.get(
+      `SELECT id FROM stock_document_lines WHERE documentId = ? AND processingStatus <> 'PENDING' LIMIT 1`,
+      [documentId]
+    ).catch(() => undefined);
+    return !!l;
+  }
+
+  /** Reset xử lý để sửa lại dòng: chỉ xóa serial chưa từng xuất (IN_STOCK/RESERVED,
+   * chưa gắn phiếu xuất). Serial đã OUT thì chặn reset. */
+  async function resetDocProcessing(documentId: string): Promise<void> {
+    const issued = await db.get(
+      `SELECT id FROM stock_serials WHERE (receiptDocumentId = ? OR issueDocumentId = ?) AND stockStatus = 'OUT' LIMIT 1`,
+      [documentId, documentId]
+    ).catch(() => undefined);
+    if (issued) {
+      throw Object.assign(new Error('Serial của phiếu đã xuất kho, không thể reset xử lý. Hãy dùng phiếu điều chỉnh/trả hàng.'), { status: 409 });
+    }
+    await db.run(`DELETE FROM stock_serials WHERE receiptDocumentId = ? OR issueDocumentId = ?`, [documentId, documentId]);
+    await db.run(
+      `UPDATE stock_document_lines SET processingStatus = 'PENDING', actualQty = NULL, varianceQty = NULL, varianceReason = NULL WHERE documentId = ?`,
+      [documentId]
+    );
+  }
+
+  /** Nhả serial đang RESERVED cho phiếu (hủy/xóa nháp): về IN_STOCK, xóa link xuất. */
+  async function releaseReservedSerials(documentId: string): Promise<void> {
+    await db.run(
+      `UPDATE stock_serials SET stockStatus = 'IN_STOCK', issueDocumentId = NULL, issueLineId = NULL, updatedAt = ? WHERE issueDocumentId = ? AND stockStatus = 'RESERVED'`,
+      [new Date().toISOString(), documentId]
+    ).catch(() => undefined);
+  }
+
   /** Đăng ký serial/lot khi hoàn tất NHẬP: dòng nào NV đã nhập serial thì lưu
    * vết bảo hành (warrantyStart = ngày hạch toán, months theo sản phẩm).
    * 1 mã cho cả dòng SL>1 -> lưu dạng lô; nhiều mã -> mỗi mã 1 serial và
@@ -557,10 +644,11 @@ export function documentsRoutes(ctx: StockContext) {
       const qty = Number(line.quantity);
       if (serials.length === 1 && qty > 1) {
         await db.run(
-          `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt)
-           VALUES (?, ?, NULL, ?, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?)`,
+          `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt, receiptDocumentId, receiptLineId, stockStatus, receivedAt)
+           VALUES (?, ?, NULL, ?, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, 'IN_STOCK', ?)`,
           [randomUUID(), line.productId, serials[0], doc.warehouseId, line.locationId || null,
-            doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now]
+            doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now,
+            doc.id, line.id, now]
         );
         continue;
       }
@@ -577,10 +665,11 @@ export function documentsRoutes(ctx: StockContext) {
       for (const sn of serials) {
         try {
           await db.run(
-            `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt)
-             VALUES (?, ?, ?, NULL, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?)`,
+            `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt, receiptDocumentId, receiptLineId, stockStatus, receivedAt)
+             VALUES (?, ?, ?, NULL, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, 'IN_STOCK', ?)`,
             [randomUUID(), line.productId, sn, doc.warehouseId, line.locationId || null,
-              doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now]
+              doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now,
+              doc.id, line.id, now]
           );
         } catch (e: any) {
           if (e.message?.includes('Duplicate')) throw serialError(`Serial ${sn} đã tồn tại trong hệ thống`, 409);
@@ -590,7 +679,7 @@ export function documentsRoutes(ctx: StockContext) {
     }
   }
 
-  /** Trừ serial khi hoàn tất XUẤT: serial đã nhập phải tồn tại (SALEABLE,
+  /** Trừ serial khi hoàn tất XUẤT: serial đã nhập phải tồn tại (IN_STOCK,
    * đúng kho) và đủ số lượng dòng -> đánh dấu SOLD + khách hàng.
    * Token khớp lotCode (hàng lô) được chấp nhận theo vết, không đổi trạng thái. */
   async function consumeIssueSerials(doc: any, lines: any[], user: any): Promise<void> {
@@ -612,13 +701,19 @@ export function documentsRoutes(ctx: StockContext) {
       }
       for (const sn of serials) {
         const row = await db.get(
-          `SELECT id FROM stock_serials WHERE serialNumber = ? AND productId = ? AND warehouseId = ? AND status = 'SALEABLE' LIMIT 1 FOR UPDATE`,
-          [sn, line.productId, doc.warehouseId]
+          `SELECT id, stockStatus, issueDocumentId, issueLineId FROM stock_serials WHERE serialNumber = ? AND productId = ? AND warehouseId = ? AND status = 'SALEABLE'
+           AND (stockStatus IS NULL OR stockStatus = 'IN_STOCK' OR (stockStatus = 'RESERVED' AND issueDocumentId = ? AND issueLineId = ?)) LIMIT 1 FOR UPDATE`,
+          [sn, line.productId, doc.warehouseId, doc.id, line.id]
         );
         if (!row) throw serialError(`Serial ${sn} không có trong tồn bán được của kho`, 400);
+        // Hàng legacy/mock thiếu stockStatus được coi như IN_STOCK; RESERVED cho phiếu khác thì chặn.
+        if (row.issueDocumentId && row.issueDocumentId !== doc.id) {
+          throw serialError(`Serial ${sn} đang được giữ cho phiếu khác`, 400);
+        }
+        const nowOut = new Date().toISOString();
         await db.run(
-          `UPDATE stock_serials SET status = 'SOLD', customerName = ?, updatedAt = ? WHERE id = ?`,
-          [doc.partnerName ?? null, new Date().toISOString(), (row as any).id]
+          `UPDATE stock_serials SET status = 'SOLD', stockStatus = 'OUT', outDate = ?, customerName = ?, issueDocumentId = ?, issueLineId = ?, updatedAt = ? WHERE id = ?`,
+          [nowOut, doc.partnerName ?? null, doc.id, line.id, nowOut, (row as any).id]
         );
       }
     }
@@ -643,10 +738,11 @@ export function documentsRoutes(ctx: StockContext) {
       const qty = Number(line.quantity);
       if (serials.length === 1 && qty > 1) {
         await db.run(
-          `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt)
-           VALUES (?, ?, NULL, ?, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?)`,
+          `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt, receiptDocumentId, receiptLineId, stockStatus, receivedAt)
+           VALUES (?, ?, NULL, ?, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, 'IN_STOCK', ?)`,
           [randomUUID(), line.productId, serials[0], doc.warehouseId, line.locationId || null,
-            doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now]
+            doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now,
+            doc.id, line.id, now]
         );
         continue;
       }
@@ -665,10 +761,11 @@ export function documentsRoutes(ctx: StockContext) {
           );
         } else {
           await db.run(
-            `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt)
-             VALUES (?, ?, ?, NULL, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?)`,
+            `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt, receiptDocumentId, receiptLineId, stockStatus, receivedAt)
+             VALUES (?, ?, ?, NULL, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, 'IN_STOCK', ?)`,
             [randomUUID(), line.productId, sn, doc.warehouseId, line.locationId || null,
-              doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now]
+              doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now,
+              doc.id, line.id, now]
           );
         }
       }
@@ -686,11 +783,16 @@ export function documentsRoutes(ctx: StockContext) {
       transactionOpen = true;
       const loaded = await loadDocument(String(req.params.id));
       if (!loaded || loaded.doc.docType !== 'RECEIPT') return res.status(404).json({ error: 'Receipt not found' });
-      if (loaded.doc.status !== 'DRAFT') return res.status(400).json({ error: 'Only draft receipts can be completed' });
+      if (loaded.doc.status !== 'DRAFT' && loaded.doc.status !== 'PROCESSING') return res.status(400).json({ error: 'Only draft receipts can be completed' });
       const access = await requireWarehouse(user, loaded.doc.warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       const err = await validateLines(loaded.lines, loaded.doc.warehouseId);
       if (err) return res.status(400).json({ error: err });
+      try {
+        await assertProcessable(loaded.doc, loaded.lines);
+      } catch (e: any) {
+        return res.status(e.status || 400).json({ error: e.message });
+      }
 
       try {
         await registerReceiptSerials(loaded.doc, loaded.lines, user);
@@ -725,11 +827,16 @@ export function documentsRoutes(ctx: StockContext) {
       transactionOpen = true;
       const loaded = await loadDocument(String(req.params.id));
       if (!loaded || loaded.doc.docType !== 'ISSUE') return res.status(404).json({ error: 'Issue not found' });
-      if (loaded.doc.status !== 'DRAFT') return res.status(400).json({ error: 'Only draft issues can be completed' });
+      if (loaded.doc.status !== 'DRAFT' && loaded.doc.status !== 'PROCESSING') return res.status(400).json({ error: 'Only draft issues can be completed' });
       const access = await requireWarehouse(user, loaded.doc.warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       const err = await validateLines(loaded.lines, loaded.doc.warehouseId);
       if (err) return res.status(400).json({ error: err });
+      try {
+        await assertProcessable(loaded.doc, loaded.lines);
+      } catch (e: any) {
+        return res.status(e.status || 400).json({ error: e.message });
+      }
       const agg = aggregateLines(loaded.lines);
       const saleable = await saleableLocationSet(loaded.doc.warehouseId, agg.map((l) => l.locationId || ''));
       for (const line of agg) {
@@ -978,6 +1085,182 @@ export function documentsRoutes(ctx: StockContext) {
       if (transactionOpen) await db.run('ROLLBACK');
       res.status(e.status || 500).json({ error: e.status ? e.message : 'Lỗi khi điều chuyển vị trí' });
     } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
+  });
+
+  // ── Quét Serial theo dòng phiếu ────────────────────────────────────────────
+  // Nguồn sự thật duy nhất vẫn là ô serialLot của dòng (complete-time registration
+  // ghi bảng serials). Scan API validate + nối mã vào serialLot + cập nhật
+  // processingStatus + chuyển phiếu sang PROCESSING.
+
+  const ScanSchema = z.object({
+    documentId: z.string().trim().min(1).max(191),
+    documentLineId: z.string().trim().min(1).max(191),
+    serial: z.string().trim().min(1).max(191),
+  });
+
+  async function appendLineSerial(line: any, serial: string, strictCount: boolean): Promise<{ count: number; completed: boolean }> {
+    const current = parseSerials(line.serialLot);
+    const next = [...current, serial.trim()];
+    const qty = Number(line.quantity);
+    // strict (quét từng chiếc): đủ khi count === qty. Legacy text flow cho
+    // phép 1 mã phủ cả dòng SL>1 (lô) nên giữ rule nới lỏng ở complete-time.
+    const completed = strictCount ? next.length === qty : (next.length === qty || (next.length === 1 && qty > 1));
+    const joined = next.join('\n');
+    await db.run(
+      `UPDATE stock_document_lines SET serialLot = ?, processingStatus = ? WHERE id = ?`,
+      [joined, completed ? 'COMPLETED' : 'PARTIAL', line.id]
+    );
+    return { count: next.length, completed };
+  }
+
+  async function touchProcessing(docId: string): Promise<void> {
+    await db.run(`UPDATE stock_documents SET status = 'PROCESSING', updatedAt = ? WHERE id = ? AND status = 'DRAFT'`, [new Date().toISOString(), docId]);
+  }
+
+  router.post('/serials/scan', validate(ScanSchema), async (req, res) => {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    let transactionOpen = false;
+    try {
+      const { documentId, documentLineId, serial } = req.body;
+      const code = String(serial).trim();
+      const doc = await db.get('SELECT * FROM stock_documents WHERE id = ?', [documentId]);
+      if (!doc || doc.docType !== 'RECEIPT') return res.status(404).json({ error: 'Receipt not found' });
+      if (!(await canWriteDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING') return res.status(400).json({ error: 'Only draft receipts can be processed' });
+      const line = await db.get('SELECT * FROM stock_document_lines WHERE id = ? AND documentId = ?', [documentLineId, documentId]);
+      if (!line) return res.status(404).json({ error: 'Document line not found' });
+      const trackings = await productTrackings([line.productId]);
+      if (trackings.get(line.productId) !== 'SERIAL') {
+        return res.status(400).json({ error: 'Sản phẩm không quản lý theo Serial' });
+      }
+      const qty = Number(line.quantity);
+      const current = parseSerials(line.serialLot);
+      if (current.some((s) => s.toLowerCase() === code.toLowerCase())) {
+        return res.status(400).json({ error: 'Serial này đã được thêm vào phiếu' });
+      }
+      if (current.length >= qty) {
+        return res.status(400).json({ error: `Phiếu yêu cầu ${qty} thiết bị, đã đủ ${current.length}/${qty}` });
+      }
+      const exists = await db.get('SELECT id FROM stock_serials WHERE serialNumber = ? LIMIT 1', [code]);
+      if (exists) return res.status(409).json({ error: 'Serial này đã tồn tại trong hệ thống' });
+
+      await beginStockTransaction(db, [doc.warehouseId]);
+      transactionOpen = true;
+      try {
+        const fresh = await db.get('SELECT * FROM stock_document_lines WHERE id = ? FOR UPDATE', [documentLineId]);
+        if (!fresh) { await db.run('ROLLBACK'); transactionOpen = false; return res.status(404).json({ error: 'Document line not found' }); }
+        const freshSerials = parseSerials(fresh.serialLot);
+        if (freshSerials.some((s) => s.toLowerCase() === code.toLowerCase())) {
+          await db.run('ROLLBACK'); transactionOpen = false;
+          return res.status(400).json({ error: 'Serial này đã được thêm vào phiếu' });
+        }
+        if (freshSerials.length >= qty) {
+          await db.run('ROLLBACK'); transactionOpen = false;
+          return res.status(400).json({ error: `Phiếu yêu cầu ${qty} thiết bị, đã đủ ${freshSerials.length}/${qty}` });
+        }
+        const dup = await db.get('SELECT id FROM stock_serials WHERE serialNumber = ? LIMIT 1', [code]);
+        if (dup) {
+          await db.run('ROLLBACK'); transactionOpen = false;
+          return res.status(409).json({ error: 'Serial này đã tồn tại trong hệ thống' });
+        }
+        const result = await appendLineSerial(fresh, code, true);
+        await touchProcessing(documentId);
+        await db.run('COMMIT'); transactionOpen = false;
+        res.status(201).json({ serial: code, count: result.count, required: qty, completed: result.completed });
+      } catch (e) {
+        await db.run('ROLLBACK'); transactionOpen = false;
+        throw e;
+      }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to scan serial' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
+  });
+
+  router.post('/serials/scan-out', validate(ScanSchema), async (req, res) => {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    let transactionOpen = false;
+    try {
+      const { documentId, documentLineId, serial } = req.body;
+      const code = String(serial).trim();
+      const doc = await db.get('SELECT * FROM stock_documents WHERE id = ?', [documentId]);
+      if (!doc || doc.docType !== 'ISSUE') return res.status(404).json({ error: 'Issue not found' });
+      if (!(await canWriteDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING') return res.status(400).json({ error: 'Only draft issues can be processed' });
+
+      // Đối chiếu trực tiếp với lịch sử nhập: tồn tại + đúng SP + IN_STOCK + đúng kho + có nguồn nhập.
+      const row = await db.get('SELECT * FROM stock_serials WHERE serialNumber = ? LIMIT 1', [code]);
+      if (!row) return res.status(404).json({ error: 'Không tìm thấy Serial trong lịch sử nhập kho. Không được phép xuất thiết bị này.' });
+      const line0 = await db.get('SELECT * FROM stock_document_lines WHERE id = ? AND documentId = ?', [documentLineId, documentId]);
+      if (!line0) return res.status(404).json({ error: 'Document line not found' });
+      if (row.productId !== line0.productId) {
+        return res.status(400).json({ error: 'Serial thuộc sản phẩm khác với sản phẩm trên phiếu xuất' });
+      }
+      if (!row.receiptDocumentId) {
+        return res.status(400).json({ error: 'Serial chưa từng nhập kho. Không được phép xuất thiết bị này.' });
+      }
+      const stockState = row.stockStatus || 'IN_STOCK';
+      if (stockState === 'OUT') {
+        const issueDoc = row.issueDocumentId
+          ? await db.get('SELECT code FROM stock_documents WHERE id = ?', [row.issueDocumentId]).catch(() => null)
+          : null;
+        return res.status(400).json({ error: `Serial này đã được xuất theo ${issueDoc?.code || 'phiếu khác'}` });
+      }
+      if (stockState === 'RESERVED' && row.issueDocumentId !== documentId) {
+        return res.status(400).json({ error: 'Serial đang được giữ cho phiếu xuất khác' });
+      }
+      if (row.warehouseId !== doc.warehouseId) {
+        return res.status(400).json({ error: 'Serial hiện không nằm tại kho đang xuất' });
+      }
+      const trackings = await productTrackings([line0.productId]);
+      if (trackings.get(line0.productId) !== 'SERIAL') {
+        return res.status(400).json({ error: 'Sản phẩm không quản lý theo Serial' });
+      }
+      const qty = Number(line0.quantity);
+      const current = parseSerials(line0.serialLot);
+      if (current.some((s) => s.toLowerCase() === code.toLowerCase())) {
+        return res.status(400).json({ error: 'Serial này đã được thêm vào phiếu' });
+      }
+      if (current.length + 1 > qty) {
+        return res.status(400).json({ error: `Phiếu yêu cầu ${qty} thiết bị, đã đủ ${current.length}/${qty}` });
+      }
+
+      await beginStockTransaction(db, [doc.warehouseId]);
+      transactionOpen = true;
+      try {
+        const locked = await db.get('SELECT * FROM stock_serials WHERE serialNumber = ? LIMIT 1 FOR UPDATE', [code]);
+        const lockedState = locked?.stockStatus || 'IN_STOCK';
+        if (!locked || (lockedState !== 'IN_STOCK' && !(lockedState === 'RESERVED' && locked?.issueDocumentId === documentId))) {
+          await db.run('ROLLBACK'); transactionOpen = false;
+          return res.status(409).json({ error: 'Serial vừa bị giữ/xuất bởi người khác, hãy quét lại' });
+        }
+        if (locked.warehouseId !== doc.warehouseId || locked.productId !== line0.productId) {
+          await db.run('ROLLBACK'); transactionOpen = false;
+          return res.status(400).json({ error: 'Serial không còn hợp lệ để xuất (sai kho/sản phẩm)' });
+        }
+        const fresh = await db.get('SELECT * FROM stock_document_lines WHERE id = ? FOR UPDATE', [documentLineId]);
+        if (!fresh) { await db.run('ROLLBACK'); transactionOpen = false; return res.status(404).json({ error: 'Document line not found' }); }
+        const freshSerials = parseSerials(fresh.serialLot);
+        if (freshSerials.some((s) => s.toLowerCase() === code.toLowerCase()) || freshSerials.length >= qty) {
+          await db.run('ROLLBACK'); transactionOpen = false;
+          return res.status(400).json({ error: 'Serial đã được thêm hoặc dòng đã đủ số lượng' });
+        }
+        await db.run(
+          `UPDATE stock_serials SET stockStatus = 'RESERVED', issueDocumentId = ?, issueLineId = ?, updatedAt = ? WHERE id = ?`,
+          [documentId, documentLineId, new Date().toISOString(), locked.id]
+        );
+        const result = await appendLineSerial(fresh, code, true);
+        await touchProcessing(documentId);
+        await db.run('COMMIT'); transactionOpen = false;
+        res.status(201).json({ serial: code, count: result.count, required: qty, completed: result.completed });
+      } catch (e) {
+        await db.run('ROLLBACK'); transactionOpen = false;
+        throw e;
+      }
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to scan serial for issue' }); } finally {
       if (transactionOpen) await db.run('ROLLBACK');
     }
   });
