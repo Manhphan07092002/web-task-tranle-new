@@ -117,6 +117,7 @@ export interface StockDocument {
   sourceWarehouseName?: string | null;
   destWarehouseName?: string | null;
   createdByName?: string | null;
+  missingSerials?: number | null;
   lines?: StockDocDetailLine[];
 }
 

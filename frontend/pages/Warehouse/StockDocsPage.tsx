@@ -4,7 +4,7 @@ import { apiFetch } from '../../services/api';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, Copy, Trash2, FileText, Calendar, Building2, User } from 'lucide-react';
+import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, Copy, Trash2, Camera, FileText, Calendar, Building2, User } from 'lucide-react';
 import { Card } from '../../components/UI';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
@@ -21,6 +21,7 @@ import type { DeptKey } from '../../components/layout/menus/menuTypes';
 import { KIND_META, STATUS_LABEL, type Kind } from './StockDocs/meta';
 import { DocDetailModal } from './StockDocs/DocDetailModal';
 import { DocCreateModal } from './StockDocs/DocCreateModal';
+import { SerialBulkModal } from './StockDocs/SerialBulkModal';
 
 // Trang chứng từ kho dùng chung cho Nhập/Xuất/Điều chuyển (§13–18).
 export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kind: Kind }) {
@@ -70,6 +71,7 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
 
   const completeWithCheck = async (d: StockDocument, fn: () => Promise<unknown>, failMsg: string) => {
     // NV tự quyết từng dòng: chỉ cảnh báo khi thiếu serial, không chặn cứng.
+    // (Luồng chính đã bắt quét đủ serial trước nút Hoàn tất; đây là lưới an toàn.)
     if (d.docType !== 'TRANSFER') {
       try {
         const detail = await getStockDocument(d.id);
@@ -79,6 +81,8 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
     }
     await act(d.id, fn, failMsg);
   };
+
+  const [serialBulkId, setSerialBulkId] = useState<string | null>(null);
 
   // Menu chuột phải: mặc định click = xem, chuột phải chọn Nhân bản / Sửa / Xóa.
   const [menu, setMenu] = useState<{ x: number; y: number; docId: string } | null>(null);
@@ -254,7 +258,13 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                       </td>
                       <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-center gap-1.5">
-                          {d.status === 'DRAFT' && kind !== 'TRANSFER' && (
+                          {d.status === 'DRAFT' && kind !== 'TRANSFER' && (Number(d.missingSerials) || 0) > 0 && (
+                            <button disabled={actingId === d.id} onClick={() => setSerialBulkId(d.id)}
+                              className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors shadow-sm whitespace-nowrap">
+                              <Camera size={12} />Quét serial ({Number(d.missingSerials)})
+                            </button>
+                          )}
+                          {d.status === 'DRAFT' && kind !== 'TRANSFER' && !((Number(d.missingSerials) || 0) > 0) && (
                             <button disabled={actingId === d.id} onClick={() => completeWithCheck(d, () => advanceDocument(kind === 'RECEIPT' ? 'receipts' : 'issues', d.id, 'complete'), 'Hoàn tất thất bại')}
                               className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors shadow-sm whitespace-nowrap">
                               {actingId === d.id ? <RefreshCw size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}{meta.actionDone}
@@ -312,6 +322,16 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
           onClose={() => setShowCreate(false)}
           onDone={async () => { setShowCreate(false); await fetchAll(); }}
           onError={setError}
+        />
+      )}
+
+      {serialBulkId && (
+        <SerialBulkModal
+          key={serialBulkId}
+          docId={serialBulkId}
+          kind={kind === 'TRANSFER' ? 'RECEIPT' : kind}
+          onClose={() => setSerialBulkId(null)}
+          onCompleted={async () => { setSerialBulkId(null); await fetchAll(); }}
         />
       )}
 

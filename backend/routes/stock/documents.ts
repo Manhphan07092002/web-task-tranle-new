@@ -20,7 +20,9 @@ export function documentsRoutes(ctx: StockContext) {
         if (warehouseId && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
         if (!warehouseId && scope.length === 0) return res.json([]);
       }
-      let query = `SELECT d.*, 
+      let query = `SELECT d.*,
+          (SELECT COUNT(*) FROM stock_document_lines l
+            WHERE l.documentId = d.id AND (l.serialLot IS NULL OR l.serialLot = '')) AS missingSerials,
           w.name AS warehouseName,
           sw.name AS sourceWarehouseName,
           dw.name AS destWarehouseName,

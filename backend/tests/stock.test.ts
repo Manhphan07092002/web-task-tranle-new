@@ -126,6 +126,25 @@ describe('list pagination', () => {
     expect(String(moveCall?.[0])).toContain('LIMIT ? OFFSET ?');
     expect(moveCall?.[1].slice(-2)).toEqual([20, 0]);
   });
+
+  it('exposes missingSerials counts for the scan gate', async () => {
+    const calls: string[] = [];
+    const d: any = {
+      all: vi.fn(async (sql: string) => {
+        calls.push(sql);
+        if (String(sql).includes('FROM user_warehouse_scopes')) return [{ warehouseId: 'wh-hn' }];
+        if (String(sql).includes('FROM stock_documents d')) {
+          return [{ id: 'd1', docType: 'RECEIPT', status: 'DRAFT', missingSerials: 2 }];
+        }
+        return [];
+      }),
+      get: vi.fn(async () => undefined),
+      run: vi.fn(async () => ({ changes: 1 })),
+    };
+    const res = await request(appFor(nv, d)).get('/documents').expect(200);
+    expect(res.body[0].missingSerials).toBe(2);
+    expect(calls.some((s) => s.includes('stock_document_lines'))).toBe(true);
+  });
 });
 
 describe('receipts', () => {
