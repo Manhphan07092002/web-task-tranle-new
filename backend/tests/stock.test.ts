@@ -164,6 +164,38 @@ describe('receipts', () => {
     await request(appFor(admin, db)).get('/next-code?docType=RECEIPT').expect(403);
   });
 
+  it('retries with the next sequence when a concurrent receipt takes the code', async () => {
+    const yy = String(new Date().getFullYear()).slice(2);
+    const committed = new Set<string>();
+    let firstInsert = true;
+    const db = mockDbProducts({ scopes: ['wh-hn'], productIds: new Set(['p1']) });
+    const origAll = db.all;
+    const origRun = db.run;
+    db.all = vi.fn(async (sql: string, params?: any[]) => {
+      if (String(sql).includes('SELECT code FROM stock_documents')) {
+        return [...committed].map((code) => ({ code }));
+      }
+      return (origAll as any)(sql, params);
+    });
+    db.run = vi.fn(async (sql: string, params?: any[]) => {
+      if (String(sql).includes('INSERT INTO stock_documents')) {
+        const code = params?.[1];
+        if (firstInsert) {
+          // Giả lập phiếu khác commit cùng mã ngay trước ta.
+          firstInsert = false;
+          committed.add(code);
+          throw new Error(`Duplicate entry '${code}' for key 'stock_documents.code'`);
+        }
+        if (committed.has(code)) throw new Error(`Duplicate entry '${code}' for key 'stock_documents.code'`);
+        committed.add(code);
+      }
+      return (origRun as any)(sql, params);
+    });
+    const res = await request(appFor(nv, db)).post('/receipts')
+      .send({ warehouseId: 'wh-hn', lines: [{ productId: 'p1', quantity: 1 }] }).expect(201);
+    expect(res.body.code).toBe(`PNK-${yy}-0002`);
+  });
+
   it('refuses creation outside the scope', async () => {
     const db = mockDb({ scopes: ['wh-hn'] });
     await request(appFor(nv, db)).post('/receipts')
@@ -454,6 +486,31 @@ describe('serial tracking on complete', () => {
     await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(400);
     expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
   });
+
+  it('accepts a matching lot code on issue without changing its status', async () => {    const db = serialDb({ docType: 'ISSUE', lines: [{ ...receiptLines[0], quantity: 3, serialLot: 'LOT9' }], stockSerials: { LOT9: 'lot1' } });
+    await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(200);
+    expect(db.calls.some(([s]: [string, any[]]) => String(s).includes("SET status = 'SOLD'"))).toBe(false);
+    expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(true);
+  });
+
+  it('rejects an unknown lot code on issue', async () => {
+    const db = serialDb({ docType: 'ISSUE', lines: [{ ...receiptLines[0], quantity: 3, serialLot: 'LOT9' }], stockSerials: {} });
+    await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(400);
+    expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
+  });
+
+  it('completes return documents and posts inbound moves', async () => {
+    const db = serialDb({ docType: 'RETURN', lines: [{ ...receiptLines[0], serialLot: '' }] });
+    await request(appFor(tp, db)).post('/returns/doc1/complete').send({}).expect(200);
+    expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(true);
+  });
+
+  it('returns sold serials to saleable stock on return complete', async () => {
+    const db = serialDb({ docType: 'RETURN', lines: receiptLines, stockSerials: { SN1: 's1', SN2: 's2' } });
+    await request(appFor(tp, db)).post('/returns/doc1/complete').send({}).expect(200);
+    const back = db.calls.filter(([s]: [string, any[]]) => String(s).includes("SET status = 'SALEABLE'"));
+    expect(back).toHaveLength(2);
+  });
 });
 
 describe('reservations hold, release and consume', () => {
@@ -501,6 +558,11 @@ describe('reservations hold, release and consume', () => {
     const d = db({ balance: { onHand: 5, reserved: 2 } }); // available = 3 < 4
     await request(appFor(tp, d)).post('/reservations').send(body).expect(400);
     expect(d.run.mock.calls.map(([sql]: string[]) => sql)).toEqual(['START TRANSACTION', 'ROLLBACK']);
+  });
+
+  it('rejects malformed expiry datetimes', async () => {
+    const d = db();
+    await request(appFor(tp, d)).post('/reservations').send({ ...body, expiresAt: 'khong-phai-ngay' }).expect(400);
   });
 
   it('releases without touching on-hand, consumes with an issue move', async () => {
@@ -632,6 +694,29 @@ describe('stock counts blind flow', () => {
     const d = db({ count: open });
     await request(appFor(tp, d)).post('/counts/c1/recount').send({ lineIds: ['l1'] }).expect(200);
     expect(d.run.mock.calls.some(([s]: string[]) => String(s).includes('actualQty = NULL'))).toBe(true);
+  });
+
+  it('records current on-hand as expectedQty for pairs missing from the snapshot', async () => {
+    const open = { id: 'c1', warehouseId: 'wh-hn', status: 'COUNTING' };
+    const calls: [string, any[]][] = [];
+    const d: any = {
+      all: vi.fn(async (sql: string) => {
+        if (String(sql).includes('FROM user_warehouse_scopes')) return [{ warehouseId: 'wh-hn' }];
+        return [];
+      }),
+      get: vi.fn(async (sql: string, params?: any[]) => {
+        if (String(sql).includes('FROM products')) return { id: params?.[0] };
+        if (String(sql).includes('FROM stock_counts')) return open;
+        if (String(sql).includes('FROM stock_count_lines')) return undefined;
+        if (String(sql).includes('FROM stock_balances')) return { onHand: 7, reserved: 0 };
+        return undefined;
+      }),
+      run: vi.fn(async (sql: string, params?: any[]) => { calls.push([sql, params ?? []]); return { changes: 1 }; }),
+    };
+    await request(appFor(tp, d)).post('/counts/c1/lines')
+      .send({ lines: [{ productId: 'p9', quantity: 0, actualQty: 7 }] }).expect(200);
+    const insert = calls.find(([s]) => String(s).includes('INSERT INTO stock_count_lines'));
+    expect(insert?.[1][4]).toBe(7);
   });
 });
 

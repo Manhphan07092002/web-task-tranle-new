@@ -622,6 +622,57 @@ export function documentsRoutes(ctx: StockContext) {
     }
   }
 
+  /** Nhận lại serial khi hoàn tất TRẢ HÀNG: serial đã từng xuất (SOLD) được
+   * đưa về SALEABLE tại vị trí trả + xóa khách; serial chưa từng đăng ký thì
+   * ghi mới như nhập (giữ vết bảo hành theo sản phẩm). */
+  async function registerReturnSerials(doc: any, lines: any[], user: any): Promise<void> {
+    const withSerials = lines.filter((l) => parseSerials(l.serialLot).length > 0);
+    if (withSerials.length === 0) return;
+    const productIds = [...new Set(withSerials.map((l) => l.productId))];
+    const products = await db.all(
+      `SELECT id, warrantyMonths FROM products WHERE id IN (${productIds.map(() => '?').join(', ')})`,
+      productIds
+    ).catch(() => []);
+    const warrantyByProduct = new Map((products || []).map((p: any) => [p.id, Math.max(0, Number(p.warrantyMonths) || 0)]));
+    const warrantyStart = String(doc.postingDate || doc.docDate || new Date().toISOString()).slice(0, 10);
+    const now = new Date().toISOString();
+    for (const line of withSerials) {
+      const serials = parseSerials(line.serialLot);
+      const qty = Number(line.quantity);
+      if (serials.length === 1 && qty > 1) {
+        await db.run(
+          `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt)
+           VALUES (?, ?, NULL, ?, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?)`,
+          [randomUUID(), line.productId, serials[0], doc.warehouseId, line.locationId || null,
+            doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now]
+        );
+        continue;
+      }
+      if (serials.length !== qty) {
+        throw serialError(`Dòng ${line.productId}: đã nhập ${serials.length} serial nhưng số lượng ${qty} — quét đủ serial từng chiếc`, 400);
+      }
+      for (const sn of serials) {
+        const row = await db.get(
+          `SELECT id FROM stock_serials WHERE serialNumber = ? AND productId = ? LIMIT 1 FOR UPDATE`,
+          [sn, line.productId]
+        );
+        if (row) {
+          await db.run(
+            `UPDATE stock_serials SET status = 'SALEABLE', warehouseId = ?, locationId = ?, receiptId = ?, customerName = NULL, updatedAt = ? WHERE id = ?`,
+            [doc.warehouseId, line.locationId || null, doc.id, now, (row as any).id]
+          );
+        } else {
+          await db.run(
+            `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt)
+             VALUES (?, ?, ?, NULL, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?)`,
+            [randomUUID(), line.productId, sn, doc.warehouseId, line.locationId || null,
+              doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now]
+          );
+        }
+      }
+    }
+  }
+
   router.post('/receipts/:id/complete', async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
@@ -707,6 +758,45 @@ export function documentsRoutes(ctx: StockContext) {
       }
       res.json({ success: true });
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to complete issue' }); } finally {
+      if (transactionOpen) await db.run('ROLLBACK');
+    }
+  });
+
+  router.post('/returns/:id/complete', async (req, res) => {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    let transactionOpen = false;
+    try {
+      const pre = await loadDocument(String(req.params.id));
+      if (!pre || pre.doc.docType !== 'RETURN') return res.status(404).json({ error: 'Return not found' });
+      await beginStockTransaction(db, [pre.doc.warehouseId]);
+      transactionOpen = true;
+      const loaded = await loadDocument(String(req.params.id));
+      if (!loaded || loaded.doc.docType !== 'RETURN') return res.status(404).json({ error: 'Return not found' });
+      if (loaded.doc.status !== 'DRAFT') return res.status(400).json({ error: 'Only draft returns can be completed' });
+      const access = await requireWarehouse(user, loaded.doc.warehouseId);
+      if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      const err = await validateLines(loaded.lines, loaded.doc.warehouseId);
+      if (err) return res.status(400).json({ error: err });
+
+      try {
+        await registerReturnSerials(loaded.doc, loaded.lines, user);
+        for (const line of loaded.lines) {
+          await postMove(db.run.bind(db), {
+            productId: line.productId, warehouseId: loaded.doc.warehouseId, locationId: line.locationId || '',
+            quantity: Number(line.quantity), moveType: 'RETURN',
+            referenceType: loaded.doc.referenceType, referenceId: loaded.doc.id,
+            documentLineId: line.id, createdBy: user.id,
+          });
+        }
+        await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['DONE', new Date().toISOString(), loaded.doc.id]);
+        await db.run('COMMIT'); transactionOpen = false;
+      } catch (e) {
+        await db.run('ROLLBACK'); transactionOpen = false;
+        throw e;
+      }
+      res.json({ success: true });
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to complete return' }); } finally {
       if (transactionOpen) await db.run('ROLLBACK');
     }
   });

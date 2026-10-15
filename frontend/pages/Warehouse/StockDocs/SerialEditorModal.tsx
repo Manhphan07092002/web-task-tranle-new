@@ -1,17 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { X, AlertCircle, Camera, CheckSquare, Square } from 'lucide-react';
 import { getStockSerials, type StockSerial } from '../../../services/stockService';
+import { parseSerialList } from '../../../services/serialUtils';
 import { ScannerModal } from './ScannerModal';
 
-export function parseSerialList(raw: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const part of String(raw || '').split(/[,;\n]+/)) {
-    const s = part.trim();
-    if (s && !seen.has(s.toLowerCase())) { seen.add(s.toLowerCase()); out.push(s); }
-  }
-  return out;
-}
+export { parseSerialList };
 
 // Nhập serial/lot cho 1 dòng hàng: gõ tay (mỗi dòng 1 mã), quét camera,
 // hoặc (phiếu xuất) tick chọn từ tồn bán được.
