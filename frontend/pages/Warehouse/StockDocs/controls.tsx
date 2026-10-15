@@ -31,6 +31,7 @@ export function SearchCombo<T extends { id: string }>({
   minWidth = 260,
   renderItem,
   showArrow = false,
+  onCreateNew,
 }: {
   items: T[];
   selectedId: string;
@@ -43,6 +44,7 @@ export function SearchCombo<T extends { id: string }>({
   minWidth?: number;
   renderItem?: (t: T, isHighlight: boolean) => React.ReactNode;
   showArrow?: boolean;
+  onCreateNew?: (query: string) => void;
 }) {
   const selected = items.find((t) => t.id === selectedId) || null;
   const [text, setText] = useState(selected ? display(selected) : '');
@@ -219,6 +221,12 @@ export function SearchCombo<T extends { id: string }>({
             if (open && suggestions.length > 0) {
               e.preventDefault();
               commit(suggestions[Math.min(highlight, suggestions.length - 1)]);
+            } else if (open && onCreateNew && text.trim()) {
+              e.preventDefault();
+              const query = text.trim();
+              setOpen(false);
+              setShowAll(false);
+              onCreateNew(query);
             }
           } else if (e.key === 'Escape') {
             setOpen(false);
@@ -251,10 +259,15 @@ export function SearchCombo<T extends { id: string }>({
           style={dropdownStyle}
           className="overflow-y-auto bg-white border border-gray-200 rounded-xl shadow-2xl text-sm divide-y divide-gray-100 animate-in fade-in zoom-in-95 duration-100"
         >
-          {suggestions.length === 0 ? (
-            <li className="px-3.5 py-3 text-xs text-gray-400 text-center italic">Không tìm thấy kết quả phù hợp</li>
-          ) : (
-            suggestions.map((t, idx) => {
+          {(() => {
+            const query = text.trim();
+            const canCreate = Boolean(onCreateNew && query && !suggestions.some((t) => display(t).trim().toLowerCase() === query.toLowerCase()));
+            if (suggestions.length === 0 && !canCreate) {
+              return <li className="px-3.5 py-3 text-xs text-gray-400 text-center italic">Không tìm thấy kết quả phù hợp</li>;
+            }
+            return (
+              <>
+                {suggestions.map((t, idx) => {
               const isSelected = selected ? t.id === selected.id : false;
               const isHighlighted = idx === highlight;
               return (
@@ -286,8 +299,27 @@ export function SearchCombo<T extends { id: string }>({
                   </button>
                 </li>
               );
-            })
-          )}
+            })}
+                {canCreate && (
+                  <li>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setOpen(false);
+                        setShowAll(false);
+                        onCreateNew!(query);
+                      }}
+                      className="w-full text-left px-3.5 py-2.5 transition-colors flex items-center gap-2 text-emerald-700 font-bold hover:bg-emerald-50 border-t border-dashed border-emerald-200"
+                    >
+                      <PlusCircle size={15} className="shrink-0" />
+                      <span className="truncate">+ Tạo mới “{query}”</span>
+                    </button>
+                  </li>
+                )}
+              </>
+            );
+          })()}
         </ul>,
         document.body
       )}

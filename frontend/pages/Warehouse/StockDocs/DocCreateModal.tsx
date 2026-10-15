@@ -12,7 +12,7 @@ import {
   type StockDocument, type StockDocLine, type Warehouse,
   type PartnerSuggestion, type PartnerSuggestionsData, type StockDocDetailLine,
 } from '../../../services/stockService';
-import { getProducts, type Product } from '../../../services/productService';
+import { getProducts, createProduct, suggestCode, type Product } from '../../../services/productService';
 import { getDeptHomePath } from '../../../components/layout/menus/departmentMenus';
 import { useData } from '../../../contexts/DataContext';
 import type { DeptKey } from '../../../components/layout/menus/menuTypes';
@@ -33,6 +33,12 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
   const [err, setErr] = useState('');
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
   const [locations, setLocations] = useState<StockLocation[]>([]);
+  // Danh sách hàng nội bộ modal (được bổ sung khi tạo nhanh SP mới) —
+  // đồng bộ lại mỗi khi prop products đổi (mở modal mới).
+  const [localProducts, setLocalProducts] = useState<Product[]>(products);
+  useEffect(() => { setLocalProducts(products); }, [products]);
+  // Tạo nhanh sản phẩm mới khi gõ tên/mã chưa có trong danh mục.
+  const [quickCreate, setQuickCreate] = useState<{ line: number; name: string; code: string } | null>(null);
   const [partnerSuggestions, setPartnerSuggestions] = useState<PartnerSuggestionsData>({
     partners: [],
     deliverers: [],
@@ -114,12 +120,12 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
 
   const availableUnits = useMemo(() => {
     const set = new Set<string>();
-    products.forEach((p) => {
+    localProducts.forEach((p) => {
       if (p.unit && p.unit.trim()) set.add(p.unit.trim());
     });
     ['Bộ', 'Cái', 'Tấm', 'Cuộn', 'Mét', 'Kg', 'Hộp', 'Thùng', 'Lô'].forEach((u) => set.add(u));
     return Array.from(set);
-  }, [products]);
+  }, [localProducts]);
 
   const setLine = (i: number, patch: Partial<StockDocLine>) =>
     setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
@@ -232,7 +238,21 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
     }
   };
 
-  const productName = (id: string) => products.find((p) => p.id === id)?.name || '';
+  const productName = (id: string) => localProducts.find((p) => p.id === id)?.name || '';
+
+  const openQuickCreate = (lineIndex: number, typed: string, fromCode: boolean) => {
+    setQuickCreate({
+      line: lineIndex,
+      name: fromCode ? '' : typed,
+      code: fromCode ? typed : '',
+    });
+  };
+
+  const handleCreatedProduct = (lineIndex: number, created: Product) => {
+    setLocalProducts((prev) => (prev.some((p) => p.id === created.id) ? prev : [...prev, created]));
+    pickProduct(lineIndex, created);
+    setQuickCreate(null);
+  };
   const whCode = warehouses.find((w) => w.id === warehouseId)?.code || '';
 
   const totals = lines.reduce((acc, l) => {
@@ -497,11 +517,12 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                           </td>
                           <td className="py-1 px-1 w-20 text-center">
                             <SearchCombo
-                              items={products}
+                              items={localProducts}
                               selectedId={l.productId}
                               display={(p) => p.importCode || ''}
                               match={(p, q) => `${p.importCode || ''} ${p.name || ''}`.toLowerCase().includes(q)}
                               onPick={(p) => pickProduct(i, p)}
+                              onCreateNew={(t) => openQuickCreate(i, t, true)}
                               placeholder="Mã..."
                               inputClassName={`w-20 px-1 py-1 border rounded-none text-xs outline-none focus:border-emerald-500 text-center mx-auto transition-colors ${
                                 hasAttemptedSubmit && noProduct
@@ -533,11 +554,12 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                           </td>
                           <td className="py-1 px-2 min-w-[180px]">
                             <SearchCombo
-                              items={products}
+                              items={localProducts}
                               selectedId={l.productId}
                               display={(p) => p.name}
                               match={(p, q) => `${p.name} ${p.importCode || ''} ${p.unit || ''}`.toLowerCase().includes(q)}
                               onPick={(p) => pickProduct(i, p)}
+                              onCreateNew={(t) => openQuickCreate(i, t, false)}
                               placeholder={hasAttemptedSubmit && noProduct ? '⚠️ Bắt buộc chọn hàng (*)...' : 'Gõ tên/mã hàng...'}
                               inputClassName={`w-full px-2 py-1 border rounded-none text-xs outline-none transition-colors ${
                                 hasAttemptedSubmit && noProduct
@@ -574,7 +596,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                           </td>
                           <td className="py-1 px-0.5 text-center hidden md:table-cell w-12">
                             <UnitSuggestInput
-                              value={l.unit !== undefined ? (l.unit || '') : (products.find((p) => p.id === l.productId)?.unit || '')}
+                              value={l.unit !== undefined ? (l.unit || '') : (localProducts.find((p) => p.id === l.productId)?.unit || '')}
                               onChange={(val) => setLine(i, { unit: val })}
                               availableUnits={availableUnits}
                               placeholder="ĐVT"
@@ -781,6 +803,123 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
             <button type="submit" disabled={saving}
               className="w-full sm:w-auto px-5 py-2.5 sm:py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60 flex items-center justify-center gap-2">
               {saving ? <><RefreshCw size={14} className="animate-spin" />Đang tạo...</> : 'Tạo phiếu nháp'}
+            </button>
+          </div>
+        </form>
+      </div>
+      {quickCreate && (
+        <QuickCreateProductModal
+          key={`${quickCreate.line}-${quickCreate.name}-${quickCreate.code}`}
+          initialName={quickCreate.name}
+          initialCode={quickCreate.code}
+          unit={lines[quickCreate.line]?.unit || ''}
+          unitPrice={Number(lines[quickCreate.line]?.unitPrice) || 0}
+          units={availableUnits}
+          onClose={() => setQuickCreate(null)}
+          onCreated={(p) => handleCreatedProduct(quickCreate.line, p)}
+        />
+      )}
+    </div>
+  );
+}
+
+function QuickCreateProductModal({ initialName, initialCode, unit, unitPrice, units, onClose, onCreated }: {
+  initialName: string; initialCode: string; unit: string; unitPrice: number; units: string[];
+  onClose: () => void; onCreated: (p: Product) => void;
+}) {
+  const [name, setName] = useState(initialName);
+  const [code, setCode] = useState(initialCode);
+  const [punit, setPunit] = useState(unit || 'Cái');
+  const [importPrice, setImportPrice] = useState(unitPrice);
+  const [salePrice, setSalePrice] = useState(unitPrice);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+  const [suggesting, setSuggesting] = useState(false);
+
+  const suggest = async () => {
+    setSuggesting(true);
+    try {
+      const r = await suggestCode('NK-');
+      setCode(r.suggestedCode);
+    } catch {
+      setErr('Không gợi ý được mã, bạn nhập tay mã hàng.');
+    } finally {
+      setSuggesting(false);
+    }
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr('');
+    if (!name.trim()) { setErr('Tên hàng hóa là bắt buộc.'); return; }
+    if (!(salePrice > importPrice)) { setErr('Giá bán phải lớn hơn giá nhập (quy định danh mục).'); return; }
+    setSaving(true);
+    try {
+      const created = await createProduct({
+        name: name.trim(),
+        importCode: code.trim() || undefined,
+        unit: punit.trim() || 'Cái',
+        importPrice,
+        salePrice,
+        defaultPrice: salePrice,
+      });
+      onCreated(created);
+    } catch (e: any) {
+      setErr(e.message || 'Tạo sản phẩm thất bại (có thể bạn không có quyền quản lý kho).');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <h3 className="font-bold text-gray-900">Tạo nhanh hàng hóa</h3>
+          <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
+        </div>
+        <form onSubmit={submit} className="p-5 space-y-3">
+          {err && <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm"><AlertCircle size={14} />{err}</div>}
+          <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Tên hàng <span className="text-red-500">*</span></label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="VD: Tấm pin..."
+              className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500" />
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Mã hàng</label>
+            <div className="flex gap-2">
+              <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="Để trống nếu chưa có mã"
+                className="flex-1 px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500 font-mono" />
+              <button type="button" onClick={suggest} disabled={suggesting}
+                className="px-3 py-2 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-xl disabled:opacity-60">
+                {suggesting ? '...' : 'Gợi ý mã'}
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">ĐVT</label>
+              <input value={punit} onChange={(e) => setPunit(e.target.value)} list="qc-units"
+                className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500" />
+              <datalist id="qc-units">{units.map((u) => <option key={u} value={u} />)}</datalist>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Giá nhập</label>
+              <input type="number" min={0} value={importPrice} onChange={(e) => setImportPrice(Number(e.target.value))}
+                className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none text-right tabular-nums focus:border-emerald-500" />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Giá bán <span className="text-red-500">*</span></label>
+              <input type="number" min={0} value={salePrice} onChange={(e) => setSalePrice(Number(e.target.value))}
+                className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none text-right tabular-nums focus:border-emerald-500" />
+            </div>
+          </div>
+          <p className="text-xs text-gray-400">Giá bán phải lớn hơn giá nhập. Hàng mới tạo sẽ vào danh mục chung và được chọn luôn vào dòng này.</p>
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-xl">Hủy</button>
+            <button type="submit" disabled={saving}
+              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60">
+              {saving ? 'Đang tạo...' : 'Tạo hàng hóa'}
             </button>
           </div>
         </form>

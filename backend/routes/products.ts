@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
+import { normalizeManagementLevel, MANAGEMENT_LEVELS } from '../middleware/auth.js';
+import { getWarehouseScope } from '../services/rbacService.js';
 
 const ProductBodySchema = z.object({
   name: z.string().trim().min(1).max(500),
@@ -108,8 +110,31 @@ export const productRoutes = (db: any) => {
     }
   });
 
+  // Tạo sản phẩm: NV trong scope kho được tạo thẳng từ phiếu (không còn bắt buộc
+  // phải chọn hàng có sẵn); Admin (99) không đụng business.
+  const requireProductCreatePerm = async (req: any, res: any, next: any) => {
+    try {
+      let perms: string[] = [];
+      if (req.user?.role) {
+        const roleRow = await db.get('SELECT permissions FROM roles WHERE name = ?', [req.user.role]);
+        if (roleRow?.permissions) {
+          try { perms = JSON.parse(roleRow.permissions); } catch (e) {}
+        }
+      }
+      if (perms.includes('manage_warehouse') || perms.includes('admin_panel')) return next();
+      const level = normalizeManagementLevel(req.user?.managementLevel);
+      if (req.user?.id && level !== MANAGEMENT_LEVELS.ADMIN) {
+        const scope = await getWarehouseScope(db, req.user).catch(() => []);
+        if (scope.length > 0) return next();
+      }
+      return res.status(403).json({ error: 'Không có quyền quản lý kho' });
+    } catch (error) {
+      res.status(500).json({ error: 'Lỗi server khi kiểm tra quyền' });
+    }
+  };
+
   // Thêm sản phẩm mới (hỗ trợ cả đơn lẻ và hàng loạt)
-  router.post('/', requireWarehousePerm, validate(ProductCreateSchema), async (req, res) => {
+  router.post('/', requireProductCreatePerm, validate(ProductCreateSchema), async (req, res) => {
     const isArray = Array.isArray(req.body);
     const payloads = isArray ? req.body : [req.body];
 
@@ -362,10 +387,27 @@ export const productRoutes = (db: any) => {
     }
   });
 
-  // Xóa sản phẩm
+  // Xóa sản phẩm (chặn khi đã phát sinh chứng từ/tồn/giữ/combo/serial để khỏi mồ côi sổ)
   router.delete('/:id', requireWarehousePerm, async (req, res) => {
     try {
       const { id } = req.params;
+      const refs = await db.all(
+        `SELECT 'document' AS kind FROM stock_document_lines WHERE productId = ? LIMIT 1`,
+        [id]
+      ).catch(() => []);
+      const moves = await db.all(`SELECT productId FROM stock_moves WHERE productId = ? LIMIT 1`, [id]).catch(() => []);
+      const balances = await db.all(
+        `SELECT productId FROM stock_balances WHERE productId = ? AND (onHand <> 0 OR reserved <> 0) LIMIT 1`, [id]
+      ).catch(() => []);
+      const holds = await db.all(`SELECT id FROM reservations WHERE productId = ? AND status = 'HELD' LIMIT 1`, [id]).catch(() => []);
+      const kits = await db.all(
+        `SELECT bundleId FROM product_bundle_items WHERE productId = ? LIMIT 1`, [id]
+      ).catch(() => []);
+      const kitOf = await db.all(`SELECT id FROM product_bundles WHERE kitProductId = ? LIMIT 1`, [id]).catch(() => []);
+      const serials = await db.all(`SELECT id FROM stock_serials WHERE productId = ? LIMIT 1`, [id]).catch(() => []);
+      if (refs.length > 0 || moves.length > 0 || balances.length > 0 || holds.length > 0 || kits.length > 0 || kitOf.length > 0 || serials.length > 0) {
+        return res.status(400).json({ error: 'Sản phẩm đã phát sinh chứng từ/tồn kho, không thể xóa' });
+      }
       const result = await db.run('DELETE FROM products WHERE id = ?', [id]);
       if (result.changes === 0) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
       res.json({ success: true });
