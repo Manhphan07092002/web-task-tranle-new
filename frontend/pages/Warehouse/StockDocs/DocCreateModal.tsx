@@ -179,6 +179,38 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
   }, [kind, isEditing]);
   const notesRef = React.useRef<HTMLTextAreaElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const closeRef = React.useRef(onClose);
+  closeRef.current = onClose;
+
+  // Form dơ (đã nhập gì đó) thì ESC/X/Hủy phải confirm trước khi bỏ.
+  const isDirty = useMemo(() => {
+    if (
+      notes.trim() || partnerCode.trim() || partnerName.trim() || partnerAddress.trim()
+      || deliverer.trim() || invoiceNumber.trim() || invoiceDate.trim()
+      || shippingFee !== '' || referenceId.trim() || attachments.length > 0
+    ) return true;
+    return lines.some((l) => Boolean(l.productId)
+      || Number(l.quantity) !== 1 || Number(l.unitPrice) > 0
+      || (l.serialLot || '').trim() !== '' || (l.note || '').trim() !== '');
+  }, [notes, partnerCode, partnerName, partnerAddress, deliverer, invoiceNumber, invoiceDate, shippingFee, referenceId, attachments, lines]);
+
+  const requestClose = () => {
+    if (!isDirty || window.confirm('Bỏ các thay đổi chưa lưu trên phiếu này?')) closeRef.current();
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // Modal tạo nhanh đang mở thì để nó tự đóng trước.
+      if (quickCreate) return;
+      // Dropdown gợi ý (portal ul) đang mở thì để nó tự đóng trước.
+      if (document.querySelector('body > ul.overflow-y-auto')) return;
+      e.stopPropagation();
+      requestClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  });
   const uploadFiles = async (files: FileList | File[]) => {
     const arr = Array.from(files);
     if (arr.length === 0) return;
@@ -372,7 +404,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                 <option value="OTHER_RECEIPT">Nhập kho khác</option>
               </select>
             )}
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
+            <button onClick={requestClose} title="Đóng (Esc)" className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
           </div>
         </div>
         <form onSubmit={submit} className="flex flex-col flex-1 min-h-0">
@@ -902,7 +934,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
             )}
           </div>
           <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sm:gap-3 px-4 sm:px-6 py-4 border-t border-gray-100 bg-gray-50 flex-shrink-0">
-            <button type="button" onClick={onClose} className="w-full sm:w-auto px-4 py-2.5 sm:py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-xl text-center">Hủy</button>
+            <button type="button" onClick={requestClose} className="w-full sm:w-auto px-4 py-2.5 sm:py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-xl text-center">Hủy</button>
             <button type="submit" disabled={saving || loadingDoc}
               className="w-full sm:w-auto px-5 py-2.5 sm:py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60 flex items-center justify-center gap-2">
               {saving ? <><RefreshCw size={14} className="animate-spin" />Đang lưu...</> : (isEditing ? 'Lưu thay đổi' : 'Tạo phiếu nháp')}
@@ -938,6 +970,12 @@ function QuickCreateProductModal({ initialName, initialCode, unit, unitPrice, un
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
   const [suggesting, setSuggesting] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   const suggest = async () => {
     setSuggesting(true);

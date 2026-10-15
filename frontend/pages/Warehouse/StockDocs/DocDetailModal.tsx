@@ -39,6 +39,18 @@ export function DocDetailModal({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const closeRef = React.useRef(onClose);
+  closeRef.current = onClose;
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      closeRef.current();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
 
   const whName = (id?: string | null) => warehouses.find((w) => w.id === id)?.name || id || '—';
 
