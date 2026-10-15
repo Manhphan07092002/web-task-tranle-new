@@ -473,6 +473,8 @@ CREATE TABLE IF NOT EXISTS stock_documents (
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_sdoc_type_status (docType, status),
   INDEX idx_sdoc_warehouse (warehouseId),
+  INDEX idx_sdoc_source (sourceWarehouseId),
+  INDEX idx_sdoc_dest (destWarehouseId),
   INDEX idx_sdoc_reference (referenceType, referenceId),
   INDEX idx_sdoc_created (createdAt)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -580,7 +582,7 @@ CREATE TABLE IF NOT EXISTS stock_count_lines (
   id VARCHAR(191) PRIMARY KEY, countId VARCHAR(191) NOT NULL,
   productId VARCHAR(191) NOT NULL, locationId VARCHAR(191) NOT NULL DEFAULT '',
   expectedQty DOUBLE NOT NULL DEFAULT 0, actualQty DOUBLE NULL,
-  note TEXT NULL,
+  note TEXT NULL, countedBy VARCHAR(191) NULL,
   UNIQUE KEY unique_count_line (countId, productId, locationId),
   INDEX idx_scline_count (countId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -1257,6 +1259,27 @@ export async function initDbMysql(): Promise<MysqlDb> {
         await ensureIndex('stock_serials', 'idx_sser_wh_status_created', 'warehouseId, status, createdAt');
         await ensureIndex('stock_counts', 'idx_scnt_wh_status', 'warehouseId, status');
         await ensureIndex('stock_locations', 'idx_loc_wh_purpose_active', 'warehouseId, purpose, isActive');
+      });
+
+      await runVersionedMigration(db, 31, 'stock_doc_directional_indexes_counted_by', async () => {
+        // Index 2 đầu điều chuyển cho query list lọc cả 3 cột + truy vết người đếm.
+        const ensureIndex31 = async (table: string, indexName: string, columns: string) => {
+          const tbl = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
+            [table]
+          );
+          if (!tbl || Number(tbl.count) === 0) return;
+          const existing = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+            [table, indexName]
+          );
+          if (!existing || Number(existing.count) === 0) {
+            await db.run(`CREATE INDEX ${indexName} ON \`${table}\` (${columns})`);
+          }
+        };
+        await ensureIndex31('stock_documents', 'idx_sdoc_source', 'sourceWarehouseId');
+        await ensureIndex31('stock_documents', 'idx_sdoc_dest', 'destWarehouseId');
+        await ensureColumn('stock_count_lines', 'countedBy', '`countedBy` VARCHAR(191) NULL');
       });
 
 

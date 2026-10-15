@@ -7,14 +7,9 @@ import { beginStockTransaction } from '../../utils/stockTransaction.js';
 import type { StockContext } from './context.js';
 
 export function misaRoutes(ctx: StockContext) {
-  const { db, scopeOf, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, isSaleableLocation, availableOf, saleableLocationSet, saleableAvailableOf, assertNotCounting, postMove, docCode, paginationOf } = ctx;
+  const { db, scopeOf, isDirector, requireWarehouseManager } = ctx;
   const router = Router();
   // ── MISA: mapping + nhật ký (§35 — quản trị chủ động, sync thật để sau) ──────
-
-  function requireMisaManager(user: any) {
-    const level = normalizeManagementLevel(user?.managementLevel);
-    return level >= MANAGEMENT_LEVELS.MANAGER && level !== MANAGEMENT_LEVELS.ADMIN;
-  }
 
   router.get('/misa-mappings', async (req, res) => {
     try {
@@ -41,7 +36,7 @@ export function misaRoutes(ctx: StockContext) {
     try {
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
-      if (!requireMisaManager(user)) return res.status(403).json({ error: 'Only warehouse managers can manage MISA mappings' });
+      if (!requireWarehouseManager(user)) return res.status(403).json({ error: 'Only warehouse managers can manage MISA mappings' });
       const { entityType, entityId, misaCode, misaName } = req.body;
       const now = new Date().toISOString();
       try {
@@ -61,8 +56,13 @@ export function misaRoutes(ctx: StockContext) {
     try {
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
-      if (!requireMisaManager(user)) return res.status(403).json({ error: 'Only warehouse managers can manage MISA mappings' });
-      await db.run('DELETE FROM misa_mappings WHERE id = ?', [String(req.params.id)]);
+      if (!requireWarehouseManager(user)) return res.status(403).json({ error: 'Only warehouse managers can manage MISA mappings' });
+      const id = String(req.params.id || '').trim();
+      if (!id || id.length > 191) return res.status(400).json({ error: 'Invalid mapping id' });
+      // Mapping là cấu hình toàn cục (không gắn kho) nên mọi TP kho đều được
+      // quản lý; chỉ chặn id rác để tránh xóa nhầm.
+      const result = await db.run('DELETE FROM misa_mappings WHERE id = ?', [id]);
+      if (result && Number(result.changes) === 0) return res.status(404).json({ error: 'Mapping not found' });
       res.json({ success: true });
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to delete MISA mapping' }); }
   });
@@ -128,6 +128,7 @@ export function misaRoutes(ctx: StockContext) {
         GROUP BY p.id, p.name, p.unit, p.category, p.importPrice, p.defaultPrice, w.id, w.code, w.name, mm.misaCode, mm.misaName
         HAVING onHand != 0 OR reserved != 0 OR mm.misaCode IS NOT NULL
         ORDER BY w.name ASC, p.name ASC
+        LIMIT 1000
       `;
 
       res.json(await db.all(query, params));

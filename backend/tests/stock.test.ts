@@ -292,6 +292,61 @@ describe('transfers ship and receive', () => {
   });
 });
 
+describe('relocations', () => {
+  const body = { warehouseId: 'wh-hn', productId: 'p1', fromLocationId: 'l1', toLocationId: 'l2', quantity: 3 };
+  it('moves stock between locations in one transaction', async () => {
+    const db = mockDbProducts({ scopes: ['wh-hn'], productIds: new Set(['p1']), balance: { onHand: 10, reserved: 0 } });
+    await request(appFor(tp, db)).post('/relocations').send(body).expect(201);
+    const sqls = db.run.mock.calls.map(([s]: string[]) => String(s));
+    expect(sqls.filter((s: string) => s.includes('INSERT INTO stock_moves'))).toHaveLength(2);
+    expect(sqls).toContain('COMMIT');
+  });
+  it('refuses when source available is short', async () => {
+    const db = mockDbProducts({ scopes: ['wh-hn'], productIds: new Set(['p1']), balance: { onHand: 2, reserved: 0 } });
+    await request(appFor(tp, db)).post('/relocations').send(body).expect(400);
+    expect(db.run.mock.calls.some(([s]: string[]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
+  });
+});
+
+describe('scoped warehouse locks', () => {
+  it('locks only the document warehouse on complete', async () => {
+    const db = mockDbProducts({
+      scopes: ['wh-hn'],
+      doc: { id: 'doc1', docType: 'RECEIPT', status: 'DRAFT', warehouseId: 'wh-hn', referenceType: null },
+      lines: [{ id: 'l1', productId: 'p1', quantity: 10, locationId: null }],
+      productIds: new Set(['p1']),
+    });
+    await request(appFor(nv, db)).post('/receipts/doc1/complete').send({}).expect(200);
+    const lockCall = db.all.mock.calls.find(([s]: string[]) => String(s).includes('FOR UPDATE')) as unknown as [string, any[]] | undefined;
+    expect(String(lockCall?.[0])).toContain('WHERE id IN');
+    expect(lockCall?.[1]).toEqual(['wh-hn']);
+  });
+
+  it('locks the reservation row on settle', async () => {
+    const held = { id: 'r1', productId: 'p1', warehouseId: 'wh-hn', locationId: '', quantity: 4, status: 'HELD' };
+    const getCalls: string[] = [];
+    const allCalls: [string, any[]][] = [];
+    const d: any = {
+      all: vi.fn(async (sql: string, params?: any[]) => {
+        allCalls.push([sql, params ?? []]);
+        if (String(sql).includes('FROM user_warehouse_scopes')) return [{ warehouseId: 'wh-hn' }];
+        return [];
+      }),
+      get: vi.fn(async (sql: string) => {
+        getCalls.push(sql);
+        if (String(sql).includes('FROM reservations')) return { ...held };
+        if (String(sql).includes('FROM stock_balances')) return { onHand: 10, reserved: 0 };
+        return undefined;
+      }),
+      run: vi.fn().mockResolvedValue({ changes: 1 }),
+    };
+    await request(appFor(tp, d)).post('/reservations/r1/release').send({}).expect(200);
+    expect(getCalls.some((s) => s.includes('FROM reservations') && s.includes('FOR UPDATE'))).toBe(true);
+    const lockCall = allCalls.find(([s]) => s.includes('FOR UPDATE'));
+    expect(lockCall?.[1]).toEqual(['wh-hn']);
+  });
+});
+
 describe('reservations hold, release and consume', () => {
   const tp = { id: 'tp', role: 'Manager', department: 'Kho', managementLevel: 20, permissions: [] };
 

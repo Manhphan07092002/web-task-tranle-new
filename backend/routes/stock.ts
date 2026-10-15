@@ -4,7 +4,10 @@ import { createStockContext } from './stock/context.js';
 import { balancesRoutes } from './stock/balances.js';
 import { documentsRoutes } from './stock/documents.js';
 import { reservationsRoutes } from './stock/reservations.js';
-import { catalogRoutes } from './stock/catalog.js';
+import { locationsRoutes } from './stock/locations.js';
+import { serialsRoutes } from './stock/serials.js';
+import { bundlesRoutes } from './stock/bundles.js';
+import { monitoringRoutes } from './stock/monitoring.js';
 import { countsRoutes } from './stock/counts.js';
 import { misaRoutes } from './stock/misa.js';
 
@@ -19,7 +22,10 @@ export function stockRoutes(db: any) {
   router.use(balancesRoutes(ctx));
   router.use(documentsRoutes(ctx));
   router.use(reservationsRoutes(ctx));
-  router.use(catalogRoutes(ctx));
+  router.use(locationsRoutes(ctx));
+  router.use(serialsRoutes(ctx));
+  router.use(bundlesRoutes(ctx));
+  router.use(monitoringRoutes(ctx));
   router.use(countsRoutes(ctx));
   router.use(misaRoutes(ctx));
   return router;

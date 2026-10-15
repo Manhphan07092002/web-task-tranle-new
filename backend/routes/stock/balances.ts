@@ -7,18 +7,14 @@ import { beginStockTransaction } from '../../utils/stockTransaction.js';
 import type { StockContext } from './context.js';
 
 export function balancesRoutes(ctx: StockContext) {
-  const { db, scopeOf, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, isSaleableLocation, availableOf, saleableLocationSet, saleableAvailableOf, assertNotCounting, postMove, docCode, paginationOf } = ctx;
+  const { db, listScope, isDirector, paginationOf } = ctx;
   const router = Router();
   // ── Tồn kho (đọc) ─────────────────────────────────────────────────────────
 
   router.get('/balances', async (req, res) => {
     try {
       const user = req.user;
-      if (!user) return res.status(401).json({ error: 'Unauthorized' });
-      if (normalizeManagementLevel(user.managementLevel) === MANAGEMENT_LEVELS.ADMIN) {
-        return res.status(403).json({ error: 'Admin cannot view business stock data' });
-      }
-      const scope = await scopeOf(user);
+      const scope = await listScope(user);
       const { warehouseId, q, purpose } = req.query as Record<string, string | undefined>;
       if (!isDirector(user)) {
         if (warehouseId && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
@@ -51,11 +47,7 @@ export function balancesRoutes(ctx: StockContext) {
   router.get('/partner-suggestions', async (req, res) => {
     try {
       const user = req.user;
-      if (!user) return res.status(401).json({ error: 'Unauthorized' });
-      if (normalizeManagementLevel(user.managementLevel) === MANAGEMENT_LEVELS.ADMIN) {
-        return res.status(403).json({ error: 'Admin cannot view business stock data' });
-      }
-      const scope = await scopeOf(user);
+      const scope = await listScope(user);
       if (!isDirector(user) && scope.length === 0) {
         return res.json({ partners: [], deliverers: [], notes: [], addresses: [] });
       }
@@ -75,9 +67,9 @@ export function balancesRoutes(ctx: StockContext) {
       docSql += ` ORDER BY updatedAt DESC, createdAt DESC LIMIT 500`;
       const docRows = await db.all(docSql, docParams).catch(() => []);
 
-      const clientRows = await db.all('SELECT name, region FROM clients').catch(() => []);
-      const contractRows = await db.all('SELECT DISTINCT supplierName, clientName FROM contracts').catch(() => []);
-      const projectRows = await db.all('SELECT DISTINCT clientName, investor FROM projects').catch(() => []);
+      const clientRows = await db.all('SELECT name, region FROM clients LIMIT 500').catch(() => []);
+      const contractRows = await db.all('SELECT DISTINCT supplierName, clientName FROM contracts LIMIT 500').catch(() => []);
+      const projectRows = await db.all('SELECT DISTINCT clientName, investor FROM projects LIMIT 500').catch(() => []);
 
       const partnerMap = new Map<string, { id: string; code: string; name: string; address?: string; deliverer?: string }>();
       const delivererSet = new Set<string>();
@@ -151,13 +143,13 @@ export function balancesRoutes(ctx: StockContext) {
       }
 
       res.json({
-        partners: Array.from(partnerMap.values()),
-        deliverers: Array.from(delivererSet),
-        notes: Array.from(noteSet),
-        addresses: Array.from(addressSet),
+        partners: Array.from(partnerMap.values()).slice(0, 500),
+        deliverers: Array.from(delivererSet).slice(0, 200),
+        notes: Array.from(noteSet).slice(0, 200),
+        addresses: Array.from(addressSet).slice(0, 200),
       });
     } catch (e: any) {
-      res.status(500).json({ error: 'Failed to fetch partner suggestions' });
+      res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch partner suggestions' });
     }
   });
   return router;

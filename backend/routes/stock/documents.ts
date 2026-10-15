@@ -7,18 +7,14 @@ import { beginStockTransaction } from '../../utils/stockTransaction.js';
 import type { StockContext } from './context.js';
 
 export function documentsRoutes(ctx: StockContext) {
-  const { db, scopeOf, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, isSaleableLocation, availableOf, saleableLocationSet, saleableAvailableOf, assertNotCounting, postMove, docCode, paginationOf } = ctx;
+  const { db, listScope, isDirector, requireWarehouse, canReadDocument, canWriteDocument, assertLocation, availableOf, saleableLocationSet, assertNotCounting, postMove, docCode, paginationOf } = ctx;
   const router = Router();
   // ── Chứng từ: danh sách ─────────────────────────────────────────────────────
 
   router.get('/documents', async (req, res) => {
     try {
       const user = req.user;
-      if (!user) return res.status(401).json({ error: 'Unauthorized' });
-      if (normalizeManagementLevel(user.managementLevel) === MANAGEMENT_LEVELS.ADMIN) {
-        return res.status(403).json({ error: 'Admin cannot view business stock data' });
-      }
-      const scope = await scopeOf(user);
+      const scope = await listScope(user);
       const { docType, status, warehouseId } = req.query as Record<string, string | undefined>;
       if (!isDirector(user)) {
         if (warehouseId && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
@@ -296,10 +292,13 @@ export function documentsRoutes(ctx: StockContext) {
     notes: z.string().max(5000).nullable().optional(),
   });
 
+  const DOC_CODE_PREFIX: Record<string, string> = { RECEIPT: 'PNK', ISSUE: 'PXK', TRANSFER: 'DCK', RETURN: 'PTH' };
+
   async function createDocument(docType: string, code: string, warehouses: { warehouseId?: string | null; sourceWarehouseId?: string | null; destWarehouseId?: string | null }, body: any, user: any) {
     const now = new Date().toISOString();
     const id = randomUUID();
-    const finalCode = (typeof body.code === 'string' && body.code.trim()) ? body.code.trim() : code;
+    const userCode = (typeof body.code === 'string' && body.code.trim()) ? body.code.trim() : null;
+    let finalCode = userCode || code;
 
     let computedPreTax = 0;
     let computedVat = 0;
@@ -319,9 +318,12 @@ export function documentsRoutes(ctx: StockContext) {
     const attachmentsStr = typeof body.attachments === 'string' ? body.attachments : (Array.isArray(body.attachments) ? JSON.stringify(body.attachments) : null);
 
     await beginStockTransaction(db);
-    try {
-      const validationError = await validateLines(body.lines, warehouses.warehouseId || warehouses.sourceWarehouseId || '');
-      if (validationError) throw Object.assign(new Error(validationError), { status: 400 });
+    let attempts = 0;
+    for (;;) {
+      attempts += 1;
+      try {
+        const validationError = await validateLines(body.lines, warehouses.warehouseId || warehouses.sourceWarehouseId || '');
+        if (validationError) throw Object.assign(new Error(validationError), { status: 400 });
 
       await db.run(
         `INSERT INTO stock_documents (
@@ -367,10 +369,18 @@ export function documentsRoutes(ctx: StockContext) {
       }
       await db.run('COMMIT');
       return { id, code: finalCode };
-    } catch (error) {
+    } catch (error: any) {
       await db.run('ROLLBACK');
+      // Mã tự sinh va chạm UNIQUE (random 4 ký tự): sinh lại và thử tiếp, tối đa 3 lần.
+      // Mã do người dùng nhập thì báo 409 ngay.
+      if (!userCode && error?.message?.includes('Duplicate') && attempts < 3) {
+        finalCode = docCode(DOC_CODE_PREFIX[docType] || 'PXK');
+        await beginStockTransaction(db);
+        continue;
+      }
       throw error;
     }
+  }
   }
 
   router.post('/receipts', validate(ReceiptSchema), async (req, res) => {
@@ -431,6 +441,7 @@ export function documentsRoutes(ctx: StockContext) {
   function aggregateLines(lines: any[]): any[] {
     const totals = new Map<string, any>();
     for (const line of lines) {
+      if (!line?.productId) continue;
       const key = JSON.stringify([line.productId, line.locationId || '']);
       const previous = totals.get(key);
       totals.set(key, { ...line, quantity: Number(line.quantity) + Number(previous?.quantity || 0) });
@@ -688,31 +699,39 @@ export function documentsRoutes(ctx: StockContext) {
       const access = await requireWarehouse(user, warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
 
+      await beginStockTransaction(db, [warehouseId]);
+      transactionOpen = true;
+
+      // Đọc lại trong transaction — check available ngoài lock là TOCTOU.
       const [fromLoc, toLoc] = await Promise.all([
         db.get('SELECT * FROM stock_locations WHERE id = ? AND warehouseId = ? AND isActive = 1', [fromLocationId, warehouseId]),
         db.get('SELECT * FROM stock_locations WHERE id = ? AND warehouseId = ? AND isActive = 1', [toLocationId, warehouseId]),
       ]);
-      if (!fromLoc) return res.status(400).json({ error: 'Vị trí nguồn không hợp lệ hoặc đã khóa' });
-      if (!toLoc) return res.status(400).json({ error: 'Vị trí đích không hợp lệ hoặc đã khóa' });
+      if (!fromLoc) { await db.run('ROLLBACK'); transactionOpen = false; return res.status(400).json({ error: 'Vị trí nguồn không hợp lệ hoặc đã khóa' }); }
+      if (!toLoc) { await db.run('ROLLBACK'); transactionOpen = false; return res.status(400).json({ error: 'Vị trí đích không hợp lệ hoặc đã khóa' }); }
 
-      await assertNotCounting(warehouseId);
+      try {
+        await assertNotCounting(warehouseId);
+      } catch (e: any) {
+        await db.run('ROLLBACK'); transactionOpen = false;
+        return res.status(e.status || 409).json({ error: e.message });
+      }
 
       const fromBal = await db.get(
-        'SELECT onHand, reserved FROM stock_balances WHERE productId = ? AND warehouseId = ? AND locationId = ?',
+        'SELECT onHand, reserved FROM stock_balances WHERE productId = ? AND warehouseId = ? AND locationId = ? FOR UPDATE',
         [productId, warehouseId, fromLocationId]
       );
       const onHand = Number(fromBal?.onHand ?? 0);
       const reserved = Number(fromBal?.reserved ?? 0);
       const available = onHand - reserved;
       if (available < quantity) {
+        await db.run('ROLLBACK'); transactionOpen = false;
         return res.status(400).json({
           error: `Số lượng khả dụng tại vị trí ${fromLoc.name || fromLoc.code} không đủ (${available} < ${quantity})`,
         });
       }
 
       const code = docCode('DCV');
-      await beginStockTransaction(db);
-      transactionOpen = true;
 
       await postMove(db.run.bind(db), {
         productId,

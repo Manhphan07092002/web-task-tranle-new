@@ -7,23 +7,14 @@ import { beginStockTransaction } from '../../utils/stockTransaction.js';
 import type { StockContext } from './context.js';
 
 export function countsRoutes(ctx: StockContext) {
-  const { db, scopeOf, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, isSaleableLocation, availableOf, saleableLocationSet, saleableAvailableOf, assertNotCounting, postMove, docCode, paginationOf } = ctx;
+  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, assertLocation, assertNotCounting, paginationOf } = ctx;
   const router = Router();
   // ── Kiểm kê blind-count (§19–20) ────────────────────────────────────────────
-
-  function requireCountManager(user: any) {
-    const level = normalizeManagementLevel(user?.managementLevel);
-    return level >= MANAGEMENT_LEVELS.MANAGER && level !== MANAGEMENT_LEVELS.ADMIN;
-  }
 
   router.get('/counts', async (req, res) => {
     try {
       const user = req.user;
-      if (!user) return res.status(401).json({ error: 'Unauthorized' });
-      if (normalizeManagementLevel(user.managementLevel) === MANAGEMENT_LEVELS.ADMIN) {
-        return res.status(403).json({ error: 'Admin cannot view business stock data' });
-      }
-      const scope = await scopeOf(user);
+      const scope = await listScope(user);
       const { warehouseId, status } = req.query as Record<string, string | undefined>;
       if (!isDirector(user)) {
         if (warehouseId && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
@@ -47,6 +38,9 @@ export function countsRoutes(ctx: StockContext) {
     try {
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      if (normalizeManagementLevel(user.managementLevel) === MANAGEMENT_LEVELS.ADMIN) {
+        return res.status(403).json({ error: 'Admin cannot view business stock data' });
+      }
       const count = await db.get('SELECT * FROM stock_counts WHERE id = ?', [String(req.params.id)]);
       if (!count) return res.status(404).json({ error: 'Count not found' });
       const access = await requireWarehouse(user, count.warehouseId);
@@ -57,7 +51,7 @@ export function countsRoutes(ctx: StockContext) {
         [count.id]
       );
       // Blind count: NV không thấy số hệ thống (§19.1).
-      const blind = Number(count.blindCount) === 1 && !requireCountManager(user);
+      const blind = Number(count.blindCount) === 1 && !requireWarehouseManager(user);
       res.json({
         ...count,
         blindCount: Boolean(Number(count.blindCount)),
@@ -73,12 +67,12 @@ export function countsRoutes(ctx: StockContext) {
   })), async (req, res) => {
     let transactionOpen = false;
     try {
-      await beginStockTransaction(db);
-      transactionOpen = true;
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
-      if (!requireCountManager(user)) return res.status(403).json({ error: 'Only warehouse managers can open counts' });
+      if (!requireWarehouseManager(user)) return res.status(403).json({ error: 'Only warehouse managers can open counts' });
       const { warehouseId, blindCount, notes } = req.body;
+      await beginStockTransaction(db, [warehouseId]);
+      transactionOpen = true;
       const access = await requireWarehouse(user, warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       await assertNotCounting(warehouseId);
@@ -122,11 +116,13 @@ export function countsRoutes(ctx: StockContext) {
   })), async (req, res) => {
     let transactionOpen = false;
     try {
-      await beginStockTransaction(db);
+      const pre = await db.get('SELECT warehouseId, status FROM stock_counts WHERE id = ?', [String(req.params.id)]);
+      if (!pre) return res.status(404).json({ error: 'Count not found' });
+      await beginStockTransaction(db, [pre.warehouseId]);
       transactionOpen = true;
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
-      const count = await db.get('SELECT warehouseId, status FROM stock_counts WHERE id = ?', [String(req.params.id)]);
+      const count = await db.get('SELECT warehouseId, status FROM stock_counts WHERE id = ? FOR UPDATE', [String(req.params.id)]);
       if (!count) return res.status(404).json({ error: 'Count not found' });
       if (count.status !== 'COUNTING') return res.status(400).json({ error: 'Count is no longer open for entry' });
       const access = await requireWarehouse(user, count.warehouseId);
@@ -136,11 +132,25 @@ export function countsRoutes(ctx: StockContext) {
           if (!(await db.get('SELECT id FROM products WHERE id = ?', [line.productId])) || !(await assertLocation(count.warehouseId, line.locationId))) {
             return res.status(400).json({ error: 'Invalid product or location for count' });
           }
+          // Cặp (product, location) chưa có trong snapshot: lấy tồn hiện tại
+          // làm expectedQty thay vì 0 — nếu không approve luôn 409.
+          const existing = await db.get(
+            'SELECT id FROM stock_count_lines WHERE countId = ? AND productId = ? AND locationId = ?',
+            [String(req.params.id), line.productId, line.locationId || '']
+          );
+          let expectedQty = 0;
+          if (!existing) {
+            const bal = await db.get(
+              'SELECT onHand FROM stock_balances WHERE productId = ? AND warehouseId = ? AND locationId = ?',
+              [line.productId, count.warehouseId, line.locationId || '']
+            );
+            expectedQty = Number(bal?.onHand ?? 0);
+          }
           await db.run(
-            `INSERT INTO stock_count_lines (id, countId, productId, locationId, expectedQty, actualQty, note)
-             VALUES (?, ?, ?, ?, 0, ?, ?)
-             ON DUPLICATE KEY UPDATE actualQty = VALUES(actualQty), note = VALUES(note)`,
-            [randomUUID(), count.id ?? String(req.params.id), line.productId, line.locationId || '', Number(line.actualQty), line.note ?? null]
+            `INSERT INTO stock_count_lines (id, countId, productId, locationId, expectedQty, actualQty, note, countedBy)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE actualQty = VALUES(actualQty), note = VALUES(note), countedBy = VALUES(countedBy)`,
+            [randomUUID(), count.id ?? String(req.params.id), line.productId, line.locationId || '', expectedQty, Number(line.actualQty), line.note ?? null, user.id]
           );
         }
         await db.run('COMMIT'); transactionOpen = false;
@@ -159,12 +169,14 @@ export function countsRoutes(ctx: StockContext) {
   })), async (req, res) => {
     let transactionOpen = false;
     try {
-      await beginStockTransaction(db);
+      const pre = await db.get('SELECT warehouseId, status FROM stock_counts WHERE id = ?', [String(req.params.id)]);
+      if (!pre) return res.status(404).json({ error: 'Count not found' });
+      await beginStockTransaction(db, [pre.warehouseId]);
       transactionOpen = true;
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
-      if (!requireCountManager(user)) return res.status(403).json({ error: 'Only warehouse managers can request recounts' });
-      const count = await db.get('SELECT warehouseId, status FROM stock_counts WHERE id = ?', [String(req.params.id)]);
+      if (!requireWarehouseManager(user)) return res.status(403).json({ error: 'Only warehouse managers can request recounts' });
+      const count = await db.get('SELECT warehouseId, status FROM stock_counts WHERE id = ? FOR UPDATE', [String(req.params.id)]);
       if (!count) return res.status(404).json({ error: 'Count not found' });
       if (count.status !== 'COUNTING') return res.status(400).json({ error: 'Count is no longer open' });
       const access = await requireWarehouse(user, count.warehouseId);
@@ -184,12 +196,14 @@ export function countsRoutes(ctx: StockContext) {
   router.post('/counts/:id/approve', async (req, res) => {
     let transactionOpen = false;
     try {
-      await beginStockTransaction(db);
+      const pre = await db.get('SELECT warehouseId, status FROM stock_counts WHERE id = ?', [String(req.params.id)]);
+      if (!pre) return res.status(404).json({ error: 'Count not found' });
+      await beginStockTransaction(db, [pre.warehouseId]);
       transactionOpen = true;
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
-      if (!requireCountManager(user)) return res.status(403).json({ error: 'Only warehouse managers can approve counts' });
-      const count = await db.get('SELECT * FROM stock_counts WHERE id = ?', [String(req.params.id)]);
+      if (!requireWarehouseManager(user)) return res.status(403).json({ error: 'Only warehouse managers can approve counts' });
+      const count = await db.get('SELECT * FROM stock_counts WHERE id = ? FOR UPDATE', [String(req.params.id)]);
       if (!count) return res.status(404).json({ error: 'Count not found' });
       if (count.status !== 'COUNTING') return res.status(400).json({ error: 'Count is already closed' });
       const access = await requireWarehouse(user, count.warehouseId);
@@ -202,7 +216,7 @@ export function countsRoutes(ctx: StockContext) {
       const now = new Date().toISOString();
       try {
         for (const line of lines) {
-          const balance = await db.get('SELECT onHand, reserved FROM stock_balances WHERE productId = ? AND warehouseId = ? AND locationId = ?', [line.productId, count.warehouseId, line.locationId || '']);
+          const balance = await db.get('SELECT onHand, reserved FROM stock_balances WHERE productId = ? AND warehouseId = ? AND locationId = ? FOR UPDATE', [line.productId, count.warehouseId, line.locationId || '']);
           if (Number(balance?.onHand ?? 0) !== Number(line.expectedQty)) throw Object.assign(new Error('Tồn đã thay đổi sau khi mở kiểm kê; cần kiểm kê lại.'), { status: 409 });
           if (Number(line.actualQty) < Number(balance?.reserved ?? 0)) throw Object.assign(new Error('Giải phóng giữ hàng vượt số đếm trước khi duyệt.'), { status: 409 });
           const variance = Number(line.actualQty) - Number(line.expectedQty);
@@ -233,11 +247,13 @@ export function countsRoutes(ctx: StockContext) {
 
   router.post('/counts/:id/cancel', async (req, res) => {
     if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
-    if (!requireCountManager(req.user)) return res.status(403).json({ error: 'Warehouse manager access required' });
+    if (!requireWarehouseManager(req.user)) return res.status(403).json({ error: 'Warehouse manager access required' });
     let transactionOpen = false;
     try {
-      await beginStockTransaction(db); transactionOpen = true;
-      const count = await db.get('SELECT * FROM stock_counts WHERE id = ?', [String(req.params.id)]);
+      const pre = await db.get('SELECT warehouseId FROM stock_counts WHERE id = ?', [String(req.params.id)]);
+      if (!pre) return res.status(404).json({ error: 'Count not found' });
+      await beginStockTransaction(db, [pre.warehouseId]); transactionOpen = true;
+      const count = await db.get('SELECT * FROM stock_counts WHERE id = ? FOR UPDATE', [String(req.params.id)]);
       if (!count) return res.status(404).json({ error: 'Count not found' });
       if (!(await requireWarehouse(req.user, count.warehouseId)).ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       if (count.status !== 'COUNTING') return res.status(400).json({ error: 'Only open counts can be cancelled' });

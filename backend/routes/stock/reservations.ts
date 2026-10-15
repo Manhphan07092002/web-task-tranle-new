@@ -7,18 +7,14 @@ import { beginStockTransaction } from '../../utils/stockTransaction.js';
 import type { StockContext } from './context.js';
 
 export function reservationsRoutes(ctx: StockContext) {
-  const { db, scopeOf, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, isSaleableLocation, availableOf, saleableLocationSet, saleableAvailableOf, assertNotCounting, postMove, docCode, paginationOf } = ctx;
+  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, assertLocation, isSaleableLocation, availableOf, assertNotCounting, paginationOf } = ctx;
   const router = Router();
   // ── Giữ hàng / phân bổ (§21: hold/release/consume, TP+NV trong scope) ─────────
 
   router.get('/reservations', async (req, res) => {
     try {
       const user = req.user;
-      if (!user) return res.status(401).json({ error: 'Unauthorized' });
-      if (normalizeManagementLevel(user.managementLevel) === MANAGEMENT_LEVELS.ADMIN) {
-        return res.status(403).json({ error: 'Admin cannot view business stock data' });
-      }
-      const scope = await scopeOf(user);
+      const scope = await listScope(user);
       const { warehouseId, status } = req.query as Record<string, string | undefined>;
       if (!isDirector(user)) {
         if (warehouseId && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
@@ -48,18 +44,22 @@ export function reservationsRoutes(ctx: StockContext) {
     quantity: z.number().finite().positive().max(1_000_000_000),
     sourceType: z.enum(['SALES_ORDER', 'PROJECT', 'WARRANTY', 'INTERNAL']).optional(),
     sourceId: z.string().max(191).nullable().optional(),
-    expiresAt: z.string().max(40).nullable().optional(),
+    // expiresAt lưu VARCHAR(40): ép chuẩn ISO ở đầu vào để scheduler so sánh chuỗi đúng.
+    expiresAt: z.string().max(40).nullable().optional().refine(
+      (v) => v == null || v === '' || !Number.isNaN(Date.parse(v)),
+      { message: 'expiresAt must be a valid datetime' }
+    ),
   });
 
   router.post('/reservations', validate(ReservationSchema), async (req, res) => {
     let transactionOpen = false;
     try {
-      await beginStockTransaction(db);
-      transactionOpen = true;
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
       if (!requireWarehouseManager(user)) return res.status(403).json({ error: 'Warehouse manager access required' });
       const { productId, warehouseId, locationId, quantity, sourceType, sourceId, expiresAt } = req.body;
+      await beginStockTransaction(db, [warehouseId]);
+      transactionOpen = true;
       const access = await requireWarehouse(user, warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       const product = await db.get('SELECT id FROM products WHERE id = ?', [productId]);
@@ -104,9 +104,12 @@ export function reservationsRoutes(ctx: StockContext) {
       if (!requireWarehouseManager(user)) return res.status(403).json({ error: 'Warehouse manager access required' });
     let transactionOpen = false;
     try {
-      await beginStockTransaction(db);
+      const pre = await db.get('SELECT warehouseId FROM reservations WHERE id = ?', [String(req.params.id)]);
+      if (!pre) return res.status(404).json({ error: 'Reservation not found' });
+      await beginStockTransaction(db, [pre.warehouseId]);
       transactionOpen = true;
-      const r = await db.get('SELECT * FROM reservations WHERE id = ?', [String(req.params.id)]);
+      // Khóa row giữ hàng trong transaction — chống settle 2 lần concurrent.
+      const r = await db.get('SELECT * FROM reservations WHERE id = ? FOR UPDATE', [String(req.params.id)]);
       if (!r) return res.status(404).json({ error: 'Reservation not found' });
       if (r.status !== 'HELD') return res.status(400).json({ error: 'Only held reservations can be settled' });
       const access = await requireWarehouse(user, r.warehouseId);
@@ -116,7 +119,7 @@ export function reservationsRoutes(ctx: StockContext) {
         if (toStatus === 'CONSUMED') {
           await assertNotCounting(r.warehouseId);
           const bal = await db.get(
-            'SELECT onHand FROM stock_balances WHERE productId = ? AND warehouseId = ? AND locationId = ?',
+            'SELECT onHand FROM stock_balances WHERE productId = ? AND warehouseId = ? AND locationId = ? FOR UPDATE',
             [r.productId, r.warehouseId, r.locationId || '']
           );
           if (Number(bal?.onHand ?? 0) < Number(r.quantity)) {

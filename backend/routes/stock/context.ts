@@ -130,12 +130,20 @@ export function createStockContext(db: any) {
     const offset = Number.isFinite(rawOffset) ? Math.min(Math.max(Math.floor(rawOffset), 0), 1_000_000) : 0;
     return { limit, offset };
   }
+  /** Chuẩn hóa guard đầu endpoint đọc: 401 khi chưa login, 403 khi Admin. */
+  async function listScope(user: any): Promise<string[]> {
+    if (!user) throw Object.assign(new Error('Unauthorized'), { status: 401 });
+    if (normalizeManagementLevel(user?.managementLevel) === MANAGEMENT_LEVELS.ADMIN) {
+      throw Object.assign(new Error('Admin cannot view business stock data'), { status: 403 });
+    }
+    return scopeOf(user);
+  }
   function requireWarehouseManager(user: any) {
     const level = normalizeManagementLevel(user?.managementLevel);
     return level >= MANAGEMENT_LEVELS.MANAGER && level !== MANAGEMENT_LEVELS.ADMIN;
   }
   return {
-    db, scopeOf, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, isSaleableLocation, availableOf, saleableLocationSet, saleableAvailableOf, assertNotCounting, postMove, docCode, paginationOf,
+    db, scopeOf, listScope, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, isSaleableLocation, availableOf, saleableLocationSet, saleableAvailableOf, assertNotCounting, postMove, docCode, paginationOf,
   };
 }
 

@@ -132,7 +132,7 @@ describe('first-install database bootstrap', () => {
     expect(store.rows('tasks').size).toBe(0);
     expect(store.rows('system_config').size).toBe(0);
     expect(store.rows('_bootstrap').get('1')?.completed).toBe(1);
-    expect(store.rows('_migrations').size).toBe(24); // + v11..v22, v24, v25, v26, v29, v30 (v23, v27, v28 không tồn tại ở code)
+    expect(store.rows('_migrations').size).toBe(25); // + v11..v22, v24, v25, v26, v29, v30, v31 (v23, v27, v28 không tồn tại ở code)
   });
 
   it('does not recreate accounts, roles, or config after all application data is deleted', async () => {
