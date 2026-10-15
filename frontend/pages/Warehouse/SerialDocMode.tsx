@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ScanLine, RefreshCw, AlertCircle, CheckCircle2, ArrowLeft, PackageCheck, Boxes, Hash } from 'lucide-react';
+import { ScanLine, RefreshCw, AlertCircle, CheckCircle2, ArrowLeft, PackageCheck, Boxes, Hash, Camera } from 'lucide-react';
 import { Card } from '../../components/UI';
 import {
   getStockDocument, getDocumentProgress, scanSerial, scanOutSerial, registerLot, confirmLineQty,
@@ -8,6 +8,7 @@ import {
 } from '../../services/stockService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
+import { ScannerModal } from './StockDocs/ScannerModal';
 
 const TRACK_LABEL: Record<string, string> = { SERIAL: 'Serial', LOT: 'Lô/Cuộn', QUANTITY: 'Số lượng' };
 
@@ -157,12 +158,41 @@ function SerialBox({ line, isIssue, documentId, onDone }: { line: DocLineProgres
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [scanning, setScanning] = useState(false);
+  const [okMsg, setOkMsg] = useState('');
+
+  const submitOne = async (code: string): Promise<string | null> => {
+    try {
+      await (isIssue ? scanOutSerial : scanSerial)(documentId, line.lineId, code);
+      return null;
+    } catch (e: any) {
+      return `${code}: ${e.message || 'thất bại'}`;
+    }
+  };
+
+  const handleScannerDone = async (codes: string[]) => {
+    setScanning(false);
+    const fresh = codes.filter((c) => !line.serials.includes(c));
+    if (fresh.length === 0) return;
+    setBusy(true); setErr(''); setOkMsg('');
+    const errs: string[] = [];
+    let added = 0;
+    for (const code of fresh) {
+      const errMsg = await submitOne(code);
+      if (errMsg) errs.push(errMsg);
+      else added++;
+    }
+    if (added > 0) setOkMsg(`✓ Đã thêm ${added} serial`);
+    if (errs.length > 0) setErr(errs.slice(0, 3).join(' | ') + (errs.length > 3 ? ` (+${errs.length - 3} lỗi khác)` : ''));
+    setBusy(false);
+    await onDone();
+  };
 
   const submit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const code = value.trim();
     if (!code || busy) return;
-    setBusy(true); setErr('');
+    setBusy(true); setErr(''); setOkMsg('');
     try {
       await (isIssue ? scanOutSerial : scanSerial)(documentId, line.lineId, code);
       setValue('');
@@ -186,15 +216,25 @@ function SerialBox({ line, isIssue, documentId, onDone }: { line: DocLineProgres
         </div>
       )}
       {line.status !== 'COMPLETED' && (
-        <form onSubmit={submit} className="flex gap-2">
-          <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="Quét hoặc gõ serial rồi Enter..."
-            className="flex-1 min-w-0 px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500 font-mono" />
-          <button type="submit" disabled={busy || !value.trim()}
-            className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60">
-            <ScanLine size={15} /> {busy ? '...' : 'Thêm'}
-          </button>
-        </form>
+        <>
+          <form onSubmit={submit} className="flex gap-2">
+            <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="Quét hoặc gõ serial rồi Enter..."
+              className="flex-1 min-w-0 px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500 font-mono" />
+            <button type="button" onClick={() => { setErr(''); setOkMsg(''); setScanning(true); }}
+              className="flex items-center gap-1.5 px-4 py-2 border border-emerald-300 text-emerald-700 hover:bg-emerald-50 rounded-xl font-bold text-sm">
+              <Camera size={15} /> Quét
+            </button>
+            <button type="submit" disabled={busy || !value.trim()}
+              className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60">
+              <ScanLine size={15} /> {busy ? '...' : 'Thêm'}
+            </button>
+          </form>
+          {scanning && (
+            <ScannerModal initial={line.serials} onClose={() => setScanning(false)} onDone={handleScannerDone} />
+          )}
+        </>
       )}
+      {okMsg && <p className="text-xs text-emerald-600 font-bold mt-1.5">{okMsg}</p>}
       {err && <p className="text-xs text-red-600 mt-1.5 flex items-center gap-1"><AlertCircle size={12} />{err}</p>}
     </div>
   );

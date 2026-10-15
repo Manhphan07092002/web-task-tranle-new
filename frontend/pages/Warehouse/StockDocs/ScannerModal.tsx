@@ -9,6 +9,23 @@ export function ScannerModal({ initial, onDone, onClose }: {
   onDone: (codes: string[]) => void;
   onClose: () => void;
 }) {
+  const beep = () => {
+    try {
+      const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.12);
+      setTimeout(() => ctx.close().catch(() => {}), 250);
+    } catch { /* thiết bị không có audio */ }
+  };
   const [codes, setCodes] = useState<string[]>(initial);
   const codesRef = useRef(initial);
   const [error, setError] = useState('');
@@ -40,6 +57,7 @@ export function ScannerModal({ initial, onDone, onClose }: {
             codesRef.current = [...codesRef.current, code];
             setCodes(codesRef.current);
             setLastScan(code);
+            beep();
           },
           () => { /* bỏ qua frame không đọc được */ }
         );
@@ -56,6 +74,16 @@ export function ScannerModal({ initial, onDone, onClose }: {
       })();
     };
   }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   const removeAt = (i: number) => {
     const next = codes.filter((_, j) => j !== i);
