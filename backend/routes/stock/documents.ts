@@ -383,6 +383,22 @@ export function documentsRoutes(ctx: StockContext) {
   }
   }
 
+  // Số phiếu dự kiến cho form tạo (không giữ chỗ — số thực chốt khi lưu,
+  // concurrent có thể lệch +1 và được retry đỡ).
+  router.get('/next-code', async (req, res) => {
+    try {
+      const user = req.user;
+      if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      if (normalizeManagementLevel(user.managementLevel) === MANAGEMENT_LEVELS.ADMIN) {
+        return res.status(403).json({ error: 'Admin cannot perform stock operations' });
+      }
+      const docType = String(req.query.docType || 'RECEIPT').toUpperCase();
+      const prefix = DOC_CODE_PREFIX[docType];
+      if (!prefix) return res.status(400).json({ error: 'Invalid docType' });
+      res.json({ code: await nextDocCode(prefix), docType });
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to preview document code' }); }
+  });
+
   router.post('/receipts', validate(ReceiptSchema), async (req, res) => {
     try {
       const user = req.user;

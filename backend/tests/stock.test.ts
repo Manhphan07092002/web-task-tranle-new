@@ -155,6 +155,15 @@ describe('receipts', () => {
     expect(res.body.code).toBe(`PNK-${yy}-0008`);
   });
 
+  it('previews the next document code without reserving it', async () => {
+    const yy = String(new Date().getFullYear()).slice(2);
+    const db = mockDb({ scopes: ['wh-hn'] });
+    const res = await request(appFor(nv, db)).get('/next-code?docType=RECEIPT').expect(200);
+    expect(res.body).toEqual({ code: `PNK-${yy}-0001`, docType: 'RECEIPT' });
+    await request(appFor(nv, db)).get('/next-code?docType=BOGUS').expect(400);
+    await request(appFor(admin, db)).get('/next-code?docType=RECEIPT').expect(403);
+  });
+
   it('refuses creation outside the scope', async () => {
     const db = mockDb({ scopes: ['wh-hn'] });
     await request(appFor(nv, db)).post('/receipts')

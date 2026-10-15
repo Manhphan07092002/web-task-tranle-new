@@ -566,6 +566,13 @@ export async function getPartnerSuggestions(): Promise<PartnerSuggestionsData> {
   return res.json();
 }
 
+export async function getNextDocCode(docType: 'RECEIPT' | 'ISSUE' | 'TRANSFER' | 'RETURN'): Promise<{ code: string; docType: string }> {
+  const res = await apiFetch(`/api/stock/next-code?docType=${docType}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Không lấy được số phiếu dự kiến');
+  return data;
+}
+
 export async function getStockDocument(id: string): Promise<StockDocument & { lines: StockDocDetailLine[] }> {
   const res = await apiFetch(`/api/stock/documents/${id}`);
   if (!res.ok) throw new Error('Không tải được chi tiết chứng từ');

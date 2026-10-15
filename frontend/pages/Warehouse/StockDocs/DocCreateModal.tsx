@@ -8,7 +8,7 @@ import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageChec
 import { Card } from '../../../components/UI';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
-  advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, updateStockDocument,
+  advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, updateStockDocument, getNextDocCode,
   type StockDocument, type StockDocLine, type Warehouse,
   type PartnerSuggestion, type PartnerSuggestionsData, type StockDocDetailLine,
 } from '../../../services/stockService';
@@ -77,6 +77,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
           setErr('Chỉ sửa được phiếu ở trạng thái nháp.');
           return;
         }
+        setSavedCode(doc.code || '');
         setWarehouseId(doc.warehouseId || '');
         setDestWarehouseId(doc.destWarehouseId || '');
         setNotes(doc.notes || '');
@@ -164,6 +165,18 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [loadingDoc, setLoadingDoc] = useState(isEditing);
+  const [previewCode, setPreviewCode] = useState('');
+  const [savedCode, setSavedCode] = useState('');
+
+  // Số phiếu dự kiến khi tạo mới (không giữ chỗ — số thực chốt khi lưu).
+  useEffect(() => {
+    if (isEditing) return;
+    let active = true;
+    getNextDocCode(kind)
+      .then((r) => { if (active) setPreviewCode(r.code || ''); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [kind, isEditing]);
   const notesRef = React.useRef<HTMLTextAreaElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const uploadFiles = async (files: FileList | File[]) => {
@@ -344,6 +357,9 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
         <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-4 border-b border-gray-100 flex-shrink-0">
           <div className="min-w-0">
             <h3 className="font-bold text-gray-900 text-sm sm:text-base truncate">{isEditing ? 'Sửa phiếu' : 'Tạo phiếu'} {KIND_META[kind].title.toLowerCase()} ({KIND_META[kind].code})</h3>
+            {isEditing
+              ? (savedCode && <p className="text-sm font-extrabold text-gray-700 font-mono mt-0.5">Số: {savedCode}</p>)
+              : (previewCode && <p className="text-sm font-extrabold text-gray-500 font-mono mt-0.5">Số (dự kiến): {previewCode}</p>)}
             {moneyKind && <p className="text-sm font-extrabold text-emerald-700 font-mono mt-0.5">Tổng: {(totals.pre + totals.vat).toLocaleString('vi-VN')} ₫</p>}
           </div>
           <div className="flex items-center gap-2">
@@ -518,8 +534,8 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                     </div>
                     <div className="sm:col-span-2">
                       <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Số phiếu</label>
-                      <input readOnly disabled value="Tự động" title="Số phiếu do hệ thống sinh khi lưu"
-                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-gray-50 text-sm text-gray-400 outline-none" />
+                      <input readOnly disabled value={isEditing ? (savedCode || '—') : (previewCode ? `${previewCode} (dự kiến)` : 'Tự động')} title="Số phiếu do hệ thống sinh khi lưu"
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-gray-50 text-sm text-gray-500 outline-none font-mono" />
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Thanh toán</label>
