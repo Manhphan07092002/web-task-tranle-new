@@ -2,7 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { RefreshCw, AlertCircle, ChevronDown } from 'lucide-react';
 import { Card } from '../../components/UI';
-import { getStockReport, type StockReportRow } from '../../services/stockService';
+import { Pagination } from '../../components/Pagination';
+import { getStockReport, getStockReportSummary, type StockReportRow, type StockReportSummary } from '../../services/stockService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
 
@@ -19,18 +20,23 @@ export default function WarehouseReportsPage({ deptKey }: { deptKey: DeptKey }) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [days, setDays] = useState(30);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [hasMore, setHasMore] = useState(false);
   const [revision, setRevision] = useState(0);
+  const [summary, setSummary] = useState<StockReportSummary | null>(null);
   const fetchAll = () => setRevision(value => value + 1);
   useEffect(() => {
     let active = true;
     setLoading(true); setError(null);
     const to = new Date();
-    getStockReport(new Date(to.getTime() - days * 86400000).toISOString(), to.toISOString())
-      .then(data => { if (active) setRows(data); })
+    const from = new Date(to.getTime() - days * 86400000).toISOString();
+    Promise.all([getStockReport(from, to.toISOString(), { limit: pageSize + 1, offset: (page - 1) * pageSize }), getStockReportSummary(from, to.toISOString())])
+      .then(([data, summaryData]) => { if (active) { setHasMore(data.length > pageSize); setRows(data.slice(0, pageSize)); setSummary(summaryData); } })
       .catch(e => { if (active) setError(e.message); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [days, revision]);
+  }, [days, revision, page, pageSize]);
 
   return (
     <div className="w-full max-w-[1400px] mx-auto space-y-4">
@@ -41,7 +47,7 @@ export default function WarehouseReportsPage({ deptKey }: { deptKey: DeptKey }) 
         </div>
         <div className="flex gap-2">
           <div className="relative">
-            <select value={days} onChange={(e) => setDays(Number(e.target.value))}
+            <select value={days} onChange={(e) => { setDays(Number(e.target.value)); setPage(1); }}
               className="pl-4 pr-9 py-2.5 border border-gray-200 rounded-xl bg-white text-sm outline-none shadow-sm appearance-none">
               {PERIODS.map((p) => <option key={p.days} value={p.days}>{p.label}</option>)}
             </select>
@@ -66,7 +72,10 @@ export default function WarehouseReportsPage({ deptKey }: { deptKey: DeptKey }) 
         </div>
       ) : !error && (
         <>
-          <p className="text-sm text-gray-500">Theo từng hàng và đơn vị tính. Tồn cuối = tồn đầu + nhập − xuất + điều chỉnh / lắp tách bộ.</p>
+          <p className="text-sm text-gray-500">Theo từng hàng và đơn vị tính. Giá trị tồn tính theo đơn giá nhập hiện có; báo cáo không thay đổi số tồn.</p>
+          {summary && <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[['Nhập trong kỳ', summary.totals.inbound.toLocaleString('vi-VN'), 'text-emerald-700'], ['Xuất trong kỳ', summary.totals.outbound.toLocaleString('vi-VN'), 'text-rose-700'], ['Giá trị tồn', `${summary.totals.stockValue.toLocaleString('vi-VN')} đ`, 'text-blue-700'], ['Tồn lâu >90 ngày', summary.totals.slowCount.toLocaleString('vi-VN'), 'text-amber-700']].map(([label, value, cls]) => <Card key={label} className="p-4"><div className="text-xs text-gray-400 font-bold uppercase">{label}</div><div className={`text-xl font-black mt-1 ${cls}`}>{value}</div></Card>)}
+          </div>}
           <Card className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left bg-gray-50">
@@ -81,6 +90,7 @@ export default function WarehouseReportsPage({ deptKey }: { deptKey: DeptKey }) 
               </tbody>
             </table>
           </Card>
+          {!loading && (rows.length > 0 || page > 1) && <Pagination currentPage={page} totalPages={hasMore ? page + 1 : page} onPageChange={setPage} totalItems={hasMore ? page * pageSize + 1 : (page - 1) * pageSize + rows.length} itemsPerPage={pageSize} onItemsPerPageChange={(size) => { setPageSize(size); setPage(1); }} />}
         </>
       )}
 

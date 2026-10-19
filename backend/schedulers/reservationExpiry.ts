@@ -1,4 +1,5 @@
 import { beginStockTransaction } from '../utils/stockTransaction.js';
+import { randomUUID } from 'crypto';
 
 // Tự động giải phóng giữ hàng hết hạn (§21: release khi hủy/hết hạn).
 // Chạy định kỳ, idempotent: chỉ chạm các dòng HELD đã quá expiresAt.
@@ -27,6 +28,13 @@ async function releaseExpiredInContext(db: any, now: Date): Promise<number> {
         [Number(r.quantity), now.toISOString(), r.productId, r.warehouseId, r.locationId || '']
       );
       await db.run('UPDATE reservations SET status = ? WHERE id = ?', ['RELEASED', r.id]);
+      await db.run(
+        `INSERT INTO warehouse_activity_logs
+         (id, actionType, entityType, entityId, productId, warehouseId, quantity, metadata, createdAt)
+         VALUES (?, 'RESERVATION_EXPIRED', 'RESERVATION', ?, ?, ?, ?, ?, ?)`,
+        [randomUUID(), r.id, r.productId, r.warehouseId, Number(r.quantity),
+          JSON.stringify({ locationId: r.locationId || '', source: 'scheduler', expiresAt: now.toISOString() }), now.toISOString()]
+      );
       await db.run('COMMIT');
       released++;
     } catch {

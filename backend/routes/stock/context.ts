@@ -98,14 +98,15 @@ export function createStockContext(db: any) {
   async function postMove(run: (sql: string, params?: any[]) => Promise<unknown>, args: {
     productId: string; warehouseId: string; locationId: string; quantity: number;
     moveType: string; referenceType: string | null; referenceId: string;
-    documentLineId: string | null; createdBy: string;
+    documentLineId: string | null; lotId?: string | null; serialId?: string | null; createdBy: string;
   }): Promise<void> {
     await assertNotCounting(args.warehouseId);
     const now = new Date().toISOString();
+    const moveId = randomUUID();
     await run(
-      `INSERT INTO stock_moves (id, productId, warehouseId, locationId, quantity, moveType, referenceType, referenceId, documentLineId, createdBy, createdAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [randomUUID(), args.productId, args.warehouseId, args.locationId || null, args.quantity, args.moveType, args.referenceType, args.referenceId, args.documentLineId, args.createdBy, now]
+      `INSERT INTO stock_moves (id, productId, warehouseId, locationId, quantity, moveType, referenceType, referenceId, documentLineId, serialId, lotId, createdBy, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [moveId, args.productId, args.warehouseId, args.locationId || null, args.quantity, args.moveType, args.referenceType, args.referenceId, args.documentLineId, args.serialId ?? null, args.lotId ?? null, args.createdBy, now]
     );
     await run(
       `INSERT INTO stock_balances (productId, warehouseId, locationId, onHand, reserved, updatedAt)
@@ -113,6 +114,58 @@ export function createStockContext(db: any) {
        ON DUPLICATE KEY UPDATE onHand = onHand + VALUES(onHand), updatedAt = VALUES(updatedAt)`,
       [args.productId, args.warehouseId, args.locationId, args.quantity, now]
     );
+    const activityByMove: Record<string, string> = {
+      RECEIPT: 'RECEIPT_COMPLETED', RETURN: 'RETURN_COMPLETED', ISSUE: 'ISSUE_COMPLETED',
+      TRANSFER_IN: 'TRANSFER_RECEIVED', TRANSFER_OUT: 'TRANSFER_SHIPPED',
+      ADJUSTMENT: 'STOCK_ADJUSTMENT_CREATED', RECOUNT_ADJUSTMENT: 'STOCK_ADJUSTMENT_CREATED',
+      KIT_IN: 'KIT_ASSEMBLED', KIT_OUT: 'KIT_DISASSEMBLED', INTERNAL_MOVE: 'INTERNAL_MOVE',
+    };
+    await recordWarehouseActivity(run, {
+      actionType: activityByMove[args.moveType] || `STOCK_MOVE_${args.moveType}`,
+      entityType: 'STOCK_MOVE', entityId: moveId, documentId: args.referenceId,
+      productId: args.productId, serialId: args.serialId ?? null, lotId: args.lotId ?? null,
+      warehouseId: args.warehouseId, quantity: args.quantity, userId: args.createdBy,
+      metadata: { moveType: args.moveType, referenceType: args.referenceType, documentLineId: args.documentLineId },
+      createdAt: now,
+    });
+  }
+
+  async function recordWarehouseActivity(run: (sql: string, params?: any[]) => Promise<unknown>, args: {
+    actionType: string; entityType: string; entityId?: string | null; documentId?: string | null;
+    documentCode?: string | null; productId?: string | null; serialId?: string | null; lotId?: string | null;
+    warehouseId?: string | null; fromWarehouseId?: string | null; toWarehouseId?: string | null;
+    quantity?: number | null; unit?: string | null; userId?: string | null;
+    oldData?: unknown; newData?: unknown; metadata?: unknown; createdAt?: string;
+  }): Promise<void> {
+    const json = (value: unknown) => value === undefined || value === null ? null : JSON.stringify(value);
+    await run(
+      `INSERT INTO warehouse_activity_logs
+       (id, actionType, entityType, entityId, documentId, documentCode, productId, serialId, lotId,
+        warehouseId, fromWarehouseId, toWarehouseId, quantity, unit, userId, oldData, newData, metadata, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [randomUUID(), args.actionType, args.entityType, args.entityId ?? null, args.documentId ?? null,
+        args.documentCode ?? null, args.productId ?? null, args.serialId ?? null, args.lotId ?? null,
+        args.warehouseId ?? null, args.fromWarehouseId ?? null, args.toWarehouseId ?? null,
+        args.quantity ?? null, args.unit ?? null, args.userId ?? null, json(args.oldData), json(args.newData),
+        json(args.metadata), args.createdAt || new Date().toISOString()]
+    );
+  }
+
+  /** Mapping kế toán/MISA là cấu hình, không suy diễn bằng mã tài khoản cố định. */
+  async function resolveAccountingDefaults(productId: string, partnerKey?: string | null, projectId?: string | null) {
+    const rows = await db.all(
+      `SELECT entityType, entityId, misaCode FROM misa_mappings
+       WHERE (entityType = 'PRODUCT_INVENTORY_ACCOUNT' AND entityId = ?)
+          OR (entityType = 'PARTNER_PAYABLE_ACCOUNT' AND entityId = ?)
+          OR (entityType = 'PROJECT' AND entityId = ?) ORDER BY createdAt DESC`,
+      [productId, partnerKey || '', projectId || '']
+    ).catch(() => []);
+    const find = (type: string, id: string | null | undefined) => (rows || []).find((row: any) => row.entityType === type && row.entityId === id)?.misaCode || null;
+    return {
+      accountDebit: find('PRODUCT_INVENTORY_ACCOUNT', productId),
+      accountCredit: partnerKey ? find('PARTNER_PAYABLE_ACCOUNT', partnerKey) : null,
+      projectMisaCode: projectId ? find('PROJECT', projectId) : null,
+    };
   }
 
   function docCode(prefix: string): string {
@@ -164,7 +217,7 @@ export function createStockContext(db: any) {
     return level >= MANAGEMENT_LEVELS.MANAGER && level !== MANAGEMENT_LEVELS.ADMIN;
   }
   return {
-    db, scopeOf, listScope, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, isSaleableLocation, availableOf, saleableLocationSet, saleableAvailableOf, assertNotCounting, postMove, docCode, nextDocCode, paginationOf,
+    db, scopeOf, listScope, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, isSaleableLocation, availableOf, saleableLocationSet, saleableAvailableOf, assertNotCounting, postMove, recordWarehouseActivity, resolveAccountingDefaults, docCode, nextDocCode, paginationOf,
   };
 }
 

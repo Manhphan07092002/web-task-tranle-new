@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { levelOf, LEVELS } from '../../utils/rbac';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { ClipboardCheck, PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, RotateCcw } from 'lucide-react';
 import { Card } from '../../components/UI';
+import { Pagination } from '../../components/Pagination';
 import {
   getStockCounts, getStockCount, openStockCount, submitCountLines,
   requestRecount, approveCount, cancelCount, getWarehouses,
@@ -14,6 +15,7 @@ import type { DeptKey } from '../../components/layout/menus/menuTypes';
 // Kiểm kê blind-count (§19–20): NV đếm không thấy số hệ thống,
 // TP đối chiếu/duyệt chênh lệch → sinh điều chỉnh tồn.
 export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
+  const [searchParams] = useSearchParams();
   const { user } = useAuth();
   const canManage = levelOf(user) >= LEVELS.MANAGER && levelOf(user) !== LEVELS.ADMIN;
   const [counts, setCounts] = useState<StockCount[]>([]);
@@ -22,15 +24,18 @@ export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<StockCount | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [hasMore, setHasMore] = useState(false);
 
   const fetchAll = async () => {
     setLoading(true); setError(null);
     try {
       const [c, w] = await Promise.all([
-        getStockCounts(),
+        getStockCounts(undefined, undefined, { limit: pageSize + 1, offset: (page - 1) * pageSize }),
         getWarehouses().catch(() => [] as Warehouse[]),
       ]);
-      setCounts(c); setWarehouses(w);
+      setHasMore(c.length > pageSize); setCounts(c.slice(0, pageSize)); setWarehouses(w);
     } catch (e: any) {
       setError(e.message || 'Không tải được kiểm kê');
     } finally {
@@ -38,7 +43,8 @@ export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
     }
   };
 
-  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [page, pageSize]);
+  const visibleCounts = counts;
 
   const openDetail = async (id: string) => {
     try {
@@ -47,6 +53,13 @@ export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
       setError(e.message || 'Không mở được đợt kiểm kê');
     }
   };
+
+  useEffect(() => {
+    const countId = searchParams.get('countId');
+    if (countId) openDetail(countId);
+    // Deep-link từ trang Chênh lệch kiểm kê.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const refreshSelected = async (id: string) => {
     try {
@@ -93,7 +106,7 @@ export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {counts.map((c) => (
+          {visibleCounts.map((c) => (
             <button key={c.id} onClick={() => openDetail(c.id)} className="text-left">
               <Card className="p-5 hover:shadow-md transition-shadow">
                 <div className="flex items-center justify-between mb-1">
@@ -105,11 +118,16 @@ export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
                 <p className="text-xs text-gray-400">
                   {c.warehouseName || c.warehouseId} · {c.blindCount ? 'Đếm mù' : 'Hiện số hệ thống'} · {c.createdAt ? new Date(c.createdAt).toLocaleString('vi-VN') : ''}
                 </p>
+                <div className="mt-3 flex items-center justify-between gap-3 text-xs">
+                  <span className="text-gray-500">Tiến độ: <b className="text-gray-700">{Number(c.countedLines || 0)}/{Number(c.totalLines || 0)}</b> dòng</span>
+                  {Number(c.varianceLines || 0) > 0 && <span className="font-bold text-amber-700">{Number(c.varianceLines)} dòng lệch</span>}
+                </div>
               </Card>
             </button>
           ))}
         </div>
       )}
+      {!loading && counts.length > 0 && <Pagination currentPage={page} totalPages={hasMore ? page + 1 : page} onPageChange={setPage} itemsPerPage={pageSize} onItemsPerPageChange={(size) => { setPageSize(size); setPage(1); }} />}
 
       {selected && (
         <CountDetailModal
@@ -215,7 +233,7 @@ function CountDetailModal({ count, onClose, onChanged, onError }: {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-gray-400 uppercase">
-                <th className="py-2">Hàng</th>
+                <th className="py-2">Hàng / Vị trí</th>
                 {!blind && <th className="py-2 text-right">Hệ thống</th>}
                 <th className="py-2 text-right">Thực tế</th>
                 <th className="py-2 text-right">Chênh lệch</th>
@@ -229,6 +247,7 @@ function CountDetailModal({ count, onClose, onChanged, onError }: {
                   <tr key={l.id}>
                     <td className="py-1.5 pr-2">
                       <p className="font-medium text-gray-800 text-[13px]">{l.productName || l.productId}</p>
+                      <p className="text-[11px] text-gray-400">{l.productId} · {l.locationId || 'Không phân vị trí'}{(l as any).productUnit ? ` · ĐVT: ${(l as any).productUnit}` : ''}</p>
                     </td>
                     {!blind && <td className="py-1.5 text-right text-gray-400">{l.expectedQty ?? '—'}</td>}
                     <td className="py-1.5 text-right">
@@ -271,12 +290,15 @@ function CountDetailModal({ count, onClose, onChanged, onError }: {
               className="px-4 py-2 border border-gray-200 hover:bg-gray-100 rounded-xl font-bold text-sm text-gray-600 disabled:opacity-60 flex items-center gap-1.5">
               <RotateCcw size={14} />Yêu cầu kiểm lại
             </button>
-            <button onClick={doApprove} disabled={busy}
+            <button onClick={doApprove} disabled={busy || (count.lines || []).some((line) => line.actualQty == null)}
               className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-sm disabled:opacity-60 flex items-center gap-1.5">
               <CheckCircle2 size={14} />Duyệt chênh lệch
             </button>
             <button onClick={doCancel} disabled={busy} className="px-4 py-2 border rounded-xl text-red-600">Hủy đợt kiểm kê</button></>}
           </div>
+        )}
+        {open && (count.lines || []).some((line) => line.actualQty == null) && (
+          <p className="px-6 pb-3 text-right text-xs text-amber-700">Còn {(count.lines || []).filter((line) => line.actualQty == null).length} dòng chưa nhập số đếm.</p>
         )}
       </div>
     </div>

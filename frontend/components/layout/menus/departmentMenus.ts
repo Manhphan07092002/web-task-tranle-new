@@ -3,7 +3,7 @@ import {
   DollarSign, TrendingUp, HeartHandshake, ClipboardList, Wrench, Megaphone,
   Calculator, Truck, Factory, Presentation, UserCheck, Package, TriangleAlert, BarChart3,
   ShoppingCart, ClipboardCheck, ArrowDownToLine, ArrowUpFromLine, ArrowLeftRight,
-  ScanLine, Boxes, Archive, MapPin, Bell, Hourglass, CheckCircle2, Scale,
+  ScanLine, Boxes, Archive, MapPin, Bell, Hourglass, CheckCircle2, Scale, CornerUpLeft,
   SlidersHorizontal, History, RefreshCw, TrendingDown, ListChecks, PackageCheck,
 } from 'lucide-react';
 import type { DeptKey, NavGroup, NavItem } from './menuTypes';
@@ -17,6 +17,16 @@ export function getDeptHomePath(key: DeptKey | null): string | null {
   if (!key || key === 'BOARD') return null;
   const first = deptFirstItem(key);
   return first?.path ?? `/dept/${key.toLowerCase()}`;
+}
+
+/** Tạo URL tới một module phòng ban mà không nối chồng query string. */
+export function getDeptModulePath(key: DeptKey | null, moduleId: string, params?: Record<string, string>): string {
+  const home = getDeptHomePath(key) || (key ? `/dept/${key.toLowerCase()}` : '/');
+  const [pathname, query = ''] = home.split('?');
+  const search = new URLSearchParams(query);
+  search.set('m', moduleId);
+  Object.entries(params || {}).forEach(([name, value]) => search.set(name, value));
+  return `${pathname}?${search.toString()}`;
 }
 
 // Một phòng có thể có 1 group (BOARD/các stub) hoặc nhiều group
@@ -153,8 +163,11 @@ export const DEPARTMENT_MENUS: Partial<Record<DeptKey, NavGroup | NavGroup[]>> =
         { id: 'wh_stock', label: 'Tồn kho', icon: Package, path: stub('warehouse', 'wh_stock'), permission: null },
         { id: 'wh_receipt', label: 'Nhập kho', icon: ArrowDownToLine, path: stub('warehouse', 'wh_receipt'), permission: null },
         { id: 'wh_issue', label: 'Xuất kho', icon: ArrowUpFromLine, path: stub('warehouse', 'wh_issue'), permission: null },
+        { id: 'wh_return', label: 'Trả hàng', icon: CornerUpLeft, path: stub('warehouse', 'wh_return'), permission: null },
         { id: 'wh_transfer', label: 'Điều chuyển', icon: ArrowLeftRight, path: stub('warehouse', 'wh_transfer'), permission: null },
+        { id: 'wh_processing', label: 'Xử lý phiếu', icon: ListChecks, path: stub('warehouse', 'wh_processing'), permission: null },
         { id: 'wh_count', label: 'Kiểm kê', icon: ClipboardCheck, path: stub('warehouse', 'wh_count'), permission: null },
+        { id: 'wh_history', label: 'Lịch sử kho vận', icon: History, path: stub('warehouse', 'wh_history'), permission: null, minLevel: 20 },
         { id: 'wh_reservation', label: 'Giữ hàng / Phân bổ', icon: PackageCheck, path: stub('warehouse', 'wh_reservation'), permission: null, minLevel: 20 },
       ],
     },
@@ -177,6 +190,8 @@ export const DEPARTMENT_MENUS: Partial<Record<DeptKey, NavGroup | NavGroup[]>> =
     {
       label: 'Kiểm soát',
       items: [
+        { id: 'wh_audit', label: 'Audit Log kho vận', icon: History, path: stub('warehouse', 'wh_audit'), permission: null, minLevel: 20 },
+        { id: 'wh_control', label: 'Đối soát & bất thường', icon: Scale, path: stub('warehouse', 'wh_control'), permission: null, minLevel: 20 },
         { id: 'wh_alerts', label: 'Cảnh báo tồn kho', icon: Bell, path: stub('warehouse', 'wh_alerts'), permission: null, minLevel: 20 },
         { id: 'wh_exceptions', label: 'Hàng ngoại lệ', icon: TriangleAlert, path: stub('warehouse', 'wh_exceptions'), permission: null, minLevel: 20 },
         { id: 'wh_slow', label: 'Tồn lâu', icon: Hourglass, path: stub('warehouse', 'wh_slow'), permission: null, minLevel: 20 },
@@ -197,7 +212,6 @@ export const DEPARTMENT_MENUS: Partial<Record<DeptKey, NavGroup | NavGroup[]>> =
         { id: 'wh_report_warehouse', label: 'Tồn theo kho', icon: BarChart3, path: stub('warehouse', 'wh_report_warehouse'), permission: null, minLevel: 20 },
         { id: 'wh_report_minmax', label: 'Tồn Min / Max', icon: TrendingDown, path: stub('warehouse', 'wh_report_minmax'), permission: null, minLevel: 20 },
         { id: 'wh_in_transit', label: 'Đang vận chuyển', icon: Truck, path: stub('warehouse', 'wh_in_transit'), permission: null, minLevel: 20 },
-        { id: 'wh_history', label: 'Lịch sử hàng hóa', icon: History, path: stub('warehouse', 'wh_history'), permission: null, minLevel: 20 },
         { id: 'wh_misa', label: 'Đối soát MISA', icon: RefreshCw, path: stub('warehouse', 'wh_misa'), permission: null, minLevel: 20 },
       ],
     },

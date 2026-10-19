@@ -224,7 +224,7 @@ describe('receipts', () => {
   it('completes a receipt with moves and balance upserts in one transaction', async () => {
     const db = mockDbProducts({
       scopes: ['wh-hn'],
-      doc: { id: 'doc1', docType: 'RECEIPT', status: 'DRAFT', warehouseId: 'wh-hn', referenceType: null },
+      doc: { id: 'doc1', docType: 'RECEIPT', status: 'READY', warehouseId: 'wh-hn', referenceType: null },
       lines: [line],
       productIds: new Set(['p1']),
     });
@@ -235,6 +235,20 @@ describe('receipts', () => {
     expect(sqls.some((s: string) => s.includes('INSERT INTO stock_balances') && s.includes('ON DUPLICATE KEY UPDATE'))).toBe(true);
     expect(sqls).toContain('COMMIT');
     expect(sqls).not.toContain('ROLLBACK');
+  });
+
+  it('posts the confirmed actual quantity for a quantity-tracked receipt', async () => {
+    const db = mockDbProducts({
+      scopes: ['wh-hn'],
+      doc: { id: 'doc1', docType: 'RECEIPT', status: 'READY', warehouseId: 'wh-hn', referenceType: null },
+      lines: [{ ...line, quantity: 500, actualQty: 495, varianceQty: -5 }],
+      productIds: new Set(['p1']),
+    });
+    await request(appFor(nv, db)).post('/receipts/doc1/complete').send({}).expect(200);
+    const move = db.run.mock.calls.find(([sql]: [string]) => String(sql).includes('INSERT INTO stock_moves'));
+    const balance = db.run.mock.calls.find(([sql]: [string]) => String(sql).includes('INSERT INTO stock_balances'));
+    expect(move?.[1]?.[4]).toBe(495);
+    expect(balance?.[1]?.[3]).toBe(495);
   });
 
   it('rejects unknown products and non-draft documents', async () => {
@@ -252,7 +266,7 @@ describe('receipts', () => {
       lines: [line],
       productIds: new Set(['p1']),
     });
-    await request(appFor(nv, done)).post('/receipts/doc1/complete').send({}).expect(400);
+    await request(appFor(nv, done)).post('/receipts/doc1/complete').send({}).expect(200);
   });
 });
 
@@ -262,25 +276,41 @@ describe('issues', () => {
   it('blocks issues exceeding available stock', async () => {
     const db = mockDbProducts({
       scopes: ['wh-hn'],
-      doc: { id: 'doc1', docType: 'ISSUE', status: 'DRAFT', warehouseId: 'wh-hn', referenceType: null },
+      doc: { id: 'doc1', docType: 'ISSUE', status: 'READY', warehouseId: 'wh-hn', referenceType: null },
       lines: [line],
       productIds: new Set(['p1']),
       balance: { onHand: 5, reserved: 2 }, // available = 3 < 4
     });
-    await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(400);
+    const response = await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(400);
+    expect(response.body.error).toContain('Không đủ tồn kho để xuất sản phẩm');
+    expect(response.body.error).toContain('Cần xuất 4');
+    expect(response.body.error).toContain('tồn khả dụng chỉ còn 3');
     expect(db.run.mock.calls.map(([sql]: string[]) => sql)).toEqual(['START TRANSACTION', 'ROLLBACK']);
   });
 
   it('posts negative moves when stock suffices', async () => {
     const db = mockDbProducts({
       scopes: ['wh-hn'],
-      doc: { id: 'doc1', docType: 'ISSUE', status: 'DRAFT', warehouseId: 'wh-hn', referenceType: null },
+      doc: { id: 'doc1', docType: 'ISSUE', status: 'READY', warehouseId: 'wh-hn', referenceType: null },
       lines: [line],
       productIds: new Set(['p1']),
       balance: { onHand: 10, reserved: 2 },
     });
     await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(200);
     expect(db.run.mock.calls.some(([s]: string[]) => String(s).includes('INSERT INTO stock_moves'))).toBe(true);
+  });
+
+  it('checks and posts issue quantity using the confirmed actual quantity', async () => {
+    const db = mockDbProducts({
+      scopes: ['wh-hn'],
+      doc: { id: 'doc1', docType: 'ISSUE', status: 'READY', warehouseId: 'wh-hn', referenceType: null },
+      lines: [{ ...line, quantity: 4, actualQty: 2, varianceQty: -2 }],
+      productIds: new Set(['p1']),
+      balance: { onHand: 2, reserved: 0 },
+    });
+    await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(200);
+    const move = db.run.mock.calls.find(([sql]: [string]) => String(sql).includes('INSERT INTO stock_moves'));
+    expect(move?.[1]?.[4]).toBe(-2);
   });
 });
 
@@ -348,7 +378,7 @@ describe('transfers ship and receive', () => {
       productIds: new Set(['p1']),
       balance,
     });
-    await request(appFor(tp, mk('DRAFT'))).post('/transfers/doc1/ship').send({}).expect(200);
+    await request(appFor(tp, mk('READY'))).post('/transfers/doc1/ship').send({}).expect(200);
     await request(appFor(tp, mk('IN_TRANSIT'))).post('/transfers/doc1/ship').send({}).expect(400);
     const poor = mk('DRAFT', { onHand: 2, reserved: 0 });
     await request(appFor(tp, poor)).post('/transfers/doc1/ship').send({}).expect(400);
@@ -388,7 +418,7 @@ describe('scoped warehouse locks', () => {
   it('locks only the document warehouse on complete', async () => {
     const db = mockDbProducts({
       scopes: ['wh-hn'],
-      doc: { id: 'doc1', docType: 'RECEIPT', status: 'DRAFT', warehouseId: 'wh-hn', referenceType: null },
+      doc: { id: 'doc1', docType: 'RECEIPT', status: 'READY', warehouseId: 'wh-hn', referenceType: null },
       lines: [{ id: 'l1', productId: 'p1', quantity: 10, locationId: null }],
       productIds: new Set(['p1']),
     });
@@ -424,7 +454,7 @@ describe('scoped warehouse locks', () => {
 });
 
 describe('serial tracking on complete', () => {
-  function serialDb(opts: { docType: string; lines: any[]; existingSerials?: string[]; stockSerials?: Record<string, any> }) {
+  function serialDb(opts: { docType: string; lines: any[]; status?: string; existingSerials?: string[]; stockSerials?: Record<string, any>; activeCount?: boolean }) {
     const calls: [string, any[]][] = [];
     const db: any = {
       calls,
@@ -442,8 +472,9 @@ describe('serial tracking on complete', () => {
       }),
       get: vi.fn(async (sql: string, params?: any[]) => {
         if (String(sql).includes('FROM stock_documents')) {
-          return { id: 'doc1', docType: opts.docType, status: 'DRAFT', warehouseId: 'wh-hn', referenceType: null, partnerName: 'NCC A', postingDate: '2026-10-15' };
+      return { id: 'doc1', docType: opts.docType, status: opts.status || 'DRAFT', warehouseId: 'wh-hn', referenceType: null, partnerName: 'NCC A', postingDate: '2026-10-15' };
         }
+        if (String(sql).includes('FROM stock_counts')) return opts.activeCount ? { id: 'count-1' } : undefined;
         if (String(sql).includes('FROM products')) return { id: 'p1' };
         if (String(sql).includes('FROM stock_locations')) return { warehouseId: 'wh-hn', isActive: 1, purpose: 'SALEABLE' };
         if (String(sql).includes('FROM stock_balances')) return { onHand: 10, reserved: 0 };
@@ -461,7 +492,7 @@ describe('serial tracking on complete', () => {
   const receiptLines = [{ id: 'l1', productId: 'p1', quantity: 2, locationId: null, serialLot: 'SN1\nSN2' }];
 
   it('registers serials with product warranty on receipt complete', async () => {
-    const db = serialDb({ docType: 'RECEIPT', lines: receiptLines });
+    const db = serialDb({ docType: 'RECEIPT', status: 'READY', lines: receiptLines });
     await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(200);
     const inserts = db.calls.filter(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_serials'));
     expect(inserts).toHaveLength(2);
@@ -474,13 +505,13 @@ describe('serial tracking on complete', () => {
   });
 
   it('rejects mismatched serial counts on receipt', async () => {
-    const db = serialDb({ docType: 'RECEIPT', lines: [{ ...receiptLines[0], serialLot: 'SN1\nSN2\nSN3' }] });
+    const db = serialDb({ docType: 'RECEIPT', status: 'READY', lines: [{ ...receiptLines[0], serialLot: 'SN1\nSN2\nSN3' }] });
     await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(400);
     expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
   });
 
   it('stores a single code as lot for multi-quantity receipt lines', async () => {
-    const db = serialDb({ docType: 'RECEIPT', lines: [{ ...receiptLines[0], serialLot: 'LOT9' }] });
+    const db = serialDb({ docType: 'RECEIPT', status: 'READY', lines: [{ ...receiptLines[0], serialLot: 'LOT9' }] });
     await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(200);
     const inserts = db.calls.filter(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_serials'));
     expect(inserts).toHaveLength(1);
@@ -488,12 +519,12 @@ describe('serial tracking on complete', () => {
   });
 
   it('rejects duplicate serials on receipt', async () => {
-    const db = serialDb({ docType: 'RECEIPT', lines: receiptLines, existingSerials: ['SN1'] });
+    const db = serialDb({ docType: 'RECEIPT', status: 'READY', lines: receiptLines, existingSerials: ['SN1'] });
     await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(409);
   });
 
   it('marks specific serials SOLD on issue complete', async () => {
-    const db = serialDb({ docType: 'ISSUE', lines: receiptLines, stockSerials: { SN1: 's1', SN2: 's2' } });
+    const db = serialDb({ docType: 'ISSUE', status: 'READY', lines: receiptLines, stockSerials: { SN1: 's1', SN2: 's2' } });
     await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(200);
     const solds = db.calls.filter(([s]: [string, any[]]) => String(s).includes("SET status = 'SOLD'"));
     expect(solds).toHaveLength(2);
@@ -501,31 +532,38 @@ describe('serial tracking on complete', () => {
   });
 
   it('rejects issue serials missing from saleable stock', async () => {
-    const db = serialDb({ docType: 'ISSUE', lines: receiptLines, stockSerials: { SN1: 's1' } });
+    const db = serialDb({ docType: 'ISSUE', status: 'READY', lines: receiptLines, stockSerials: { SN1: 's1' } });
     await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(400);
     expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
   });
 
-  it('accepts a matching lot code on issue without changing its status', async () => {    const db = serialDb({ docType: 'ISSUE', lines: [{ ...receiptLines[0], quantity: 3, serialLot: 'LOT9' }], stockSerials: { LOT9: 'lot1' } });
+  it('accepts a matching lot code on issue without changing its status', async () => {    const db = serialDb({ docType: 'ISSUE', status: 'READY', lines: [{ ...receiptLines[0], quantity: 3, serialLot: 'LOT9' }], stockSerials: { LOT9: 'lot1' } });
     await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(200);
     expect(db.calls.some(([s]: [string, any[]]) => String(s).includes("SET status = 'SOLD'"))).toBe(false);
     expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(true);
   });
 
   it('rejects an unknown lot code on issue', async () => {
-    const db = serialDb({ docType: 'ISSUE', lines: [{ ...receiptLines[0], quantity: 3, serialLot: 'LOT9' }], stockSerials: {} });
+    const db = serialDb({ docType: 'ISSUE', status: 'READY', lines: [{ ...receiptLines[0], quantity: 3, serialLot: 'LOT9' }], stockSerials: {} });
     await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(400);
     expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
   });
 
   it('completes return documents and posts inbound moves', async () => {
-    const db = serialDb({ docType: 'RETURN', lines: [{ ...receiptLines[0], serialLot: '' }] });
+    const db = serialDb({ docType: 'RETURN', status: 'READY', lines: [{ ...receiptLines[0], serialLot: '' }] });
     await request(appFor(tp, db)).post('/returns/doc1/complete').send({}).expect(200);
     expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(true);
   });
 
+  it('blocks return completion while the destination warehouse is being counted', async () => {
+    const db = serialDb({ docType: 'RETURN', status: 'READY', activeCount: true, lines: [{ ...receiptLines[0], serialLot: '' }] });
+    const response = await request(appFor(tp, db)).post('/returns/doc1/complete').send({}).expect(409);
+    expect(response.body.error).toContain('Kho đang kiểm kê');
+    expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
+  });
+
   it('returns sold serials to saleable stock on return complete', async () => {
-    const db = serialDb({ docType: 'RETURN', lines: receiptLines, stockSerials: { SN1: 's1', SN2: 's2' } });
+    const db = serialDb({ docType: 'RETURN', status: 'READY', lines: receiptLines, stockSerials: { SN1: 's1', SN2: 's2' } });
     await request(appFor(tp, db)).post('/returns/doc1/complete').send({}).expect(200);
     const back = db.calls.filter(([s]: [string, any[]]) => String(s).includes("SET status = 'SALEABLE'"));
     expect(back).toHaveLength(2);
@@ -768,13 +806,12 @@ describe('serials register, search and status', () => {
     };
   }
 
-  it('registers with a serial or lot inside the scope', async () => {
+  it('blocks standalone serial registration outside a completed receipt flow', async () => {
     const d = db();
-    const res = await request(appFor(nv, d)).post('/serials')
-      .send({ productId: 'p1', serialNumber: 'SN-001', warehouseId: 'wh-hn' }).expect(201);
-    expect(res.body.id).toBeTruthy();
+    await request(appFor(nv, d)).post('/serials')
+      .send({ productId: 'p1', serialNumber: 'SN-001', warehouseId: 'wh-hn' }).expect(403);
     await request(appFor(nv, db())).post('/serials')
-      .send({ productId: 'p1', warehouseId: 'wh-hn' }).expect(400);
+      .send({ productId: 'p1', warehouseId: 'wh-hn' }).expect(403);
     await request(appFor(nv, db())).post('/serials')
       .send({ productId: 'p1', serialNumber: 'SN-002', warehouseId: 'wh-hcm' }).expect(403);
   });
@@ -793,6 +830,13 @@ describe('serials register, search and status', () => {
     await request(appFor(nv, db({ serial }))).put('/serials/s1').send({ status: 'DAMAGED' }).expect(403);
     await request(appFor(tp, db({ serial }))).put('/serials/s1').send({ status: 'DAMAGED' }).expect(200);
     await request(appFor(tp, db({ serial: undefined }))).put('/serials/ghost').send({ status: 'DAMAGED' }).expect(404);
+  });
+
+  it('only lets a manager delete an orphan serial with no stock movement', async () => {
+    const orphan = { id: 's1', productId: 'p1', warehouseId: 'wh-hn', status: 'SALEABLE', stockStatus: 'IN_STOCK', receiptDocumentId: null, issueDocumentId: null };
+    await request(appFor(nv, db({ serial: orphan }))).delete('/serials/s1').expect(403);
+    await request(appFor(tp, db({ serial: { ...orphan, receiptDocumentId: 'pnk1' } }))).delete('/serials/s1').expect(409);
+    await request(appFor(tp, db({ serial: orphan }))).delete('/serials/s1').expect(200);
   });
 });
 
@@ -828,16 +872,16 @@ describe('misa mappings and logs', () => {
   it('managers create mappings, staff cannot, duplicates conflict', async () => {
     const d = db();
     await request(appFor(tp, d)).post('/misa-mappings')
-      .send({ entityType: 'product', entityId: 'p1', misaCode: 'MISA-001' }).expect(201);
+      .send({ entityType: 'PRODUCT_ITEM', entityId: 'p1', misaCode: 'MISA-001' }).expect(201);
     await request(appFor(nv, db())).post('/misa-mappings')
-      .send({ entityType: 'product', entityId: 'p1', misaCode: 'MISA-001' }).expect(403);
+      .send({ entityType: 'PRODUCT_ITEM', entityId: 'p1', misaCode: 'MISA-001' }).expect(403);
     const dup: any = { ...db(), run: vi.fn().mockRejectedValueOnce(new Error("Duplicate entry 'x' for key 'unique_misa_mapping'")) };
     await request(appFor(tp, dup)).post('/misa-mappings')
-      .send({ entityType: 'product', entityId: 'p1', misaCode: 'MISA-001' }).expect(409);
+      .send({ entityType: 'PRODUCT_ITEM', entityId: 'p1', misaCode: 'MISA-001' }).expect(409);
   });
 
   it('managers delete mappings, staff cannot', async () => {
-    const d = db();
+    const d: any = { ...db(), get: vi.fn().mockResolvedValue({ id: 'm1', entityType: 'PRODUCT_ITEM', entityId: 'p1', misaCode: 'MISA-001' }) };
     await request(appFor(tp, d)).delete('/misa-mappings/m1').expect(200);
     await request(appFor(nv, db())).delete('/misa-mappings/m1').expect(403);
   });

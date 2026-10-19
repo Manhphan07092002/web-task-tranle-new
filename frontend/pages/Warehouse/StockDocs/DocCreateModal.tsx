@@ -7,10 +7,10 @@ import { Link } from 'react-router-dom';
 import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, FileText, Calendar, Building2, User, ScanLine } from 'lucide-react';
 import { Card } from '../../../components/UI';
 import {
-  getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
+  getStockDocuments, getWarehouses, getAvailableInventory, createReceipt, createIssue, createReturn, createTransfer,
   advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, updateStockDocument, getNextDocCode,
   type StockDocument, type StockDocLine, type Warehouse,
-  type PartnerSuggestion, type PartnerSuggestionsData, type StockDocDetailLine,
+  type PartnerSuggestion, type PartnerSuggestionsData, type StockDocDetailLine, type AvailableInventoryRow,
 } from '../../../services/stockService';
 import { getProducts, createProduct, suggestCode, type Product } from '../../../services/productService';
 import { getDeptHomePath } from '../../../components/layout/menus/departmentMenus';
@@ -22,8 +22,10 @@ import { KIND_META, type Kind } from './meta';
 import { SearchCombo, FormattedNumberInput, UnitSuggestInput, PartnerSuggestInput, TextSuggestInput } from './controls';
 import { SerialEditorModal, parseSerialList } from './SerialEditorModal';
 
-export function DocCreateModal({ kind, warehouses, products, users, onClose, onDone, onError, editingId }: {
+export function DocCreateModal({ kind, warehouses, products, users, canEditFinancials, onClose, onDone, onError, editingId }: {
   kind: Kind; warehouses: Warehouse[]; products: Product[]; users: { id: string; name: string }[];
+  /** Chỉ Trưởng phòng kho được ghi đè dữ liệu do mapping kế toán cung cấp. */
+  canEditFinancials: boolean;
   onClose: () => void; onDone: (created?: { id: string; code?: string }) => Promise<void>; onError: (m: string) => void;
   editingId?: string;
 }) {
@@ -40,6 +42,8 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
   // đồng bộ lại mỗi khi prop products đổi (mở modal mới).
   const [localProducts, setLocalProducts] = useState<Product[]>(products);
   useEffect(() => { setLocalProducts(products); }, [products]);
+  const [sourceInventory, setSourceInventory] = useState<AvailableInventoryRow[]>([]);
+  const [sourceInventoryLoading, setSourceInventoryLoading] = useState(false);
   // Tạo nhanh sản phẩm mới khi gõ tên/mã chưa có trong danh mục.
   const [quickCreate, setQuickCreate] = useState<{ line: number; name: string; code: string } | null>(null);
   // Editor serial/lot cho từng dòng.
@@ -68,6 +72,26 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
     if (!warehouseId && warehouses.length > 0) setWarehouseId(warehouses[0].id);
   }, [warehouses]);
 
+  const requiresSourceAvailability = kind === 'ISSUE' || kind === 'TRANSFER';
+
+  useEffect(() => {
+    // Chỉ xuất/điều chuyển cần chọn hàng đang khả dụng ở kho nguồn.
+    // Nhập kho và hàng trả về phải được phép chọn toàn bộ danh mục, kể cả
+    // sản phẩm chưa từng có tồn tại kho nhận.
+    if (!requiresSourceAvailability || !warehouseId) {
+      setSourceInventory([]);
+      setSourceInventoryLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setSourceInventoryLoading(true);
+    getAvailableInventory({ warehouseId, onlyAvailable: true, limit: 1000 })
+      .then((result) => { if (!cancelled) setSourceInventory(result.rows.filter((row) => Number(row.available) > 0)); })
+      .catch(() => { if (!cancelled) setSourceInventory([]); })
+      .finally(() => { if (!cancelled) setSourceInventoryLoading(false); });
+    return () => { cancelled = true; };
+  }, [requiresSourceAvailability, warehouseId]);
+
   // Chế độ sửa phiếu nháp: nạp chi tiết rồi đổ vào form.
   useEffect(() => {
     if (!editingId) return;
@@ -85,8 +109,8 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
         setDestWarehouseId(doc.destWarehouseId || '');
         setNotes(doc.notes || '');
         const firstLine = doc.lines?.[0];
-        setTkKho(firstLine?.accountDebit || '1561');
-        setTkCongNo(firstLine?.accountCredit || '331');
+        setTkKho(firstLine?.accountDebit || '');
+        setTkCongNo(firstLine?.accountCredit || '');
         setProject(firstLine?.projectId || '');
         setCostItem(firstLine?.costItem || '');
         setCostObject((firstLine as any)?.costObjectId || '');
@@ -147,8 +171,8 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
   const [invoiceLookupCode, setInvoiceLookupCode] = useState('');
   const [invoiceLookupUrl, setInvoiceLookupUrl] = useState('');
   const [shippingFee, setShippingFee] = useState('');
-  const [tkKho, setTkKho] = useState('1561');
-  const [tkCongNo, setTkCongNo] = useState('331');
+  const [tkKho, setTkKho] = useState('');
+  const [tkCongNo, setTkCongNo] = useState('');
   const [costItem, setCostItem] = useState('');
   const [costObject, setCostObject] = useState('');
   const [project, setProject] = useState('');
@@ -250,6 +274,15 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
     return Array.from(set);
   }, [localProducts]);
 
+  const selectableProducts = useMemo(() => {
+    if (!requiresSourceAvailability) return localProducts;
+    const inStock = new Set(sourceInventory.map((row) => row.productId));
+    const selected = new Set(lines.map((line) => line.productId).filter(Boolean));
+    // Giữ các dòng đã có khi sửa phiếu, kể cả tồn đã thay đổi; sản phẩm mới
+    // chỉ được chọn nếu còn tồn tại kho nguồn.
+    return localProducts.filter((product) => inStock.has(product.id) || selected.has(product.id));
+  }, [requiresSourceAvailability, localProducts, sourceInventory, lines]);
+
   const setLine = (i: number, patch: Partial<StockDocLine>) =>
     setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
 
@@ -298,7 +331,11 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
       .map((l, idx) => {
         const noProduct = !l.productId;
         const invalidQty = !l.quantity || Number(l.quantity) <= 0 || isNaN(Number(l.quantity));
-        return { idx, noProduct, invalidQty, hasError: noProduct || invalidQty };
+        const price = Number(l.unitPrice ?? 0);
+        const vatRate = canEditFinancials ? Number(l.vatRate ?? 8) : 8;
+        const invalidPrice = !Number.isFinite(price) || price < 0;
+        const invalidVat = !Number.isFinite(vatRate) || vatRate < 0 || vatRate > 100;
+        return { idx, noProduct, invalidQty, invalidPrice, invalidVat, hasError: noProduct || invalidQty || invalidPrice || invalidVat };
       })
       .filter((x) => x.hasError);
 
@@ -309,6 +346,8 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
           const issues: string[] = [];
           if (x.noProduct) issues.push('chưa chọn hàng hóa');
           if (x.invalidQty) issues.push('số lượng phải > 0');
+          if (x.invalidPrice) issues.push('đơn giá không được âm');
+          if (x.invalidVat) issues.push('VAT phải từ 0 đến 100%');
           return `Dòng #${x.idx + 1} (${issues.join(', ')})`;
         })
         .join('; ');
@@ -316,15 +355,23 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
       return;
     }
 
+    const shipping = shippingFee === '' ? 0 : Number(shippingFee);
+    if (canEditFinancials && (!Number.isFinite(shipping) || shipping < 0)) {
+      setCostTab('cost');
+      setErr('Chi phí mua hàng phải là số hợp lệ và không được âm.');
+      return;
+    }
+
     const clean = lines.map((l) => ({
       ...l,
       quantity: Number(l.quantity),
       serialLot: l.serialLot?.trim() || undefined,
-      accountDebit: moneyKind ? (tkKho.trim() || '1561') : undefined,
-      accountCredit: moneyKind ? (tkCongNo.trim() || '331') : undefined,
-      projectId: moneyKind ? (project.trim() || undefined) : undefined,
-      costItem: moneyKind ? (costItem.trim() || undefined) : undefined,
-      costObjectId: moneyKind ? (costObject.trim() || undefined) : undefined,
+      vatRate: canEditFinancials ? Number(l.vatRate ?? 8) : 8,
+      accountDebit: moneyKind && canEditFinancials ? (tkKho.trim() || undefined) : undefined,
+      accountCredit: moneyKind && canEditFinancials ? (tkCongNo.trim() || undefined) : undefined,
+      projectId: moneyKind && canEditFinancials ? (project.trim() || undefined) : undefined,
+      costItem: moneyKind && canEditFinancials ? (costItem.trim() || undefined) : undefined,
+      costObjectId: moneyKind && canEditFinancials ? (costObject.trim() || undefined) : undefined,
     }));
 
     setSaving(true); setErr('');
@@ -346,7 +393,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
         referenceId: referenceId.trim() || undefined,
         invoiceLookupCode: invoiceLookupCode.trim() || undefined,
         invoiceLookupUrl: invoiceLookupUrl.trim() || undefined,
-        shippingFee: shippingFee === '' ? undefined : Number(shippingFee),
+        shippingFee: canEditFinancials && shippingFee !== '' ? shipping : undefined,
       } : {};
       const attachUrls = attachments.map((a) => a.url);
       if (isEditing && editingId) {
@@ -357,6 +404,9 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
         await onDone(created);
       } else if (kind === 'ISSUE') {
         const created = await createIssue({ warehouseId, lines: clean, notes: notes || undefined, ...header, ...(attachUrls.length > 0 ? { attachments: attachUrls } : {}) });
+        await onDone(created);
+      } else if (kind === 'RETURN') {
+        const created = await createReturn({ warehouseId, lines: clean, notes: notes || undefined, ...header, ...(attachUrls.length > 0 ? { attachments: attachUrls } : {}) });
         await onDone(created);
       } else {
         const created = await createTransfer({ sourceWarehouseId: warehouseId, destWarehouseId, lines: clean, notes: notes || undefined });
@@ -389,7 +439,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
 
   const totals = lines.reduce((acc, l) => {
     const pre = Number(l.quantity || 0) * Number(l.unitPrice || 0);
-    const vat = pre * (Number(l.vatRate ?? 8) / 100);
+    const vat = pre * ((canEditFinancials ? Number(l.vatRate ?? 8) : 8) / 100);
     return { pre: acc.pre + pre, vat: acc.vat + vat };
   }, { pre: 0, vat: 0 });
 
@@ -635,7 +685,8 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                     <tbody className="divide-y divide-gray-50">
                       {lines.map((l, i) => {
                         const lineTotal = Number(l.quantity || 0) * Number(l.unitPrice || 0);
-                        const vatAmount = lineTotal * (Number(l.vatRate ?? 8) / 100);
+                        const effectiveVatRate = canEditFinancials ? Number(l.vatRate ?? 8) : 8;
+                        const vatAmount = lineTotal * (effectiveVatRate / 100);
                         const totalLine = lineTotal + vatAmount;
 
                         const noProduct = !l.productId;
@@ -662,13 +713,13 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                           </td>
                           <td className="py-1 px-1 w-20 text-center">
                             <SearchCombo
-                              items={localProducts}
+                              items={selectableProducts}
                               selectedId={l.productId}
                               display={(p) => p.importCode || ''}
                               match={(p, q) => `${p.importCode || ''} ${p.name || ''}`.toLowerCase().includes(q)}
                               onPick={(p) => pickProduct(i, p)}
-                              onCreateNew={(t) => openQuickCreate(i, t, true)}
-                              placeholder="Mã..."
+                              onCreateNew={kind === 'RECEIPT' ? (t) => openQuickCreate(i, t, true) : undefined}
+                              placeholder={sourceInventoryLoading ? 'Đang tải tồn...' : 'Mã...'}
                               inputClassName={`w-20 px-1 py-1 border rounded-none text-xs outline-none focus:border-emerald-500 text-center mx-auto transition-colors ${
                                 hasAttemptedSubmit && noProduct
                                   ? 'border-red-400 bg-red-50/70 text-red-900 placeholder:text-red-400 ring-1 ring-red-400/40'
@@ -699,13 +750,13 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                           </td>
                           <td className="py-1 px-2 min-w-[180px]">
                             <SearchCombo
-                              items={localProducts}
+                              items={selectableProducts}
                               selectedId={l.productId}
                               display={(p) => p.name}
                               match={(p, q) => `${p.name} ${p.importCode || ''} ${p.unit || ''}`.toLowerCase().includes(q)}
                               onPick={(p) => pickProduct(i, p)}
-                              onCreateNew={(t) => openQuickCreate(i, t, false)}
-                              placeholder={hasAttemptedSubmit && noProduct ? '⚠️ Bắt buộc chọn hàng (*)...' : 'Gõ tên/mã hàng...'}
+                              onCreateNew={kind === 'RECEIPT' ? (t) => openQuickCreate(i, t, false) : undefined}
+                              placeholder={sourceInventoryLoading ? 'Đang tải tồn kho...' : hasAttemptedSubmit && noProduct ? '⚠️ Bắt buộc chọn hàng (*)...' : 'Gõ tên/mã hàng...'}
                               inputClassName={`w-full px-2 py-1 border rounded-none text-xs outline-none transition-colors ${
                                 hasAttemptedSubmit && noProduct
                                   ? 'border-red-400 bg-red-50/70 text-red-900 placeholder:text-red-400 ring-1 ring-red-400/40'
@@ -771,9 +822,10 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                               </td>
                               <td className="py-1 px-2 text-right font-medium text-gray-800 tabular-nums text-xs min-w-[90px]">{lineTotal.toLocaleString('vi-VN')}</td>
                               <td className="py-1 px-0.5 text-center w-11">
-                                <input type="number" min={0} max={100} step="any" value={l.vatRate ?? 8}
+                                <input type="number" min={0} max={100} step="any" value={effectiveVatRate}
+                                  disabled={!canEditFinancials}
                                   onChange={(e) => setLine(i, { vatRate: Number(e.target.value) })}
-                                  className="w-10 px-0.5 py-1 border border-gray-200 rounded-none text-xs outline-none text-center tabular-nums mx-auto [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" title="% VAT" />
+                                  className="w-10 px-0.5 py-1 border border-gray-200 rounded-none text-xs outline-none text-center tabular-nums mx-auto disabled:bg-gray-50 disabled:text-gray-500 disabled:cursor-not-allowed [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" title={canEditFinancials ? '% VAT' : 'VAT lấy theo cấu hình mặc định'} />
                               </td>
                               <td className="py-1 px-2 text-right text-gray-600 tabular-nums text-xs min-w-[85px]">{vatAmount.toLocaleString('vi-VN')}</td>
                               <td className="py-1 px-2 text-right font-bold text-emerald-700 tabular-nums text-xs min-w-[100px]">{totalLine.toLocaleString('vi-VN')}</td>
@@ -820,7 +872,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                     </tfoot>
                   </table>
                 </div>
-              ) : (
+              ) : canEditFinancials ? (
                 <div className="border border-gray-200 rounded-xl p-4 space-y-3">
                   <div>
                     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Chi phí mua hàng (vận chuyển, hải quan, bốc xếp...)</label>
@@ -833,6 +885,10 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
                     />
                   </div>
                   <p className="text-xs text-gray-400">Phân bổ chi phí vào giá vốn từng dòng sẽ thực hiện ở bước sau; hiện tại chi phí chỉ lưu ở đầu phiếu.</p>
+                </div>
+              ) : (
+                <div className="border border-sky-100 bg-sky-50 rounded-xl px-4 py-3 text-xs text-sky-800">
+                  VAT áp dụng mặc định 8%. Chi phí mua hàng, tài khoản và khoản mục được lấy từ cấu hình/mapping kế toán và chỉ Trưởng phòng kho mới được điều chỉnh.
                 </div>
               )}
               </div>
@@ -856,7 +912,7 @@ export function DocCreateModal({ kind, warehouses, products, users, onClose, onD
               {lines.some((l) => l.productId) && (
                 <p className="text-xs text-gray-400 mt-1">Đang chọn: {lines.filter((l) => l.productId).map((l) => productName(l.productId)).join(', ')}</p>
               )}
-            {moneyKind && (
+            {moneyKind && canEditFinancials && (
               <div>
                 <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Hạch toán (áp dụng cho mọi dòng)</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-x-3 gap-y-2 border border-gray-100 rounded-2xl px-4 py-3 bg-white">

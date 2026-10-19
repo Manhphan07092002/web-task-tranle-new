@@ -15,7 +15,8 @@ function appFor(user: any, db: any) {
 }
 
 function mockDb(opts: {
-  scopes?: string[]; doc?: any; lines?: any[]; productIds?: Set<string>;
+  scopes?: string[]; doc?: any; lines?: any[]; productIds?: Set<string>; mapping?: any;
+  failRun?: (sql: string) => boolean;
 } = {}) {
   const runs: string[] = [];
   const db: any = {
@@ -32,13 +33,18 @@ function mockDb(opts: {
     }),
     get: vi.fn(async (sql: string, params?: any[]) => {
       if (String(sql).includes('FROM stock_documents')) return opts.doc;
+      if (String(sql).includes('FROM misa_mappings')) return opts.mapping;
       if (String(sql).includes('FROM products')) {
         return opts.productIds?.has(params?.[0]) ? { id: params?.[0] } : undefined;
       }
       if (String(sql).includes('FROM stock_locations')) return { warehouseId: 'wh-hn', isActive: 1 };
       return undefined;
     }),
-    run: vi.fn(async (sql: string, params?: any[]) => { runs.push(sql); return { changes: 1, params }; }),
+    run: vi.fn(async (sql: string, params?: any[]) => {
+      runs.push(sql);
+      if (opts.failRun?.(sql)) throw new Error('Simulated database failure');
+      return { changes: 1, params };
+    }),
   };
   return db;
 }
@@ -75,8 +81,9 @@ describe('MISA receipt fields (v26 API)', () => {
     const lineCall = calls.find(([sql]) => String(sql).includes('INSERT INTO stock_document_lines'));
     expect(lineCall?.[0]).toContain('vatRate');
     expect(lineCall?.[1]).toContain(8);
-    expect(lineCall?.[1]).toContain('1561'); // default TK nợ
-    expect(lineCall?.[1]).toContain('331'); // default TK có
+    // Tài khoản chỉ lấy từ mapping đã khai báo, không có mã mặc định cứng.
+    expect(lineCall?.[1]).not.toContain('1561');
+    expect(lineCall?.[1]).not.toContain('331');
     expect(lineCall?.[1]).toContain('PJ-1');
     expect(lineCall?.[1]).toContain('SN-001');
     expect(lineCall?.[1]).toContain('CT-01');
@@ -125,5 +132,24 @@ describe('MISA receipt fields (v26 API)', () => {
   it('blocks Admin from document operations', async () => {
     const db = mockDb({ scopes: [], doc: { id: 'doc1', status: 'DRAFT', warehouseId: 'wh-hn' } });
     await request(appFor(admin, db)).delete('/documents/doc1').expect(403);
+  });
+});
+
+describe('MISA mapping audit integrity', () => {
+  it('rolls back the mapping when writing its audit log fails', async () => {
+    const db = mockDb({ failRun: (sql) => String(sql).includes('INSERT INTO warehouse_activity_logs') });
+    await request(appFor(tp, db)).post('/misa-mappings').send({
+      entityType: 'PRODUCT_ITEM', entityId: 'p1', misaCode: 'VT-001',
+    }).expect(500);
+
+    const start = db.runs.findIndex((sql: string) => sql === 'START TRANSACTION');
+    const mapping = db.runs.findIndex((sql: string) => sql.includes('INSERT INTO misa_mappings'));
+    const audit = db.runs.findIndex((sql: string) => sql.includes('INSERT INTO warehouse_activity_logs'));
+    const rollback = db.runs.findIndex((sql: string) => sql === 'ROLLBACK');
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(mapping).toBeGreaterThan(start);
+    expect(audit).toBeGreaterThan(mapping);
+    expect(rollback).toBeGreaterThan(audit);
+    expect(db.runs).not.toContain('COMMIT');
   });
 });

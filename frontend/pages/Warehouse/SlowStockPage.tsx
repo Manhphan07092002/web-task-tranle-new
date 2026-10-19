@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Hourglass, RefreshCw, AlertCircle, ChevronDown } from 'lucide-react';
 import { Card } from '../../components/UI';
+import { Pagination } from '../../components/Pagination';
 import { getSlowStock, getWarehouses, type SlowStockRow, type Warehouse } from '../../services/stockService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
@@ -16,15 +17,18 @@ export default function SlowStockPage({ deptKey }: { deptKey: DeptKey }) {
   const [error, setError] = useState<string | null>(null);
   const [warehouseId, setWarehouseId] = useState('');
   const [days, setDays] = useState(90);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [hasMore, setHasMore] = useState(false);
 
   const fetchAll = async () => {
     setLoading(true); setError(null);
     try {
       const [s, w] = await Promise.all([
-        getSlowStock(warehouseId || undefined, days),
+        getSlowStock(warehouseId || undefined, days, { limit: pageSize + 1, offset: (page - 1) * pageSize }),
         getWarehouses().catch(() => [] as Warehouse[]),
       ]);
-      setRows(s); setWarehouses(w);
+      setHasMore(s.length > pageSize); setRows(s.slice(0, pageSize)); setWarehouses(w);
     } catch (e: any) {
       setError(e.message || 'Không tải được tồn lâu');
     } finally {
@@ -32,7 +36,8 @@ export default function SlowStockPage({ deptKey }: { deptKey: DeptKey }) {
     }
   };
 
-  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [warehouseId, days]);
+  useEffect(() => { setPage(1); }, [warehouseId, days]);
+  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [warehouseId, days, page, pageSize]);
 
   const daysIdle = (iso: string | null) => {
     if (!iso) return null;
@@ -122,6 +127,7 @@ export default function SlowStockPage({ deptKey }: { deptKey: DeptKey }) {
           </div>
         </Card>
       )}
+      {!loading && rows.length > 0 && <Pagination currentPage={page} totalPages={hasMore ? page + 1 : page} onPageChange={setPage} itemsPerPage={pageSize} onItemsPerPageChange={(s) => { setPageSize(s); setPage(1); }} />}
 
       <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">
         ← Về tổng quan kho vận

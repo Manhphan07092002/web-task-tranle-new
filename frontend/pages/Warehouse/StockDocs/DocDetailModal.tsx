@@ -3,9 +3,10 @@ import { ReceiveTransferButton } from '../ReceiveTransferButton';
 import { apiFetch } from '../../../services/api';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, FileText, Calendar, Building2, User } from 'lucide-react';
 import { Card } from '../../../components/UI';
+import { FeedbackDialog } from '../../../components/FeedbackDialog';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
   advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, countLinesMissingSerials,
@@ -13,7 +14,7 @@ import {
   type PartnerSuggestion, type PartnerSuggestionsData, type StockDocDetailLine,
 } from '../../../services/stockService';
 import { getProducts, type Product } from '../../../services/productService';
-import { getDeptHomePath } from '../../../components/layout/menus/departmentMenus';
+import { getDeptHomePath, getDeptModulePath } from '../../../components/layout/menus/departmentMenus';
 import { useData } from '../../../contexts/DataContext';
 import type { DeptKey } from '../../../components/layout/menus/menuTypes';
 
@@ -27,6 +28,8 @@ export function DocDetailModal({
   onClose,
   onUpdated,
   onEdit,
+  deptKey,
+  readOnly = false,
 }: {
   docId: string;
   warehouses: Warehouse[];
@@ -34,11 +37,15 @@ export function DocDetailModal({
   onClose: () => void;
   onUpdated: () => Promise<void>;
   onEdit?: (id: string) => void;
+  deptKey: DeptKey;
+  readOnly?: boolean;
 }) {
   const [doc, setDoc] = useState<(StockDocument & { lines?: StockDocDetailLine[] }) | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [notice, setNotice] = useState<{ title: string; message: string; docId?: string } | null>(null);
+  const navigate = useNavigate();
   const closeRef = React.useRef(onClose);
   closeRef.current = onClose;
 
@@ -80,7 +87,7 @@ export function DocDetailModal({
       await onUpdated();
       onClose();
     } catch (err: any) {
-      alert(err?.message || 'Hủy phiếu thất bại');
+      setNotice({ title: 'Không thể hủy phiếu', message: err?.message || 'Hủy phiếu thất bại' });
       setActionLoading(false);
     }
   };
@@ -89,7 +96,10 @@ export function DocDetailModal({
     if (!doc) return;
     if (doc.docType !== 'TRANSFER') {
       const missing = countLinesMissingSerials(doc.lines || []);
-      if (missing > 0 && !window.confirm(`Có ${missing} dòng chưa nhập serial/bảo hành. Vẫn hoàn thành phiếu?`)) return;
+      if (missing > 0) {
+        setNotice({ title: 'Phiếu chưa đủ thông tin hàng hóa', message: `Còn ${missing} dòng chưa được xử lý Serial hoặc xác nhận không có Serial. Hãy xử lý đủ các dòng trước khi hoàn tất phiếu.`, docId: doc.id });
+        return;
+      }
     }
     setActionLoading(true);
     try {
@@ -101,7 +111,7 @@ export function DocDetailModal({
       await onUpdated();
       onClose();
     } catch (err: any) {
-      alert(err?.message || 'Thao tác hoàn tất thất bại');
+      setNotice({ title: 'Chưa thể hoàn tất phiếu', message: err?.message || 'Thao tác hoàn tất thất bại', docId: doc.id });
       setActionLoading(false);
     }
   };
@@ -414,7 +424,7 @@ export function DocDetailModal({
         {/* Footer Actions */}
         <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-4 border-t border-gray-100 bg-gray-50/70">
           <div>
-            {doc?.status === 'DRAFT' && (
+            {!readOnly && doc?.status === 'DRAFT' && (
               <button
                 type="button"
                 disabled={actionLoading}
@@ -434,7 +444,7 @@ export function DocDetailModal({
             >
               Đóng
             </button>
-            {doc?.status === 'DRAFT' && onEdit && (
+            {!readOnly && doc?.status === 'DRAFT' && onEdit && (
               <button
                 type="button"
                 disabled={actionLoading}
@@ -445,7 +455,7 @@ export function DocDetailModal({
                 Sửa
               </button>
             )}
-            {doc?.status === 'DRAFT' && (
+            {!readOnly && doc?.status === 'DRAFT' && (
               <button
                 type="button"
                 disabled={actionLoading}
@@ -463,6 +473,16 @@ export function DocDetailModal({
           </div>
         </div>
       </div>
+      {notice && (
+        <FeedbackDialog
+          title={notice.title}
+          message={notice.message}
+          tone="error"
+          actionLabel={notice.docId ? 'Mở trang xử lý phiếu' : undefined}
+          onAction={notice.docId ? () => { const id = notice.docId!; setNotice(null); onClose(); navigate(getDeptModulePath(deptKey, 'wh_processing', { documentId: id })); } : undefined}
+          onClose={() => setNotice(null)}
+        />
+      )}
     </div>
   );
 }

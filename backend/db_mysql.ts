@@ -591,6 +591,25 @@ CREATE TABLE IF NOT EXISTS stock_lot_movements (
   INDEX idx_slotm_created (createdAt)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS stock_document_line_lots (
+  id VARCHAR(191) PRIMARY KEY, documentLineId VARCHAR(191) NOT NULL,
+  lotId VARCHAR(191) NOT NULL, quantity DOUBLE NOT NULL DEFAULT 0,
+  createdBy VARCHAR(191) NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_document_line_lot (documentLineId, lotId),
+  INDEX idx_sdll_line (documentLineId),
+  INDEX idx_sdll_lot (lotId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_transfer_line_lots (
+  id VARCHAR(191) PRIMARY KEY, documentLineId VARCHAR(191) NOT NULL,
+  sourceLotId VARCHAR(191) NOT NULL, destLotId VARCHAR(191) NULL,
+  quantity DOUBLE NOT NULL DEFAULT 0, createdBy VARCHAR(191) NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_transfer_line_source_lot (documentLineId, sourceLotId),
+  INDEX idx_stll_line (documentLineId), INDEX idx_stll_source_lot (sourceLotId),
+  INDEX idx_stll_dest_lot (destLotId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS product_bundles (
   id VARCHAR(191) PRIMARY KEY, name VARCHAR(255) NOT NULL, code VARCHAR(100) NULL UNIQUE,
   bundleType VARCHAR(32) NOT NULL DEFAULT 'VIRTUAL_BUNDLE',
@@ -1372,6 +1391,121 @@ export async function initDbMysql(): Promise<MysqlDb> {
         await db.run(`UPDATE stock_serials SET stockStatus = 'OUT' WHERE status = 'SOLD' AND stockStatus <> 'OUT'`);
         // warranty_start_type seed trong COMPANY_CONFIGS (seedInitialData) thay vì ở
         // đây — migration chạy cả trên legacy install, app đọc thiếu thì fallback OUTBOUND.
+      });
+
+      await runVersionedMigration(db, 34, 'stock_document_line_lot_allocations', async () => {
+        // Phân bổ lô theo từng dòng PXK: một phiếu có thể lấy từ nhiều PNK/lô,
+        // xuất lẻ theo remainingQty mà không cần nhét cấu trúc vào serialLot.
+        await db.run(`CREATE TABLE IF NOT EXISTS stock_document_line_lots (
+          id VARCHAR(191) PRIMARY KEY, documentLineId VARCHAR(191) NOT NULL,
+          lotId VARCHAR(191) NOT NULL, quantity DOUBLE NOT NULL DEFAULT 0,
+          createdBy VARCHAR(191) NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_document_line_lot (documentLineId, lotId),
+          INDEX idx_sdll_line (documentLineId),
+          INDEX idx_sdll_lot (lotId)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+      });
+
+      await runVersionedMigration(db, 35, 'stock_transfer_line_lot_links', async () => {
+        await db.run(`CREATE TABLE IF NOT EXISTS stock_transfer_line_lots (
+          id VARCHAR(191) PRIMARY KEY, documentLineId VARCHAR(191) NOT NULL,
+          sourceLotId VARCHAR(191) NOT NULL, destLotId VARCHAR(191) NULL,
+          quantity DOUBLE NOT NULL DEFAULT 0, createdBy VARCHAR(191) NULL,
+          createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_transfer_line_source_lot (documentLineId, sourceLotId),
+          INDEX idx_stll_line (documentLineId), INDEX idx_stll_source_lot (sourceLotId),
+          INDEX idx_stll_dest_lot (destLotId)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+      });
+
+      await runVersionedMigration(db, 36, 'new_stock_documents_require_serials', async () => {
+        // Snapshot theo dòng: chỉ phiếu tạo sau migration mới bắt buộc quét Serial.
+        await ensureColumn('stock_document_lines', 'serialRequired', '`serialRequired` TINYINT(1) NOT NULL DEFAULT 0');
+      });
+
+      await runVersionedMigration(db, 37, 'stock_line_serial_skip_confirmation', async () => {
+        await ensureColumn('stock_document_lines', 'serialSkipped', '`serialSkipped` TINYINT(1) NOT NULL DEFAULT 0');
+      });
+
+      await runVersionedMigration(db, 38, 'backfill_product_tracking_from_stock_entities', async () => {
+        // Legacy products were created before tracking was persisted and defaulted
+        // to NONE. Infer only from durable stock entities; do not touch an explicit
+        // SERIAL/LOT/QUANTITY configuration.
+        await db.run(`UPDATE products p SET tracking = 'SERIAL'
+          WHERE (p.tracking IS NULL OR p.tracking = '' OR p.tracking = 'NONE')
+            AND EXISTS (SELECT 1 FROM stock_serials s
+              WHERE s.productId = p.id AND s.serialNumber IS NOT NULL AND TRIM(s.serialNumber) <> '')`);
+        await db.run(`UPDATE products p SET tracking = 'LOT'
+          WHERE (p.tracking IS NULL OR p.tracking = '' OR p.tracking = 'NONE')
+            AND EXISTS (SELECT 1 FROM stock_lots l WHERE l.productId = p.id)`);
+        // NONE in legacy data means quantity-managed for inventory display and
+        // availability calculations. New product forms may still choose NONE
+        // before a tracking policy is configured.
+        await db.run(`UPDATE products SET tracking = 'QUANTITY'
+          WHERE tracking IS NULL OR tracking = '' OR tracking = 'NONE'`);
+      });
+
+      await runVersionedMigration(db, 39, 'warehouse_activity_logs', async () => {
+        await db.run(`CREATE TABLE IF NOT EXISTS warehouse_activity_logs (
+          id VARCHAR(191) PRIMARY KEY,
+          actionType VARCHAR(64) NOT NULL,
+          entityType VARCHAR(64) NOT NULL,
+          entityId VARCHAR(191) NULL,
+          documentId VARCHAR(191) NULL,
+          documentCode VARCHAR(191) NULL,
+          productId VARCHAR(191) NULL,
+          serialId VARCHAR(191) NULL,
+          lotId VARCHAR(191) NULL,
+          warehouseId VARCHAR(191) NULL,
+          fromWarehouseId VARCHAR(191) NULL,
+          toWarehouseId VARCHAR(191) NULL,
+          quantity DOUBLE NULL,
+          unit VARCHAR(32) NULL,
+          userId VARCHAR(191) NULL,
+          oldData TEXT NULL,
+          newData TEXT NULL,
+          metadata TEXT NULL,
+          createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_wh_activity_created (createdAt),
+          INDEX idx_wh_activity_action (actionType, createdAt),
+          INDEX idx_wh_activity_document (documentId, createdAt),
+          INDEX idx_wh_activity_user (userId, createdAt),
+          INDEX idx_wh_activity_product (productId, createdAt),
+          INDEX idx_wh_activity_serial (serialId, createdAt),
+          INDEX idx_wh_activity_lot (lotId, createdAt),
+          INDEX idx_wh_activity_warehouse (warehouseId, createdAt)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+      });
+
+      await runVersionedMigration(db, 40, 'remove_hardcoded_stock_account_defaults', async () => {
+        // Giữ nguyên dữ liệu cũ, chỉ bỏ default tài khoản kế toán cứng để
+        // chứng từ mới phải lấy từ mapping hoặc cấu hình được phân quyền.
+        await db.run("ALTER TABLE stock_document_lines MODIFY accountDebit VARCHAR(32) NULL DEFAULT NULL");
+        await db.run("ALTER TABLE stock_document_lines MODIFY accountCredit VARCHAR(32) NULL DEFAULT NULL");
+      });
+
+      await runVersionedMigration(db, 41, 'canonicalize_misa_mapping_entity_types', async () => {
+        // Tên type cũ ở UI viết thường, trong khi resolver kế toán dùng tên
+        // chuẩn viết hoa. Giữ nguyên mapping, chỉ chuẩn hóa loại để không mất
+        // dữ liệu và để một mapping được dùng nhất quán bởi ledger/reconcile.
+        // Nếu bản ghi canonical đã tồn tại, ưu tiên nó và bỏ bản legacy trùng.
+        await db.run(`DELETE legacy FROM misa_mappings legacy
+          INNER JOIN misa_mappings canonical
+            ON canonical.entityId = legacy.entityId
+           AND canonical.entityType = CASE legacy.entityType
+             WHEN 'product' THEN 'PRODUCT_ITEM'
+             WHEN 'warehouse' THEN 'WAREHOUSE'
+             WHEN 'project' THEN 'PROJECT'
+             WHEN 'document' THEN 'DOCUMENT'
+             ELSE legacy.entityType END
+          WHERE legacy.entityType IN ('product', 'warehouse', 'project', 'document')`);
+        await db.run(`UPDATE misa_mappings SET entityType = CASE entityType
+          WHEN 'product' THEN 'PRODUCT_ITEM'
+          WHEN 'warehouse' THEN 'WAREHOUSE'
+          WHEN 'project' THEN 'PROJECT'
+          WHEN 'document' THEN 'DOCUMENT'
+          ELSE entityType END
+          WHERE entityType IN ('product', 'warehouse', 'project', 'document')`);
       });
 
 

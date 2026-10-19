@@ -73,9 +73,9 @@ describe('warehouse stock integrity regressions', () => {
   });
 
   it('serializes concurrent completion and posts a document only once', async () => {
-    const f = fixture({ type: 'RECEIPT', quantities: [5] });
+    const f = fixture({ type: 'RECEIPT', quantities: [5], status: 'READY' });
     const responses = await Promise.all([1,2].map(() => request(f.app).post('/receipts/d1/complete').send({})));
-    expect(responses.map(response => response.status).sort()).toEqual([200,400]);
+    expect(responses.map(response => response.status).sort()).toEqual([200,200]);
     expect(f.balance.onHand).toBe(15);
     expect(f.writes.filter(write => write.sql.includes('INSERT INTO stock_moves'))).toHaveLength(1);
   });
@@ -117,7 +117,7 @@ describe('warehouse stock integrity regressions', () => {
   });
 
   it('blocks stock posting while a count is open', async () => {
-    const f = fixture({ counting: true });
+    const f = fixture({ counting: true, status: 'READY' });
     await request(f.app).post('/issues/d1/complete').send({}).expect(409);
     expect(f.balance.onHand).toBe(10);
   });

@@ -4,25 +4,28 @@ import { apiFetch } from '../../services/api';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useNavigate } from 'react-router-dom';
-import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, Copy, Trash2, Camera, ListChecks, FileText, Calendar, Building2, User } from 'lucide-react';
+import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, Copy, Trash2, ListChecks, FileText, Calendar, Building2, User } from 'lucide-react';
 import { Card } from '../../components/UI';
+import { Pagination } from '../../components/Pagination';
+import { FeedbackDialog } from '../../components/FeedbackDialog';
 import {
-  getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
+  getStockDocuments, getWarehouses, getAvailableInventory, getInventoryDetails, createReceipt, createIssue, createReturn, createTransfer,
   advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, deleteStockDocument, countLinesMissingSerials, getProcessingSummary,
   type StockDocument, type StockDocLine, type Warehouse, type ProcessingSummary,
-  type PartnerSuggestion, type PartnerSuggestionsData, type StockDocDetailLine,
+  type PartnerSuggestion, type PartnerSuggestionsData, type StockDocDetailLine, type AvailableInventoryRow, type InventoryDetails,
 } from '../../services/stockService';
 import { getProducts, type Product } from '../../services/productService';
-import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
+import { getDeptHomePath, getDeptModulePath } from '../../components/layout/menus/departmentMenus';
 import { useData } from '../../contexts/DataContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { useNotifications } from '../../contexts/NotificationContext';
+import { levelOf, LEVELS } from '../../utils/rbac';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
 
 
 import { KIND_META, STATUS_LABEL, type Kind } from './StockDocs/meta';
 import { DocDetailModal } from './StockDocs/DocDetailModal';
 import { DocCreateModal } from './StockDocs/DocCreateModal';
-import { SerialBulkModal } from './StockDocs/SerialBulkModal';
 
 // Trang chứng từ kho dùng chung cho Nhập/Xuất/Điều chuyển (§13–18).
 export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kind: Kind }) {
@@ -37,22 +40,60 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
   const [showCreate, setShowCreate] = useState(false);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{
+    title: string; message: string; tone?: 'warning' | 'error' | 'success'; docId?: string;
+    action?: 'processing' | 'count';
+  } | null>(null);
+  const [inventory, setInventory] = useState<AvailableInventoryRow[]>([]);
+  const [inventoryTotal, setInventoryTotal] = useState(0);
+  const [inventoryLoading, setInventoryLoading] = useState(false);
+  const [inventoryError, setInventoryError] = useState<string | null>(null);
+  const [inventoryQuery, setInventoryQuery] = useState('');
+  const [inventoryWarehouse, setInventoryWarehouse] = useState('');
+  const [inventoryTracking, setInventoryTracking] = useState('');
+  const [inventoryOnlyAvailable, setInventoryOnlyAvailable] = useState(true);
+  const [inventoryPage, setInventoryPage] = useState(1);
+  const [inventoryPageSize, setInventoryPageSize] = useState(10);
+  const [inventoryDetails, setInventoryDetails] = useState<InventoryDetails | null>(null);
+  const [inventoryDetailsLoading, setInventoryDetailsLoading] = useState(false);
+  const [inventoryDetailsError, setInventoryDetailsError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [hasMore, setHasMore] = useState(false);
+  const [datePreset, setDatePreset] = useState<'ALL' | 'TODAY' | 'MONTH' | 'YEAR'>('ALL');
   const { users } = useData();
+  const { user } = useAuth();
+  // Đồng bộ với requireWarehouseManager ở backend: Admin không thực hiện
+  // nghiệp vụ kho, còn Trưởng phòng trở lên được cấu hình hạch toán.
+  const canEditFinancials = levelOf(user) >= LEVELS.MANAGER && levelOf(user) !== LEVELS.ADMIN;
   const navigate = useNavigate();
   const { showToast } = useNotifications();
 
-  const serialProcessPath = (docId: string) =>
-    `${getDeptHomePath(deptKey) || '/dept/warehouse'}?m=wh_serial&documentId=${docId}`;
+  const processingPath = (docId: string) =>
+    getDeptModulePath(deptKey, 'wh_processing', { documentId: docId });
+  const countPath = () => getDeptModulePath(deptKey, 'wh_count');
+
+  const dateRange = () => {
+    if (datePreset === 'ALL') return {};
+    const now = new Date();
+    const start = datePreset === 'TODAY' ? new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      : datePreset === 'MONTH' ? new Date(now.getFullYear(), now.getMonth(), 1)
+      : new Date(now.getFullYear(), 0, 1);
+    const end = datePreset === 'TODAY' ? new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)
+      : datePreset === 'MONTH' ? new Date(now.getFullYear(), now.getMonth() + 1, 1)
+      : new Date(now.getFullYear() + 1, 0, 1);
+    return { from: start.toISOString(), to: end.toISOString() };
+  };
 
   const fetchAll = async () => {
     setLoading(true); setError(null);
     try {
       const [d, w, s] = await Promise.all([
-        getStockDocuments({ docType: kind }),
+        getStockDocuments({ docType: kind, ...dateRange(), limit: pageSize + 1, offset: (page - 1) * pageSize }),
         getWarehouses().catch(() => [] as Warehouse[]),
         getProcessingSummary({ docType: kind }).catch(() => ({}) as ProcessingSummary),
       ]);
-      setDocs(d); setWarehouses(w); setSummary(s);
+      setHasMore(d.length > pageSize); setDocs(d.slice(0, pageSize)); setWarehouses(w); setSummary(s);
       getProducts().then(setProducts).catch(() => {});
     } catch (e: any) {
       setError(e.message || 'Không tải được chứng từ');
@@ -61,7 +102,27 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
     }
   };
 
-  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [kind]);
+  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [kind, page, pageSize, datePreset]);
+  useEffect(() => { setPage(1); }, [kind]);
+  const visibleDocs = docs;
+
+  useEffect(() => {
+    if (!['RECEIPT', 'ISSUE', 'TRANSFER'].includes(kind)) { setInventory([]); setInventoryTotal(0); return; }
+    let cancelled = false;
+    setInventoryLoading(true); setInventoryError(null);
+    getAvailableInventory({
+      q: inventoryQuery.trim() || undefined,
+      warehouseId: inventoryWarehouse || undefined,
+      tracking: inventoryTracking || undefined,
+      onlyAvailable: inventoryOnlyAvailable,
+      limit: inventoryPageSize,
+      offset: (inventoryPage - 1) * inventoryPageSize,
+    }).then((result) => { if (!cancelled) { setInventory(result.rows); setInventoryTotal(result.total); } })
+      .catch((e: any) => { if (!cancelled) setInventoryError(e.message || 'Không tải được tồn kho khả dụng'); })
+      .finally(() => { if (!cancelled) setInventoryLoading(false); });
+    return () => { cancelled = true; };
+  }, [kind, inventoryQuery, inventoryWarehouse, inventoryTracking, inventoryOnlyAvailable, inventoryPage, inventoryPageSize]);
+  useEffect(() => { setInventoryPage(1); }, [kind, inventoryQuery, inventoryWarehouse, inventoryTracking, inventoryOnlyAvailable]);
 
   const act = async (id: string, fn: () => Promise<unknown>, doneMsg: string, okToast?: { title: string; message: string }) => {
     setActingId(id); setError(null);
@@ -71,7 +132,19 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
       if (okToast) showToast({ type: 'success', title: okToast.title, message: okToast.message });
       return true;
     } catch (e: any) {
-      setError(e.message || doneMsg);
+      const message = e.message || doneMsg;
+      if (e.status === 409 && /kiểm kê|đang đếm/i.test(message)) {
+        setNotice({
+          title: 'Chưa thể hoàn tất vì kho đang kiểm kê',
+          message: 'Kho này đang có đợt kiểm kê ở trạng thái “Đang đếm”. Hãy hoàn tất hoặc hủy đợt kiểm kê trước khi ghi nhận phiếu; như vậy số liệu kiểm kê sẽ không bị thay đổi giữa chừng.',
+          tone: 'warning',
+          action: 'count',
+        });
+      } else if (/serial/i.test(message)) {
+        setNotice({ title: 'Serial không hợp lệ', message, docId: id, action: 'processing', tone: 'error' });
+      } else {
+        setError(message);
+      }
       return false;
     } finally {
       setActingId(null);
@@ -81,27 +154,28 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
   const whName = (id: string | null) => warehouses.find((w) => w.id === id)?.name || id || '—';
 
   const completeWithCheck = async (d: StockDocument, fn: () => Promise<unknown>, failMsg: string) => {
-    // NV tự quyết từng dòng: chỉ cảnh báo khi thiếu serial, không chặn cứng.
-    // (Luồng chính đã bắt quét đủ serial trước nút Hoàn tất; đây là lưới an toàn.)
-    if (d.docType !== 'TRANSFER') {
-      try {
-        const detail = await getStockDocument(d.id);
-        const missing = countLinesMissingSerials(detail.lines || []);
-        if (missing > 0 && !window.confirm(`Có ${missing} dòng chưa nhập serial/bảo hành. Vẫn hoàn thành phiếu?`)) return;
-      } catch { /* không tải được chi tiết thì vẫn cho hoàn thành */ }
+    // Bước xử lý hàng hóa là điều kiện bắt buộc để backend chuyển phiếu sang READY.
+    // Không gửi yêu cầu hoàn tất một phiếu nháp rồi trả về lỗi 400 cho người dùng.
+    if (d.status !== 'READY') {
+      setNotice({
+        title: 'Phiếu chưa sẵn sàng hoàn tất',
+        message: 'Hãy xử lý và xác nhận đầy đủ hàng hóa trước. Sau khi phiếu chuyển sang “Sẵn sàng hoàn tất”, bạn mới có thể ghi nhận tồn kho.',
+        docId: d.id,
+        action: 'processing',
+      });
+      return;
     }
     const ok = await act(d.id, fn, failMsg);
     if (ok) {
-      const done = d.docType === 'RECEIPT' ? 'nhập kho' : d.docType === 'ISSUE' ? 'xuất kho' : 'điều chuyển';
+      const done = d.docType === 'RECEIPT' ? 'nhập kho' : d.docType === 'ISSUE' ? 'xuất kho' : d.docType === 'RETURN' ? 'nhận lại hàng' : 'điều chuyển';
       showToast({
         type: 'success',
-        title: `✅ Hoàn tất ${d.docType === 'RECEIPT' ? 'nhập kho' : d.docType === 'ISSUE' ? 'giao hàng' : 'điều chuyển'}`,
+        title: `✅ Hoàn tất ${d.docType === 'RECEIPT' ? 'nhập kho' : d.docType === 'ISSUE' ? 'giao hàng' : d.docType === 'RETURN' ? 'nhận lại hàng' : 'điều chuyển'}`,
         message: `Phiếu ${d.code || d.id.slice(0, 8)} đã ${done} thành công. Tồn kho và serial đã được cập nhật.`,
       });
     }
   };
 
-  const [serialBulkId, setSerialBulkId] = useState<string | null>(null);
 
   // Menu chuột phải: mặc định click = xem, chuột phải chọn Nhân bản / Sửa / Xóa.
   const [menu, setMenu] = useState<{ x: number; y: number; docId: string } | null>(null);
@@ -145,7 +219,8 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
         vatRate: Number((l as any).vatRate ?? 8),
         vatAmount: (l as any).vatAmount ?? undefined,
         totalAmount: (l as any).totalAmount ?? undefined,
-        serialLot: (l as any).serialLot ?? undefined,
+        // Nhân bản là một phiếu mới: không mang theo Serial/Lô đã xử lý của phiếu gốc.
+        // Người dùng sẽ nhập/quét lại Serial ở bước Xử lý hàng hóa.
         accountDebit: (l as any).accountDebit || undefined,
         accountCredit: (l as any).accountCredit || undefined,
         projectId: (l as any).projectId || undefined,
@@ -173,7 +248,9 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
         };
         created = detail.docType === 'RECEIPT'
           ? await createReceipt({ warehouseId: detail.warehouseId!, lines: cleanLines, notes, ...header })
-          : await createIssue({ warehouseId: detail.warehouseId!, lines: cleanLines, notes, ...header });
+          : detail.docType === 'RETURN'
+            ? await createReturn({ warehouseId: detail.warehouseId!, lines: cleanLines, notes, ...header })
+            : await createIssue({ warehouseId: detail.warehouseId!, lines: cleanLines, notes, ...header });
       }
       await fetchAll();
       // Mở form sửa của phiếu mới để duyệt lại như khi tạo mới, thay vì màn chi tiết.
@@ -196,6 +273,16 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
           className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-md transition-colors">
           <PlusCircle size={16} /> Tạo phiếu
         </button>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-sm text-gray-500">Lọc nhanh:</span>
+        {([['ALL', 'Tất cả'], ['TODAY', 'Hôm nay'], ['MONTH', 'Tháng này'], ['YEAR', 'Năm nay']] as const).map(([value, label]) => (
+          <button key={value} onClick={() => { setDatePreset(value); setPage(1); }}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${datePreset === value ? 'bg-emerald-50 border-emerald-300 text-emerald-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
+            {label}
+          </button>
+        ))}
       </div>
 
       {error && (
@@ -235,7 +322,7 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {docs.map((d) => {
+                {visibleDocs.map((d) => {
                   const st = STATUS_LABEL[d.status] || STATUS_LABEL.DRAFT;
                   const route = d.docType === 'TRANSFER' ? `${whName(d.sourceWarehouseId)} → ${whName(d.destWarehouseId)}` : whName(d.warehouseId);
                   return (
@@ -277,19 +364,19 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                       </td>
                       <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-center gap-1.5">
-                          {d.status === 'DRAFT' && kind !== 'TRANSFER' && (Number(d.missingSerials) || 0) > 0 && (
-                            <button disabled={actingId === d.id} onClick={() => setSerialBulkId(d.id)}
+                          {(d.status === 'DRAFT' || d.status === 'PROCESSING') && (
+                            <button disabled={actingId === d.id} onClick={() => navigate(processingPath(d.id))}
                               className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors shadow-sm whitespace-nowrap">
-                              <Camera size={12} />Quét serial ({Number(d.missingSerials)})
+                              <ListChecks size={12} />Xử lý hàng hóa
                             </button>
                           )}
-                          {d.status === 'DRAFT' && kind !== 'TRANSFER' && !((Number(d.missingSerials) || 0) > 0) && (
-                            <button disabled={actingId === d.id} onClick={() => completeWithCheck(d, () => advanceDocument(kind === 'RECEIPT' ? 'receipts' : 'issues', d.id, 'complete'), 'Hoàn tất thất bại')}
+                          {d.status === 'READY' && kind !== 'TRANSFER' && (
+                            <button disabled={actingId === d.id} onClick={() => completeWithCheck(d, () => advanceDocument(kind === 'RECEIPT' ? 'receipts' : kind === 'RETURN' ? 'returns' : 'issues', d.id, 'complete'), 'Hoàn tất thất bại')}
                               className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors shadow-sm whitespace-nowrap">
                               {actingId === d.id ? <RefreshCw size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}{meta.actionDone}
                             </button>
                           )}
-                          {d.status === 'DRAFT' && kind === 'TRANSFER' && (
+                          {d.status === 'READY' && kind === 'TRANSFER' && (
                             <button disabled={actingId === d.id} onClick={() => act(d.id, () => advanceTransfer(d.id, 'ship'), 'Gửi hàng thất bại')}
                               className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold disabled:opacity-60 transition-colors shadow-sm whitespace-nowrap">
                               {actingId === d.id ? <RefreshCw size={12} className="animate-spin" /> : <Truck size={12} />}Xác nhận gửi
@@ -298,7 +385,7 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                           {d.status === 'IN_TRANSIT' && kind === 'TRANSFER' && (
                             <ReceiveTransferButton id={d.id} warehouseId={d.destWarehouseId!} onDone={fetchAll} />
                           )}
-                          {d.status !== 'DRAFT' && !(d.status === 'IN_TRANSIT' && kind === 'TRANSFER') && (
+                          {d.status !== 'DRAFT' && d.status !== 'PROCESSING' && !(d.status === 'IN_TRANSIT' && kind === 'TRANSFER') && (
                             <span className="text-gray-300 text-xs">—</span>
                           )}
                         </div>
@@ -322,7 +409,7 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                             return (
                               <button
                                 type="button"
-                                onClick={() => navigate(serialProcessPath(d.id))}
+                                onClick={() => navigate(processingPath(d.id))}
                                 className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold transition-colors ${ready
                                   ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
                                   : 'bg-amber-50 text-amber-700 hover:bg-amber-100'}`}
@@ -342,6 +429,40 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
           </div>
         </Card>
       )}
+      {!loading && docs.length > 0 && <Pagination currentPage={page} totalPages={hasMore ? page + 1 : page} onPageChange={setPage} itemsPerPage={pageSize} onItemsPerPageChange={(size) => { setPageSize(size); setPage(1); }} />}
+
+      {['RECEIPT', 'ISSUE', 'TRANSFER'].includes(kind) && (
+        <AvailableInventoryPanel
+          kind={kind}
+          rows={inventory}
+          warehouses={warehouses}
+          loading={inventoryLoading}
+          error={inventoryError}
+          query={inventoryQuery}
+          warehouseId={inventoryWarehouse}
+          tracking={inventoryTracking}
+          onlyAvailable={inventoryOnlyAvailable}
+          page={inventoryPage}
+          pageSize={inventoryPageSize}
+          totalRows={inventoryTotal}
+          onPageChange={setInventoryPage}
+          onPageSizeChange={(size) => { setInventoryPageSize(size); setInventoryPage(1); }}
+          onQuery={setInventoryQuery}
+          onWarehouse={setInventoryWarehouse}
+          onTracking={setInventoryTracking}
+          onOnlyAvailable={setInventoryOnlyAvailable}
+          onView={async (row) => {
+            setInventoryDetailsLoading(true); setInventoryDetailsError(null);
+            try { setInventoryDetails(await getInventoryDetails(row.productId, row.warehouseId)); }
+            catch (e: any) { setInventoryDetailsError(e.message || 'Không tải được chi tiết tồn kho'); }
+            finally { setInventoryDetailsLoading(false); }
+          }}
+        />
+      )}
+
+      {inventoryDetailsLoading && <div className="fixed inset-0 z-[70] bg-slate-900/30 flex items-center justify-center"><div className="rounded-xl bg-white px-5 py-4 text-sm text-gray-600 shadow-xl">Đang tải chi tiết tồn kho...</div></div>}
+      {inventoryDetailsError && <FeedbackDialog title="Không tải được tồn kho" message={inventoryDetailsError} tone="error" onClose={() => setInventoryDetailsError(null)} />}
+      {inventoryDetails && <InventoryDetailsModal details={inventoryDetails} onClose={() => setInventoryDetails(null)} />}
 
       {selectedDocId && (
         <DocDetailModal
@@ -351,37 +472,29 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
           onClose={() => setSelectedDocId(null)}
           onUpdated={fetchAll}
           onEdit={(id) => { setSelectedDocId(null); setEditingId(id); }}
+          deptKey={deptKey}
         />
       )}
 
       {showCreate && (
         <DocCreateModal
           kind={kind} warehouses={warehouses} products={products} users={users.map((u: any) => ({ id: u.id, name: u.name }))}
+          canEditFinancials={canEditFinancials}
           onClose={() => setShowCreate(false)}
           onDone={async (created) => {
             setShowCreate(false);
             await fetchAll();
-            // Tạo xong chuyển thẳng sang xử lý Serial/Lô (phiếu nhập/xuất).
+            // Tạo xong chuyển thẳng sang hàng đợi Xử lý phiếu.
             if (created?.id && kind !== 'TRANSFER') {
               showToast({
                 type: 'success',
                 title: `Đã tạo phiếu ${created.code || ''}`.trim(),
-                message: 'Chuyển sang xử lý Serial/Lô — đủ hàng mới được bấm Hoàn tất.',
+                message: 'Chuyển sang Xử lý phiếu — đủ hàng mới được bấm Hoàn tất.',
               });
-              navigate(serialProcessPath(created.id));
+              navigate(processingPath(created.id));
             }
           }}
           onError={setError}
-        />
-      )}
-
-      {serialBulkId && (
-        <SerialBulkModal
-          key={serialBulkId}
-          docId={serialBulkId}
-          kind={kind === 'TRANSFER' ? 'RECEIPT' : kind}
-          onClose={() => setSerialBulkId(null)}
-          onCompleted={async () => { setSerialBulkId(null); await fetchAll(); }}
         />
       )}
 
@@ -389,10 +502,25 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
         <DocCreateModal
           key={editingId}
           kind={kind} warehouses={warehouses} products={products} users={users.map((u: any) => ({ id: u.id, name: u.name }))}
+          canEditFinancials={canEditFinancials}
           editingId={editingId}
           onClose={() => setEditingId(null)}
           onDone={async () => { setEditingId(null); await fetchAll(); }}
           onError={setError}
+        />
+      )}
+
+      {notice && (
+        <FeedbackDialog
+          title={notice.title}
+          message={notice.message}
+          tone={notice.tone}
+          actionLabel={notice.action === 'count' ? 'Mở Kiểm kê' : notice.action === 'processing' ? 'Mở trang xử lý phiếu' : undefined}
+          onAction={notice.action ? () => {
+            setNotice(null);
+            navigate(notice.action === 'count' ? countPath() : processingPath(notice.docId!));
+          } : undefined}
+          onClose={() => setNotice(null)}
         />
       )}
 
@@ -459,6 +587,147 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
       <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">
         ← Về tổng quan kho vận
       </Link>
+    </div>
+  );
+}
+
+function AvailableInventoryPanel({
+  kind, rows, warehouses, loading, error, query, warehouseId, tracking, onlyAvailable,
+  page, pageSize, totalRows, onPageChange, onPageSizeChange,
+  onQuery, onWarehouse, onTracking, onOnlyAvailable,
+  onView,
+}: {
+  kind: Kind;
+  rows: AvailableInventoryRow[];
+  warehouses: Warehouse[];
+  loading: boolean;
+  error: string | null;
+  query: string;
+  warehouseId: string;
+  tracking: string;
+  onlyAvailable: boolean;
+  page: number;
+  pageSize: number;
+  totalRows: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
+  onQuery: (value: string) => void;
+  onWarehouse: (value: string) => void;
+  onTracking: (value: string) => void;
+  onOnlyAvailable: (value: boolean) => void;
+  onView: (row: AvailableInventoryRow) => void;
+}) {
+  const trackingLabel = (value: string | null) => value === 'SERIAL' ? 'Serial' : value === 'LOT' ? 'Lô' : value === 'QUANTITY' || value === 'NONE' || !value ? 'Số lượng' : value;
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+  const helperText = kind === 'ISSUE'
+    ? 'Tồn thực tế trừ số lượng đang giữ cho các phiếu xuất chưa hoàn tất.'
+    : kind === 'TRANSFER'
+      ? 'Tồn khả dụng tại các kho nguồn để kiểm tra trước khi điều chuyển.'
+      : 'Tồn hiện tại để tham khảo khi tiếp nhận hàng vào kho.';
+  return (
+    <Card className="overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-100 flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="font-bold text-gray-800">Tồn kho khả dụng</h2>
+          <p className="text-xs text-gray-400 mt-0.5">{helperText}</p>
+        </div>
+        <span className="text-xs text-gray-400">{rows.length} dòng</span>
+      </div>
+      <div className="p-3 border-b border-gray-100 bg-gray-50/60 flex flex-wrap gap-2">
+        <input value={query} onChange={(e) => onQuery(e.target.value)} placeholder="Tìm sản phẩm / mã / Serial / thương hiệu..."
+          className="flex-1 min-w-[220px] px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500" />
+        <select value={warehouseId} onChange={(e) => onWarehouse(e.target.value)} className="px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm text-gray-700 outline-none focus:border-emerald-500">
+          <option value="">Tất cả kho</option>
+          {warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
+        </select>
+        <select value={tracking} onChange={(e) => onTracking(e.target.value)} className="px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm text-gray-700 outline-none focus:border-emerald-500">
+          <option value="">Tất cả loại quản lý</option>
+          <option value="SERIAL">Serial</option>
+          <option value="LOT">Lô</option>
+          <option value="QUANTITY">Số lượng</option>
+        </select>
+        <label className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white border border-gray-200 text-sm text-gray-700 cursor-pointer">
+          <input type="checkbox" checked={onlyAvailable} onChange={(e) => onOnlyAvailable(e.target.checked)} className="accent-emerald-600" />
+          Còn khả dụng
+        </label>
+      </div>
+      {error && <p className="m-3 p-3 rounded-xl bg-red-50 border border-red-200 text-sm text-red-600">{error}</p>}
+      {loading ? (
+        <div className="py-8 text-center text-sm text-gray-400">Đang tải tồn kho...</div>
+      ) : rows.length === 0 ? (
+        <div className="py-8 text-center text-sm text-gray-400">Không có tồn kho phù hợp với bộ lọc.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Mã SP / Sản phẩm</th>
+                <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">Kho</th>
+                <th className="text-right py-2 px-3 text-xs font-bold text-gray-500 uppercase">Tồn thực tế</th>
+                <th className="text-right py-2 px-3 text-xs font-bold text-gray-500 uppercase">Đang giữ</th>
+                <th className="text-right py-2 px-3 text-xs font-bold text-gray-500 uppercase">Khả dụng</th>
+                <th className="text-center py-2 px-3 text-xs font-bold text-gray-500 uppercase">Quản lý</th>
+                <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Thao tác</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {rows.map((row) => (
+                <tr key={`${row.productId}:${row.warehouseId}`} className="hover:bg-emerald-50/40">
+                  <td className="py-2.5 px-4">
+                    <div className="font-mono text-xs font-bold text-gray-700">{row.productId}</div>
+                    <div className="text-xs text-gray-600 mt-0.5">{row.productName || '—'}</div>
+                  </td>
+                  <td className="py-2.5 px-3 text-xs text-gray-600">{row.warehouseName || row.warehouseId}</td>
+                  <td className="py-2.5 px-3 text-right font-mono text-xs">{Number(row.onHand).toLocaleString('vi-VN')} {row.unit || ''}</td>
+                  <td className="py-2.5 px-3 text-right font-mono text-xs text-amber-700">{Number(row.reserved).toLocaleString('vi-VN')} {row.unit || ''}</td>
+                  <td className="py-2.5 px-3 text-right font-mono text-xs font-bold text-emerald-700">{Number(row.available).toLocaleString('vi-VN')} {row.unit || ''}</td>
+                  <td className="py-2.5 px-3 text-center"><span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-[11px] font-bold">{trackingLabel(row.tracking)}</span></td>
+                  <td className="py-2.5 px-4 text-right"><button type="button" onClick={() => onView(row)} className="px-2.5 py-1 rounded-lg text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100">Xem</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!loading && totalRows > 0 && (
+        <div className="px-4 pb-4">
+          <Pagination
+            currentPage={page}
+            totalPages={totalPages}
+            onPageChange={onPageChange}
+            totalItems={totalRows}
+            itemsPerPage={pageSize}
+            onItemsPerPageChange={onPageSizeChange}
+          />
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function InventoryDetailsModal({ details, onClose }: { details: InventoryDetails; onClose: () => void }) {
+  const formatDate = (value?: string | null) => value ? new Date(value).toLocaleDateString('vi-VN') : '—';
+  const isSerial = details.product.tracking === 'SERIAL';
+  return (
+    <div className="fixed inset-0 z-[75] bg-slate-900/45 backdrop-blur-[2px] p-3 sm:p-6 flex items-center justify-center" role="dialog" aria-modal="true">
+      <div className="w-full max-w-6xl max-h-[92vh] overflow-y-auto rounded-3xl bg-white shadow-2xl">
+        <div className="sticky top-0 z-10 px-5 py-4 border-b border-gray-100 bg-white flex items-start justify-between gap-3">
+          <div><p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Chi tiết tồn kho</p><h2 className="text-xl font-bold text-gray-800 mt-1">{details.product.name}</h2><p className="text-xs text-gray-500 mt-1">{details.product.id} · {details.warehouse.name}</p></div>
+          <button type="button" onClick={onClose} className="px-3 py-2 rounded-xl border border-gray-200 text-sm font-bold text-gray-600 hover:bg-gray-50">Đóng</button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="grid grid-cols-3 gap-2 sm:gap-4">
+            <div className="rounded-xl bg-gray-50 p-3"><p className="text-xs text-gray-500">Tồn thực tế</p><b className="text-lg">{Number(details.summary.onHand).toLocaleString('vi-VN')} {details.product.unit || ''}</b></div>
+            <div className="rounded-xl bg-amber-50 p-3"><p className="text-xs text-amber-700">Đang giữ</p><b className="text-lg text-amber-800">{Number(details.summary.reserved).toLocaleString('vi-VN')} {details.product.unit || ''}</b></div>
+            <div className="rounded-xl bg-emerald-50 p-3"><p className="text-xs text-emerald-700">Khả dụng</p><b className="text-lg text-emerald-800">{Number(details.summary.available).toLocaleString('vi-VN')} {details.product.unit || ''}</b></div>
+          </div>
+          {isSerial ? (
+            <div className="overflow-x-auto border border-gray-100 rounded-xl"><table className="w-full text-sm"><thead className="bg-gray-50"><tr>{['Serial','Ngày nhập','Phiếu nhập','NCC','Trạng thái','Phiếu xuất'].map((h) => <th key={h} className="text-left px-3 py-2 text-xs font-bold text-gray-500 uppercase">{h}</th>)}</tr></thead><tbody className="divide-y divide-gray-50">{details.serials.map((serial) => <tr key={serial.id}><td className="px-3 py-2 font-mono font-bold text-xs">{serial.serialNumber || '—'}</td><td className="px-3 py-2 text-xs">{formatDate(serial.receivedAt)}</td><td className="px-3 py-2 text-xs">{serial.receiptCode || '—'}</td><td className="px-3 py-2 text-xs">{serial.supplier || serial.receiptPartnerName || '—'}</td><td className="px-3 py-2"><span className="px-2 py-0.5 rounded-full bg-gray-100 text-xs font-bold">{serial.stockStatus}</span></td><td className="px-3 py-2 text-xs">{serial.issueCode || '—'}</td></tr>)}</tbody></table></div>
+          ) : (
+            <div className="overflow-x-auto border border-gray-100 rounded-xl"><table className="w-full text-sm"><thead className="bg-gray-50"><tr>{['Lô / phiếu nhập','Ngày nhập','SL nhập','Còn lại','Đã xuất','NCC','Kho'].map((h) => <th key={h} className="text-left px-3 py-2 text-xs font-bold text-gray-500 uppercase">{h}</th>)}</tr></thead><tbody className="divide-y divide-gray-50">{details.lots.map((lot) => <tr key={lot.id}><td className="px-3 py-2 text-xs"><b>{lot.lotCode}</b><div className="text-gray-400">{lot.receiptCode || '—'}</div></td><td className="px-3 py-2 text-xs">{formatDate(lot.receivedAt)}</td><td className="px-3 py-2 text-xs">{Number(lot.initialQty).toLocaleString('vi-VN')} {lot.unit || details.product.unit || ''}</td><td className="px-3 py-2 text-xs font-bold text-emerald-700">{Number(lot.remainingQty).toLocaleString('vi-VN')} {lot.unit || details.product.unit || ''}</td><td className="px-3 py-2 text-xs">{Number(lot.initialQty - lot.remainingQty).toLocaleString('vi-VN')} {lot.unit || details.product.unit || ''}</td><td className="px-3 py-2 text-xs">{lot.supplier || lot.receiptPartnerName || '—'}</td><td className="px-3 py-2 text-xs">{details.warehouse.name}</td></tr>)}</tbody></table></div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

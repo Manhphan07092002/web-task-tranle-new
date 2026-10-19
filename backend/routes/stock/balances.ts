@@ -42,6 +42,94 @@ export function balancesRoutes(ctx: StockContext) {
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch stock balances' }); }
   });
 
+  // Tồn khả dụng đã gom theo sản phẩm + kho. Dùng cho trang Xuất kho;
+  // không lấy products.remainingQuantity làm nguồn tồn.
+  router.get('/available-inventory', async (req, res) => {
+    try {
+      const user = req.user;
+      const scope = await listScope(user);
+      const { warehouseId, q, tracking, onlyAvailable } = req.query as Record<string, string | undefined>;
+      if (!isDirector(user)) {
+        if (warehouseId && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
+        if (!warehouseId && scope.length === 0) return res.json([]);
+      }
+
+      let query = `SELECT b.productId, b.warehouseId,
+          SUM(b.onHand) AS onHand, SUM(b.reserved) AS reserved,
+          SUM(CASE WHEN b.locationId = '' OR (l.isActive = 1 AND l.purpose = 'SALEABLE')
+            THEN b.onHand - b.reserved ELSE 0 END) AS available,
+          p.name AS productName, p.unit, p.category, p.origin, p.tracking,
+          w.code AS warehouseCode, w.name AS warehouseName
+        FROM stock_balances b
+        LEFT JOIN products p ON p.id = b.productId
+        LEFT JOIN warehouses w ON w.id = b.warehouseId
+        LEFT JOIN stock_locations l ON l.id = b.locationId
+        WHERE 1=1`;
+      const params: any[] = [];
+      if (warehouseId) { query += ' AND b.warehouseId = ?'; params.push(warehouseId); }
+      else if (!isDirector(user)) { query += ` AND b.warehouseId IN (${scope.map(() => '?').join(', ')})`; params.push(...scope); }
+      if (tracking?.trim()) { query += ' AND p.tracking = ?'; params.push(tracking.trim().toUpperCase()); }
+      if (q?.trim()) {
+        const term = `%${q.trim()}%`;
+        query += ` AND (p.name LIKE ? OR p.id LIKE ? OR p.origin LIKE ? OR p.category LIKE ?
+          OR EXISTS (SELECT 1 FROM stock_serials ss WHERE ss.productId = b.productId AND ss.warehouseId = b.warehouseId AND ss.serialNumber LIKE ?))`;
+        params.push(term, term, term, term, term);
+      }
+      const groupBy = ' GROUP BY b.productId, b.warehouseId, p.name, p.unit, p.category, p.origin, p.tracking, w.code, w.name';
+      query += groupBy;
+      if (onlyAvailable !== 'false') query += ' HAVING available > 0';
+      const totalRows = await db.get(`SELECT COUNT(*) AS total FROM (${query}) AS inventory_rows`, params);
+      query += ' ORDER BY w.name ASC, p.name ASC';
+      const page = paginationOf(req.query as Record<string, string | undefined>);
+      query += ' LIMIT ? OFFSET ?';
+      params.push(page.limit, page.offset);
+      res.setHeader('X-Total-Count', String(Number(totalRows?.total || 0)));
+      res.json(await db.all(query, params));
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch available inventory' }); }
+  });
+
+  router.get('/inventory/:productId/:warehouseId/details', async (req, res) => {
+    try {
+      const user = req.user;
+      const productId = String(req.params.productId);
+      const warehouseId = String(req.params.warehouseId);
+      const scope = await listScope(user);
+      if (!isDirector(user) && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      const product = await db.get('SELECT id, name, unit, category, origin, tracking FROM products WHERE id = ?', [productId]);
+      const warehouse = await db.get('SELECT id, code, name FROM warehouses WHERE id = ?', [warehouseId]);
+      if (!product || !warehouse) return res.status(404).json({ error: 'Không tìm thấy sản phẩm hoặc kho' });
+      const summary = await db.get(
+        `SELECT COALESCE(SUM(onHand), 0) AS onHand, COALESCE(SUM(reserved), 0) AS reserved,
+          COALESCE(SUM(CASE WHEN locationId = '' OR locationId IS NULL THEN onHand - reserved ELSE 0 END), 0) AS available
+         FROM stock_balances WHERE productId = ? AND warehouseId = ?`,
+        [productId, warehouseId]
+      );
+      const serials = await db.all(
+        `SELECT s.id, s.serialNumber, s.stockStatus, s.status, s.warehouseId, s.receivedAt, s.outDate,
+                s.supplier, s.receiptDocumentId, s.receiptLineId, s.issueDocumentId, s.issueLineId,
+                rd.code AS receiptCode, rd.partnerName AS receiptPartnerName,
+                idoc.code AS issueCode, idoc.partnerName AS issuePartnerName
+         FROM stock_serials s
+         LEFT JOIN stock_documents rd ON rd.id = s.receiptDocumentId
+         LEFT JOIN stock_documents idoc ON idoc.id = s.issueDocumentId
+         WHERE s.productId = ? AND s.warehouseId = ?
+         ORDER BY s.receivedAt DESC, s.createdAt DESC`,
+        [productId, warehouseId]
+      );
+      const lots = await db.all(
+        `SELECT l.id, l.lotCode, l.coilCode, l.initialQty, l.remainingQty, l.unit,
+                l.createdAt AS receivedAt, l.supplier, l.receiptDocumentId, l.receiptLineId,
+                d.code AS receiptCode, d.partnerName AS receiptPartnerName
+         FROM stock_lots l
+         LEFT JOIN stock_documents d ON d.id = l.receiptDocumentId
+         WHERE l.productId = ? AND l.warehouseId = ?
+         ORDER BY l.createdAt DESC`,
+        [productId, warehouseId]
+      );
+      res.json({ product, warehouse, summary, serials, lots });
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Không tải được chi tiết tồn kho' }); }
+  });
+
   // ── Gợi ý đối tác / nhà cung cấp / diễn giải ──────────────────────────────
 
   router.get('/partner-suggestions', async (req, res) => {

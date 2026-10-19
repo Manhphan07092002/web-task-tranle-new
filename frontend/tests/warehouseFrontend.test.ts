@@ -14,6 +14,7 @@ import {
   deptFirstItem,
   deptFindItem,
   getDeptHomePath,
+  getDeptModulePath,
 } from '../components/layout/menus/departmentMenus.js';
 import { resolveDeptKey, resolveDeptKeyById } from '../components/layout/menus/resolveDepartment.js';
 import type { User } from '../types.js';
@@ -128,8 +129,10 @@ describe('warehouse sidebar data', () => {
 
   it('routes every warehouse module, home goes to the overview', () => {
     expect(getDeptHomePath('WAREHOUSE')).toBe('/dept/warehouse?m=wh_overview');
+    expect(getDeptModulePath('WAREHOUSE', 'wh_serial', { documentId: 'doc-1' }))
+      .toBe('/dept/warehouse?m=wh_serial&documentId=doc-1');
     expect(getDeptHomePath('BOARD')).toBeNull();
-    for (const id of ['wh_stock', 'wh_receipt', 'wh_issue', 'wh_transfer', 'wh_count', 'wh_serial', 'wh_bundle', 'wh_alerts', 'wh_approvals']) {
+    for (const id of ['wh_stock', 'wh_receipt', 'wh_issue', 'wh_transfer', 'wh_processing', 'wh_count', 'wh_serial', 'wh_bundle', 'wh_alerts', 'wh_approvals']) {
       expect(deptFindItem('WAREHOUSE', id)?.id).toBe(id);
     }
     expect(deptFirstItem('WAREHOUSE')?.id).toBe('wh_overview');

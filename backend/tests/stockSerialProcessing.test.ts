@@ -104,6 +104,10 @@ function procDb(opts: ProcOpts = {}) {
         const line = lines.find((l) => l.id === params[2]);
         if (line) { line.serialLot = params[0]; line.processingStatus = params[1]; }
       }
+      if (sql.includes('UPDATE stock_document_lines SET serialSkipped')) {
+        const line = lines.find((l) => l.id === params[3]);
+        if (line) { line.serialSkipped = 1; line.actualQty = params[0]; line.varianceQty = params[1]; line.processingStatus = 'COMPLETED'; }
+      }
       if (sql.includes('UPDATE stock_serials SET stockStatus')) {
         const row = Object.values(serials).find((s: any) => s.serialNumber === params[3] || true);
         void row;
@@ -129,7 +133,7 @@ function procDb(opts: ProcOpts = {}) {
 
 describe('SERIAL gating on complete (Phase 2)', () => {
   it('blocks SERIAL lines without serials', async () => {
-    const db = procDb({ trackings: { p1: 'SERIAL' } });
+    const db = procDb({ status: 'READY', trackings: { p1: 'SERIAL' } });
     const res = await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(400);
     expect(res.body.error).toMatch(/Chưa đủ Serial/);
     expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
@@ -137,7 +141,7 @@ describe('SERIAL gating on complete (Phase 2)', () => {
 
   it('passes SERIAL lines with matching serials', async () => {
     const db = procDb({
-      trackings: { p1: 'SERIAL' },
+      status: 'READY', trackings: { p1: 'SERIAL' },
       lines: [{ id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 2, locationId: null, serialLot: 'A\nB', processingStatus: 'COMPLETED' }],
     });
     await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(200);
@@ -145,7 +149,7 @@ describe('SERIAL gating on complete (Phase 2)', () => {
 
   it('lets QUANTITY lines through without serials; LOT needs coverage', async () => {
     for (const tracking of ['QUANTITY', undefined]) {
-      const db = procDb({ trackings: tracking ? { p1: tracking } : {} });
+      const db = procDb({ status: 'READY', trackings: tracking ? { p1: tracking } : {} });
       const res = await request(appFor(tp, db)).post('/receipts/doc1/complete').send({});
       expect(res.status).toBe(200);
     }
@@ -153,7 +157,7 @@ describe('SERIAL gating on complete (Phase 2)', () => {
     const dbEmpty = procDb({ trackings: { p1: 'LOT' } });
     await request(appFor(tp, dbEmpty)).post('/receipts/doc1/complete').send({}).expect(400);
     // ...but passes once registered lots cover the quantity
-    const dbCovered = procDb({ trackings: { p1: 'LOT' }, lots: [{ covered: 2 }] });
+    const dbCovered = procDb({ status: 'READY', trackings: { p1: 'LOT' }, lots: [{ covered: 2 }] });
     await request(appFor(tp, dbCovered)).post('/receipts/doc1/complete').send({}).expect(200);
   });
 
@@ -162,8 +166,19 @@ describe('SERIAL gating on complete (Phase 2)', () => {
       status: 'PROCESSING', trackings: { p1: 'SERIAL' },
       lines: [{ id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 2, locationId: null, serialLot: 'A\nB', processingStatus: 'COMPLETED' }],
     });
+    await request(appFor(tp, db)).post('/documents/doc1/processing-complete').send({}).expect(200);
     await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(200);
     expect(db.doc.status).toBe('DONE');
+  });
+
+  it('marks processing READY without posting stock moves', async () => {
+    const db = procDb({
+      status: 'PROCESSING', trackings: { p1: 'SERIAL' },
+      lines: [{ id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 2, locationId: null, serialLot: 'A\nB', processingStatus: 'COMPLETED' }],
+    });
+    await request(appFor(tp, db)).post('/documents/doc1/processing-complete').send({}).expect(200);
+    expect(db.doc.status).toBe('READY');
+    expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
   });
 });
 
@@ -280,6 +295,7 @@ describe('PUT processing lock (Phase 2)', () => {
   });
   it('recomputes warranty start on issue complete', async () => {
     const db = procDb({
+      status: 'READY',
       docType: 'ISSUE',
       trackings: { p1: 'SERIAL' },
       lines: [{ id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 1, locationId: null, serialLot: 'SN1', processingStatus: 'PARTIAL' }],
@@ -344,12 +360,61 @@ describe('concurrent scan (Phase 6)', () => {
     // seed serials via scan first
     await request(appFor(tp, db)).post('/serials/scan').send({ documentId: 'doc1', documentLineId: 'l1', serial: 'A' }).expect(201);
     await request(appFor(tp, db)).post('/serials/scan').send({ documentId: 'doc1', documentLineId: 'l1', serial: 'B' }).expect(201);
+    await request(appFor(tp, db)).post('/documents/doc1/processing-complete').send({}).expect(200);
     await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(200);
     // doc fixture reloads DRAFT from the static mock... emulate DONE:
     db.doc.status = 'DONE';
-    await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(400);
+    await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(200);
     const moves = db.calls.filter(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'));
     expect(moves.length).toBeGreaterThan(0);
+  });
+
+  it('concurrent complete does not double-post moves', async () => {
+    const gate = new DatabaseTransactionGate();
+    const calls: [string, any[]][] = [];
+    let docStatus = 'READY';
+    const db: any = {
+      calls,
+      runWithRequestContext: (fn: () => any) => gate.runWithRequestContext(fn),
+      all: (sql: string) => gate.run(sql, async () => {
+        if (sql.includes('FROM user_warehouse_scopes')) return [{ warehouseId: 'wh-hn' }];
+        if (sql.includes('FROM stock_document_lines')) return [{ id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 2, serialLot: 'A\nB', processingStatus: 'COMPLETED' }];
+        if (sql.includes('SELECT id, tracking FROM products')) return [{ id: 'p1', tracking: 'SERIAL' }];
+        if (sql.includes('FROM products')) return [{ id: 'p1' }];
+        if (sql.includes('SELECT serialNumber FROM stock_serials')) return [];
+        if (sql.includes('FROM stock_serials')) return [{ id: 'serial-a', serialNumber: 'A' }, { id: 'serial-b', serialNumber: 'B' }];
+        if (sql.includes('FROM warehouses')) return [{ id: 'wh-hn' }];
+        return [];
+      }),
+      get: (sql: string, params: any[] = []) => gate.run(sql, async () => {
+        if (sql.includes('FROM stock_documents')) return { id: 'doc1', docType: 'RECEIPT', status: docStatus, warehouseId: 'wh-hn', referenceType: null };
+        if (sql.includes('FROM stock_balances')) return [{ productId: 'p1', locationId: '', onHand: 10, reserved: 0 }];
+        if (sql.includes('FROM stock_serials')) return { id: 'serial-a', serialNumber: 'A' };
+        if (sql.includes('FROM warehouses')) return [{ id: 'wh-hn' }];
+        return undefined;
+      }),
+      run: (sql: string, params: any[] = []) => gate.run(sql, async () => {
+        calls.push([sql, params]);
+        if (sql.includes('UPDATE stock_documents SET status')) docStatus = params[0];
+        if (sql.includes('UPDATE stock_documents SET status')) return { changes: 1 };
+        return { changes: 1 };
+      }),
+    };
+    const app = express();
+    app.use(express.json());
+    app.use((req: any, _res, next) => { req.user = tp; db.runWithRequestContext(next); });
+    app.use(stockRoutes(db));
+
+    // Two simultaneous complete requests
+    const responses = await Promise.all([1, 2].map(() => request(app).post('/receipts/doc1/complete').send({})));
+    const statuses = responses.map(r => r.status).sort();
+    // Lần gọi thứ hai idempotent, nhưng không được ghi thêm move.
+    expect(statuses).toEqual([200, 200]);
+    const moves = db.calls.filter(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'));
+    // Một receipt có hai serial sẽ tạo hai ledger rows (mỗi thiết bị một row),
+    // không phải hai lần hoàn tất phiếu.
+    expect(moves.length).toBe(2);
+    expect(db.calls.filter(([s]: [string, any[]]) => String(s).includes("UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?")).length).toBe(1);
   });
 });
 
@@ -379,9 +444,31 @@ describe('progress + confirm-qty + lots (Phase 3 backend)', () => {
     await request(appFor(tp, db)).post('/lines/l3/confirm-qty').send({ actualQty: 490 }).expect(400);
   });
 
-  it('rejects confirm-qty on SERIAL lines', async () => {
+  it('confirms the target quantity before scanning SERIAL lines', async () => {
     const db = procDb({ lines: multiLines, trackings });
-    await request(appFor(tp, db)).post('/lines/l1/confirm-qty').send({ actualQty: 2 }).expect(400);
+    const response = await request(appFor(tp, db)).post('/lines/l1/confirm-qty').send({ actualQty: 2 }).expect(200);
+    expect(response.body).toEqual({ quantityConfirmed: true, requiredQty: 2 });
+    expect(db.lines.find((line: any) => line.id === 'l1')?.processingStatus).toBe('PARTIAL');
+  });
+
+  it('forces Serial flow for new lines even when product tracking is QUANTITY', async () => {
+    const db = procDb({
+      lines: [{ ...multiLines[2], serialRequired: 1 }],
+      trackings: { p3: 'QUANTITY' },
+    });
+    const progress = await request(appFor(tp, db)).get('/documents/doc1/progress').expect(200);
+    expect(progress.body.lines[0]).toMatchObject({ tracking: 'SERIAL', quantityConfirmed: false });
+    await request(appFor(tp, db)).post('/lines/l3/confirm-qty').send({ actualQty: 500 }).expect(200);
+  });
+
+  it('allows a new Serial line to be confirmed as no-Serial without removing the line', async () => {
+    const db = procDb({
+      lines: [{ ...multiLines[2], serialRequired: 1 }],
+      trackings: { p3: 'QUANTITY' },
+    });
+    await request(appFor(tp, db)).post('/lines/l3/confirm-no-serial').send({ actualQty: 500 }).expect(200);
+    expect(db.lines).toHaveLength(1);
+    expect(db.lines[0]).toMatchObject({ serialSkipped: 1, actualQty: 500, processingStatus: 'COMPLETED' });
   });
 
   it('registers lots and completes when covered', async () => {
@@ -397,6 +484,7 @@ describe('progress + confirm-qty + lots (Phase 3 backend)', () => {
     }).expect(409);
     // LOT line covered by registered lots passes complete gating
     const dbCovered = procDb({
+      status: 'READY',
       lines: [{ id: 'l2', documentId: 'doc1', productId: 'p2', quantity: 100, locationId: null, serialLot: '', processingStatus: 'PENDING' }],
       trackings: { p2: 'LOT' },
       lots: [{ covered: 100 }],

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Package, Search, AlertCircle, RefreshCw, ChevronDown } from 'lucide-react';
 import { Card } from '../../components/UI';
+import { Pagination } from '../../components/Pagination';
 import { useAuth } from '../../contexts/AuthContext';
 import { getStockBalances, getWarehouses, type StockBalanceRow, type Warehouse } from '../../services/stockService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
@@ -19,9 +20,9 @@ export default function InventoryPage({ deptKey }: { deptKey: DeptKey }) {
   const [debouncedQ, setDebouncedQ] = useState('');
   const [warehouseId, setWarehouseId] = useState('');
   const [purpose, setPurpose] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [hasMore, setHasMore] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const PAGE_SIZE = 100;
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(q.trim()), 350);
@@ -32,25 +33,26 @@ export default function InventoryPage({ deptKey }: { deptKey: DeptKey }) {
     getWarehouses().then(setWarehouses).catch(() => {});
   }, []);
 
-  const fetchRows = async (append = false) => {
-    if (append) setLoadingMore(true);
-    else { setLoading(true); setError(null); }
+  const fetchRows = async () => {
+    setLoading(true); setError(null);
     try {
-      const page = await getStockBalances({
+      const result = await getStockBalances({
         warehouseId: warehouseId || undefined, q: debouncedQ || undefined, purpose: purpose || undefined,
-        limit: PAGE_SIZE, offset: append ? rows.length : 0,
+        // Lấy dư một dòng để xác định còn trang sau, tránh tạo trang rỗng
+        // khi tổng số dòng chia hết cho pageSize.
+        limit: pageSize + 1, offset: (page - 1) * pageSize,
       });
-      setRows((prev) => (append ? [...prev, ...page] : page));
-      setHasMore(page.length === PAGE_SIZE);
+      setHasMore(result.length > pageSize);
+      setRows(result.slice(0, pageSize));
     } catch (e: any) {
-      if (!append) setError(e.message || 'Không tải được tồn kho');
+      setError(e.message || 'Không tải được tồn kho');
     } finally {
       setLoading(false);
-      setLoadingMore(false);
     }
   };
 
-  useEffect(() => { fetchRows(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [warehouseId, debouncedQ, purpose]);
+  useEffect(() => { setPage(1); }, [warehouseId, debouncedQ, purpose]);
+  useEffect(() => { fetchRows(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [warehouseId, debouncedQ, purpose, page, pageSize]);
 
   const stats = useMemo(() => {
     const sku = new Set(rows.map((r) => r.productId)).size;
@@ -142,7 +144,8 @@ export default function InventoryPage({ deptKey }: { deptKey: DeptKey }) {
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm</th>                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Kho / Vị trí</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Kho / Vị trí</th>
                   <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Khả dụng</th>
                   <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase hidden lg:table-cell">Đã giữ</th>
                   <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Thực tồn</th>
@@ -172,16 +175,9 @@ export default function InventoryPage({ deptKey }: { deptKey: DeptKey }) {
               </tbody>
             </table>
           </div>
-          {hasMore && (
-            <div className="p-3 text-center border-t border-gray-100">
-              <button onClick={() => fetchRows(true)} disabled={loadingMore}
-                className="px-5 py-2 text-sm font-medium text-emerald-700 bg-emerald-50 rounded-xl hover:bg-emerald-100 disabled:opacity-50">
-                {loadingMore ? 'Đang tải...' : `Xem thêm (${rows.length} dòng)`}
-              </button>
-            </div>
-          )}
         </Card>
       )}
+      {!loading && rows.length > 0 && <Pagination currentPage={page} totalPages={hasMore ? page + 1 : page} onPageChange={setPage} itemsPerPage={pageSize} onItemsPerPageChange={(size) => { setPageSize(size); setPage(1); }} />}
 
       <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">
         ← Về tổng quan kho vận

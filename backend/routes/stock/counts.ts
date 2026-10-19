@@ -7,7 +7,7 @@ import { beginStockTransaction } from '../../utils/stockTransaction.js';
 import type { StockContext } from './context.js';
 
 export function countsRoutes(ctx: StockContext) {
-  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, assertLocation, assertNotCounting, paginationOf } = ctx;
+  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, assertLocation, assertNotCounting, paginationOf, recordWarehouseActivity } = ctx;
   const router = Router();
   // ── Kiểm kê blind-count (§19–20) ────────────────────────────────────────────
 
@@ -20,8 +20,21 @@ export function countsRoutes(ctx: StockContext) {
         if (warehouseId && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
         if (!warehouseId && scope.length === 0) return res.json([]);
       }
-      let query = `SELECT c.*, w.name AS warehouseName FROM stock_counts c
-        LEFT JOIN warehouses w ON w.id = c.warehouseId WHERE 1=1`;
+      let query = `SELECT c.*, w.name AS warehouseName,
+          COALESCE(progress.totalLines, 0) AS totalLines,
+          COALESCE(progress.countedLines, 0) AS countedLines,
+          COALESCE(progress.varianceLines, 0) AS varianceLines
+        FROM stock_counts c
+        LEFT JOIN warehouses w ON w.id = c.warehouseId
+        LEFT JOIN (
+          SELECT countId,
+            COUNT(*) AS totalLines,
+            SUM(CASE WHEN actualQty IS NOT NULL THEN 1 ELSE 0 END) AS countedLines,
+            SUM(CASE WHEN actualQty IS NOT NULL AND actualQty <> expectedQty THEN 1 ELSE 0 END) AS varianceLines
+          FROM stock_count_lines
+          GROUP BY countId
+        ) progress ON progress.countId = c.id
+        WHERE 1=1`;
       const params: any[] = [];
       if (warehouseId) { query += ' AND c.warehouseId = ?'; params.push(warehouseId); }
       else if (!isDirector(user)) { query += ` AND c.warehouseId IN (${scope.map(() => '?').join(', ')})`; params.push(...scope); }
@@ -32,6 +45,38 @@ export function countsRoutes(ctx: StockContext) {
       params.push(countPage.limit, countPage.offset);
       res.json(await db.all(query, params));
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch stock counts' }); }
+  });
+
+  // Chỉ lấy các đợt có chênh lệch, phục vụ trang phê duyệt riêng.
+  router.get('/counts/variances', async (req, res) => {
+    try {
+      const user = req.user;
+      const scope = await listScope(user);
+      const { warehouseId, status } = req.query as Record<string, string | undefined>;
+      if (!isDirector(user)) {
+        if (warehouseId && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
+        if (!warehouseId && scope.length === 0) return res.json([]);
+      }
+      let query = `SELECT c.*, w.name AS warehouseName, progress.totalLines, progress.countedLines, progress.varianceLines
+        FROM stock_counts c
+        LEFT JOIN warehouses w ON w.id = c.warehouseId
+        INNER JOIN (
+          SELECT countId,
+            COUNT(*) AS totalLines,
+            SUM(CASE WHEN actualQty IS NOT NULL THEN 1 ELSE 0 END) AS countedLines,
+            SUM(CASE WHEN actualQty IS NOT NULL AND actualQty <> expectedQty THEN 1 ELSE 0 END) AS varianceLines
+          FROM stock_count_lines GROUP BY countId
+          HAVING varianceLines > 0
+        ) progress ON progress.countId = c.id WHERE 1=1`;
+      const params: any[] = [];
+      if (warehouseId) { query += ' AND c.warehouseId = ?'; params.push(warehouseId); }
+      else if (!isDirector(user)) { query += ` AND c.warehouseId IN (${scope.map(() => '?').join(', ')})`; params.push(...scope); }
+      if (status?.trim()) { query += ' AND c.status = ?'; params.push(status.trim()); }
+      query += ' ORDER BY c.createdAt DESC';
+      const page = paginationOf(req.query as Record<string, string | undefined>);
+      query += ' LIMIT ? OFFSET ?'; params.push(page.limit, page.offset);
+      res.json(await db.all(query, params));
+    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch count variances' }); }
   });
 
   router.get('/counts/:id', async (req, res) => {
@@ -46,7 +91,7 @@ export function countsRoutes(ctx: StockContext) {
       const access = await requireWarehouse(user, count.warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       const lines = await db.all(
-        `SELECT l.*, p.name AS productName FROM stock_count_lines l
+        `SELECT l.*, p.name AS productName, p.unit AS productUnit FROM stock_count_lines l
          LEFT JOIN products p ON p.id = l.productId WHERE l.countId = ? ORDER BY p.name ASC`,
         [count.id]
       );
@@ -95,6 +140,11 @@ export function countsRoutes(ctx: StockContext) {
             [randomUUID(), id, row.productId, row.locationId || '', Number(row.onHand) || 0]
           );
         }
+        await recordWarehouseActivity(db.run.bind(db), {
+          actionType: 'COUNT_OPENED', entityType: 'STOCK_COUNT', entityId: id,
+          documentCode: code, warehouseId, userId: user.id,
+          metadata: { blindCount: blindCount !== false, snapshotLines: snapshot.length, notes: notes ?? null },
+        });
         await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
         await db.run('ROLLBACK'); transactionOpen = false;
@@ -153,6 +203,10 @@ export function countsRoutes(ctx: StockContext) {
             [randomUUID(), count.id ?? String(req.params.id), line.productId, line.locationId || '', expectedQty, Number(line.actualQty), line.note ?? null, user.id]
           );
         }
+        await recordWarehouseActivity(db.run.bind(db), {
+          actionType: 'COUNT_LINES_SUBMITTED', entityType: 'STOCK_COUNT', entityId: String(req.params.id),
+          warehouseId: count.warehouseId, userId: user.id, metadata: { lineCount: req.body.lines.length },
+        });
         await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
         await db.run('ROLLBACK'); transactionOpen = false;
@@ -186,6 +240,10 @@ export function countsRoutes(ctx: StockContext) {
         `UPDATE stock_count_lines SET actualQty = NULL, note = NULL WHERE countId = ? AND id IN (${placeholders})`,
         [String(req.params.id), ...req.body.lineIds]
       );
+      await recordWarehouseActivity(db.run.bind(db), {
+        actionType: 'COUNT_RECOUNT_REQUESTED', entityType: 'STOCK_COUNT', entityId: String(req.params.id),
+        warehouseId: count.warehouseId, userId: user.id, metadata: { lineIds: req.body.lineIds },
+      });
       await db.run('COMMIT'); transactionOpen = false;
       res.json({ success: true });
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to request recount' }); } finally {
@@ -215,12 +273,16 @@ export function countsRoutes(ctx: StockContext) {
       }
       const now = new Date().toISOString();
       try {
+        let varianceLines = 0;
+        let totalVariance = 0;
         for (const line of lines) {
           const balance = await db.get('SELECT onHand, reserved FROM stock_balances WHERE productId = ? AND warehouseId = ? AND locationId = ? FOR UPDATE', [line.productId, count.warehouseId, line.locationId || '']);
           if (Number(balance?.onHand ?? 0) !== Number(line.expectedQty)) throw Object.assign(new Error('Tồn đã thay đổi sau khi mở kiểm kê; cần kiểm kê lại.'), { status: 409 });
           if (Number(line.actualQty) < Number(balance?.reserved ?? 0)) throw Object.assign(new Error('Giải phóng giữ hàng vượt số đếm trước khi duyệt.'), { status: 409 });
           const variance = Number(line.actualQty) - Number(line.expectedQty);
           if (variance === 0) continue;
+          varianceLines += 1;
+          totalVariance += variance;
           await db.run(
             `INSERT INTO stock_moves (id, productId, warehouseId, locationId, quantity, moveType, referenceType, referenceId, documentLineId, createdBy, createdAt)
              VALUES (?, ?, ?, ?, ?, 'ADJUSTMENT', 'COUNT', ?, ?, ?, ?)`,
@@ -234,6 +296,12 @@ export function countsRoutes(ctx: StockContext) {
           );
         }
         await db.run('UPDATE stock_counts SET status = ?, approvedBy = ?, updatedAt = ? WHERE id = ?', ['DONE', user.id, now, count.id]);
+        await recordWarehouseActivity(db.run.bind(db), {
+          actionType: 'COUNT_APPROVED', entityType: 'STOCK_COUNT', entityId: count.id,
+          documentCode: count.code || null, warehouseId: count.warehouseId, userId: user.id,
+          oldData: { status: 'COUNTING' }, newData: { status: 'DONE' },
+          metadata: { totalLines: lines.length, varianceLines, totalVariance },
+        });
         await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
         await db.run('ROLLBACK'); transactionOpen = false;
@@ -258,6 +326,11 @@ export function countsRoutes(ctx: StockContext) {
       if (!(await requireWarehouse(req.user, count.warehouseId)).ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       if (count.status !== 'COUNTING') return res.status(400).json({ error: 'Only open counts can be cancelled' });
       await db.run('UPDATE stock_counts SET status = ?, updatedAt = ? WHERE id = ?', ['CANCELLED', new Date().toISOString(), count.id]);
+      await recordWarehouseActivity(db.run.bind(db), {
+        actionType: 'COUNT_CANCELLED', entityType: 'STOCK_COUNT', entityId: count.id,
+        documentCode: count.code || null, warehouseId: count.warehouseId, userId: req.user.id,
+        oldData: { status: 'COUNTING' }, newData: { status: 'CANCELLED' },
+      });
       await db.run('COMMIT'); transactionOpen = false;
       res.json({ success: true });
     } catch { res.status(500).json({ error: 'Failed to cancel count' }); }

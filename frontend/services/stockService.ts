@@ -35,6 +35,50 @@ export async function getStockBalances(params: { warehouseId?: string; q?: strin
   return res.json();
 }
 
+export interface AvailableInventoryRow {
+  productId: string;
+  warehouseId: string;
+  onHand: number;
+  reserved: number;
+  available: number;
+  productName: string | null;
+  unit: string | null;
+  category: string | null;
+  origin: string | null;
+  tracking: string | null;
+  warehouseCode: string | null;
+  warehouseName: string | null;
+}
+
+export async function getAvailableInventory(params: { warehouseId?: string; q?: string; tracking?: string; onlyAvailable?: boolean; limit?: number; offset?: number } = {}): Promise<{ rows: AvailableInventoryRow[]; total: number }> {
+  const qs = new URLSearchParams();
+  if (params.warehouseId) qs.set('warehouseId', params.warehouseId);
+  if (params.q) qs.set('q', params.q);
+  if (params.tracking) qs.set('tracking', params.tracking);
+  if (params.onlyAvailable !== undefined) qs.set('onlyAvailable', String(params.onlyAvailable));
+  if (params.limit !== undefined) qs.set('limit', String(params.limit));
+  if (params.offset) qs.set('offset', String(params.offset));
+  const res = await apiFetch(`/api/stock/available-inventory${qs.toString() ? `?${qs}` : ''}`);
+  const data = await res.json().catch(() => []);
+  if (!res.ok) throw new Error(data.error || 'Không tải được tồn kho khả dụng');
+  return { rows: Array.isArray(data) ? data : [], total: Number(res.headers.get('X-Total-Count') || (Array.isArray(data) ? data.length : 0)) };
+}
+
+export interface InventoryDetails {
+  product: { id: string; name: string; unit?: string | null; category?: string | null; origin?: string | null; tracking?: string | null };
+  warehouse: { id: string; code: string; name: string };
+  summary: { onHand: number; reserved: number; available: number };
+  serials: Array<{ id: string; serialNumber: string | null; stockStatus: string; status: string; receivedAt?: string | null; outDate?: string | null; supplier?: string | null; receiptCode?: string | null; receiptPartnerName?: string | null; issueCode?: string | null; issuePartnerName?: string | null }>;
+  lots: Array<{ id: string; lotCode: string; coilCode?: string | null; initialQty: number; remainingQty: number; unit?: string | null; receivedAt?: string | null; supplier?: string | null; receiptCode?: string | null; receiptPartnerName?: string | null }>;
+}
+
+export async function getInventoryDetails(productId: string, warehouseId: string): Promise<InventoryDetails> {
+  const res = await apiFetch(`/api/stock/inventory/${encodeURIComponent(productId)}/${encodeURIComponent(warehouseId)}/details`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Không tải được chi tiết tồn kho');
+  return data;
+}
+
 let warehouseCache: { at: number; data: Warehouse[] } | null = null;
 const WAREHOUSE_CACHE_TTL = 60_000;
 
@@ -177,11 +221,13 @@ export interface ReceiptDocBody {
   attachments?: string | string[] | null;
 }
 
-export async function getStockDocuments(params: { docType?: string; status?: string; warehouseId?: string; limit?: number; offset?: number } = {}): Promise<StockDocument[]> {
+export async function getStockDocuments(params: { docType?: string; status?: string; warehouseId?: string; from?: string; to?: string; limit?: number; offset?: number } = {}): Promise<StockDocument[]> {
   const qs = new URLSearchParams();
   if (params.docType) qs.set('docType', params.docType);
   if (params.status) qs.set('status', params.status);
   if (params.warehouseId) qs.set('warehouseId', params.warehouseId);
+  if (params.from) qs.set('from', params.from);
+  if (params.to) qs.set('to', params.to);
   if (params.limit !== undefined) qs.set('limit', String(params.limit));
   if (params.offset) qs.set('offset', String(params.offset));
   const res = await apiFetch(`/api/stock/documents${qs.toString() ? `?${qs}` : ''}`);
@@ -192,7 +238,11 @@ export async function getStockDocuments(params: { docType?: string; status?: str
 async function postDoc(path: string, body: unknown): Promise<{ id: string; code: string }> {
   const res = await apiFetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Thao tác thất bại');
+  if (!res.ok) {
+    // Giữ HTTP status để giao diện phân biệt xung đột nghiệp vụ (409) với
+    // lỗi nhập liệu hoặc lỗi máy chủ, thay vì chỉ hiện một câu chung chung.
+    throw Object.assign(new Error(data.error || 'Thao tác thất bại'), { status: res.status });
+  }
   return data;
 }
 
@@ -200,10 +250,12 @@ export const createReceipt = (body: ReceiptDocBody) =>
   postDoc('/api/stock/receipts', body);
 export const createIssue = (body: ReceiptDocBody) =>
   postDoc('/api/stock/issues', body);
+export const createReturn = (body: ReceiptDocBody) =>
+  postDoc('/api/stock/returns', body);
 export const createTransfer = (body: { sourceWarehouseId: string; destWarehouseId: string; lines: StockDocLine[]; notes?: string }) =>
   postDoc('/api/stock/transfers', body);
 
-export async function advanceDocument(kind: 'receipts' | 'issues', id: string, action: 'complete'): Promise<void> {
+export async function advanceDocument(kind: 'receipts' | 'issues' | 'returns', id: string, action: 'complete'): Promise<void> {
   await postDoc(`/api/stock/${kind}/${id}/${action}`, {});
 }
 
@@ -216,11 +268,24 @@ export interface StockReportRow {
   opening: number; inbound: number; outbound: number; adjustment: number; closing: number;
 }
 
-export async function getStockReport(from: string, to: string): Promise<StockReportRow[]> {
-  const res = await apiFetch(`/api/stock/reports?${new URLSearchParams({ from, to })}`);
+export async function getStockReport(from: string, to: string, page: { limit?: number; offset?: number } = {}): Promise<StockReportRow[]> {
+  const params = new URLSearchParams({ from, to });
+  if (page.limit !== undefined) params.set('limit', String(page.limit));
+  if (page.offset) params.set('offset', String(page.offset));
+  const res = await apiFetch(`/api/stock/reports?${params}`);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Không tải được báo cáo kho');
   return data;
+}
+
+export interface StockReportSummary {
+  totals: { inbound: number; outbound: number; adjustment: number; inboundDocuments: number; outboundDocuments: number; onHand: number; reserved: number; stockValue: number; slowCount: number };
+  daily: { day: string; inbound: number; outbound: number }[];
+}
+export async function getStockReportSummary(from: string, to: string, warehouseId?: string): Promise<StockReportSummary> {
+  const qs = new URLSearchParams({ from, to }); if (warehouseId) qs.set('warehouseId', warehouseId);
+  const res = await apiFetch(`/api/stock/reports/summary?${qs}`); const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Không tải được tổng hợp báo cáo kho'); return data;
 }
 
 export interface StockAlertRow {
@@ -237,8 +302,12 @@ export interface StockAlertRow {
   reorderPoint: number | null;
 }
 
-export async function getStockAlerts(warehouseId?: string): Promise<StockAlertRow[]> {
-  const res = await apiFetch(`/api/stock/alerts${warehouseId ? `?warehouseId=${encodeURIComponent(warehouseId)}` : ''}`);
+export async function getStockAlerts(warehouseId?: string, page: { limit?: number; offset?: number } = {}): Promise<StockAlertRow[]> {
+  const qs = new URLSearchParams();
+  if (warehouseId) qs.set('warehouseId', warehouseId);
+  if (page.limit !== undefined) qs.set('limit', String(page.limit));
+  if (page.offset) qs.set('offset', String(page.offset));
+  const res = await apiFetch(`/api/stock/alerts${qs.toString() ? `?${qs}` : ''}`);
   if (!res.ok) throw new Error('Không tải được cảnh báo tồn kho');
   return res.json();
 }
@@ -265,9 +334,11 @@ export interface SlowStockRow {
   lastMoveAt: string | null;
 }
 
-export async function getSlowStock(warehouseId?: string, days = 90): Promise<SlowStockRow[]> {
+export async function getSlowStock(warehouseId?: string, days = 90, page: { limit?: number; offset?: number } = {}): Promise<SlowStockRow[]> {
   const qs = new URLSearchParams({ days: String(days) });
   if (warehouseId) qs.set('warehouseId', warehouseId);
+  if (page.limit !== undefined) qs.set('limit', String(page.limit));
+  if (page.offset) qs.set('offset', String(page.offset));
   const res = await apiFetch(`/api/stock/slow?${qs}`);
   if (!res.ok) throw new Error('Không tải được tồn lâu');
   return res.json();
@@ -277,12 +348,18 @@ export type SerialStatus = 'SALEABLE' | 'WARRANTY' | 'DAMAGED' | 'DEMO' | 'QUARA
 
 export interface StockSerial {
   id: string;
+  recordType?: 'SERIAL' | 'LOT';
   productId: string;
   serialNumber?: string | null;
   lotCode?: string | null;
   warehouseId: string;
   locationId?: string | null;
   status: SerialStatus;
+  stockStatus?: 'IN_STOCK' | 'RESERVED' | 'OUT' | string;
+  initialQty?: number | null;
+  remainingQty?: number | null;
+  unit?: string | null;
+  receiptDocumentId?: string | null;
   supplier?: string | null;
   receiptId?: string | null;
   customerName?: string | null;
@@ -308,9 +385,9 @@ export async function getStockSerials(params: { q?: string; status?: string; war
 }
 
 export async function registerSerial(body: {
-  productId: string; serialNumber?: string | null; lotCode?: string | null;
+  productId: string; serialNumber: string; lotCode?: string | null;
   warehouseId: string; locationId?: string | null; status?: SerialStatus;
-  supplier?: string | null; warrantyMonths?: number; notes?: string | null;
+  receiptDocumentId: string; supplier?: string | null; warrantyMonths?: number; notes?: string | null;
 }): Promise<{ id: string }> {
   const res = await apiFetch('/api/stock/serials', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -330,6 +407,10 @@ export async function updateSerial(id: string, body: Partial<{
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Cập nhật thất bại');
+}
+export async function deleteSerial(id: string): Promise<void> {
+  const res = await apiFetch(`/api/stock/serials/${id}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({})); if (!res.ok) throw new Error(data.error || 'Xóa Serial thất bại');
 }
 
 export interface BundleItem {
@@ -392,6 +473,8 @@ export interface StockMove {
   moveType: string;
   referenceType?: string | null;
   referenceId?: string | null;
+  serialId?: string | null;
+  lotId?: string | null;
   createdBy?: string | null;
   createdAt: string;
   productName?: string | null;
@@ -399,16 +482,35 @@ export interface StockMove {
   createdByName?: string | null;
 }
 
-export async function getStockMoves(params: { warehouseId?: string; productId?: string; moveType?: string; limit?: number; offset?: number } = {}): Promise<StockMove[]> {
+export async function getStockMoves(params: { warehouseId?: string; productId?: string; moveType?: string; q?: string; from?: string; to?: string; limit?: number; offset?: number } = {}): Promise<StockMove[]> {
   const qs = new URLSearchParams();
   if (params.warehouseId) qs.set('warehouseId', params.warehouseId);
   if (params.productId) qs.set('productId', params.productId);
   if (params.moveType) qs.set('moveType', params.moveType);
+  if (params.q) qs.set('q', params.q);
+  if (params.from) qs.set('from', params.from);
+  if (params.to) qs.set('to', params.to);
   if (params.limit !== undefined) qs.set('limit', String(params.limit));
   if (params.offset) qs.set('offset', String(params.offset));
   const res = await apiFetch(`/api/stock/moves${qs.toString() ? `?${qs}` : ''}`);
   if (!res.ok) throw new Error('Không tải được lịch sử hàng hóa');
   return res.json();
+}
+
+export interface StockReconciliationRow {
+  productId: string; warehouseId: string; locationId?: string | null; balanceOnHand: number; ledgerQty: number; difference: number;
+  productName?: string | null; warehouseName?: string | null; unit?: string | null;
+}
+export interface StockAnomalyRow { anomalyType: string; productId?: string; productName?: string | null; warehouseId?: string; warehouseName?: string | null; message: string; [key: string]: unknown; }
+export async function getStockReconciliation(params: { warehouseId?: string; productId?: string } = {}): Promise<{ rows: StockReconciliationRow[]; total: number }> {
+  const qs = new URLSearchParams(); Object.entries(params).forEach(([k, v]) => { if (v) qs.set(k, v); });
+  const res = await apiFetch(`/api/stock/reconciliation${qs.toString() ? `?${qs}` : ''}`); const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Không tải được đối soát tồn'); return data;
+}
+export async function getStockAnomalies(params: { warehouseId?: string; type?: string } = {}): Promise<{ rows: StockAnomalyRow[]; total: number }> {
+  const qs = new URLSearchParams(); Object.entries(params).forEach(([k, v]) => { if (v) qs.set(k, v); });
+  const res = await apiFetch(`/api/stock/anomalies${qs.toString() ? `?${qs}` : ''}`); const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Không tải được bất thường kho'); return data;
 }
 
 export interface StockPolicyRow {
@@ -422,8 +524,12 @@ export interface StockPolicyRow {
   warehouseName?: string | null;
 }
 
-export async function getStockPolicies(warehouseId?: string): Promise<StockPolicyRow[]> {
-  const res = await apiFetch(`/api/stock/policies${warehouseId ? `?warehouseId=${encodeURIComponent(warehouseId)}` : ''}`);
+export async function getStockPolicies(warehouseId?: string, page: { limit?: number; offset?: number } = {}): Promise<StockPolicyRow[]> {
+  const qs = new URLSearchParams();
+  if (warehouseId) qs.set('warehouseId', warehouseId);
+  if (page.limit !== undefined) qs.set('limit', String(page.limit));
+  if (page.offset) qs.set('offset', String(page.offset));
+  const res = await apiFetch(`/api/stock/policies${qs.toString() ? `?${qs}` : ''}`);
   if (!res.ok) throw new Error('Không tải được chính sách tồn');
   return res.json();
 }
@@ -472,6 +578,42 @@ export async function getMisaLogs(): Promise<MisaSyncLog[]> {
   if (!res.ok) throw new Error('Không tải được nhật ký đồng bộ');
   return res.json();
 }
+export async function prepareMisaSync(documentIds?: string[], warehouseId?: string): Promise<{ prepared: number; skipped: number; message: string }> {
+  const res = await apiFetch('/api/stock/misa-sync/prepare', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ documentIds, warehouseId }) });
+  const data = await res.json().catch(() => ({})); if (!res.ok) throw new Error(data.error || 'Không thể chuẩn bị hàng đợi MISA'); return data;
+}
+
+export interface WarehouseActivityLog {
+  id: string;
+  actionType: string;
+  entityType: string;
+  entityId?: string | null;
+  documentId?: string | null;
+  documentCode?: string | null;
+  productId?: string | null;
+  serialId?: string | null;
+  lotId?: string | null;
+  warehouseName?: string | null;
+  productName?: string | null;
+  userName?: string | null;
+  quantity?: number | null;
+  createdAt: string;
+  oldData?: unknown;
+  newData?: unknown;
+  metadata?: unknown;
+}
+
+export async function getWarehouseActivityLogs(params: {
+  q?: string; actionType?: string; entityType?: string; warehouseId?: string;
+  from?: string; to?: string; limit?: number; offset?: number;
+} = {}): Promise<{ rows: WarehouseActivityLog[]; total: number; limit: number; offset: number }> {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') qs.set(key, String(value)); });
+  const res = await apiFetch(`/api/stock/activity-logs${qs.toString() ? `?${qs}` : ''}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Không tải được Audit Log kho vận');
+  return data;
+}
 
 export interface CountLine {
   id: string;
@@ -481,6 +623,7 @@ export interface CountLine {
   actualQty: number | null;
   note?: string | null;
   productName?: string | null;
+  productUnit?: string | null;
 }
 
 export interface StockCount {
@@ -491,6 +634,9 @@ export interface StockCount {
   status: 'COUNTING' | 'DONE' | string;
   blindCount: boolean;
   createdAt: string;
+  totalLines?: number;
+  countedLines?: number;
+  varianceLines?: number;
   lines?: CountLine[];
 }
 
@@ -502,6 +648,17 @@ export async function getStockCounts(warehouseId?: string, status?: string, page
   if (page?.offset) qs.set('offset', String(page.offset));
   const res = await apiFetch(`/api/stock/counts${qs.toString() ? `?${qs}` : ''}`);
   if (!res.ok) throw new Error('Không tải được đợt kiểm kê');
+  return res.json();
+}
+
+export async function getStockCountVariances(page?: { warehouseId?: string; status?: string; limit?: number; offset?: number }): Promise<StockCount[]> {
+  const qs = new URLSearchParams();
+  if (page?.warehouseId) qs.set('warehouseId', page.warehouseId);
+  if (page?.status) qs.set('status', page.status);
+  if (page?.limit !== undefined) qs.set('limit', String(page.limit));
+  if (page?.offset) qs.set('offset', String(page.offset));
+  const res = await apiFetch(`/api/stock/counts/variances${qs.toString() ? `?${qs}` : ''}`);
+  if (!res.ok) throw new Error('Không tải được chênh lệch kiểm kê');
   return res.json();
 }
 
@@ -574,11 +731,14 @@ export interface DocLineProgress {
   required: number;
   processed: number;
   tracking: 'SERIAL' | 'LOT' | 'QUANTITY';
-  lots: { id: string; lotCode: string; coilCode?: string | null; initialQty: number; remainingQty: number; unit?: string | null; status: string }[];
+  lots: { id: string; lotCode: string; coilCode?: string | null; initialQty: number; remainingQty: number; allocatedQty?: number; unit?: string | null; status: string }[];
   serials: string[];
   actualQty: number | null;
   varianceQty: number | null;
+  quantityConfirmed?: boolean;
+  serialSkipped?: boolean;
   status: 'PENDING' | 'PARTIAL' | 'COMPLETED';
+  availability?: { onHand: number; reserved: number; available: number; afterIssue: number } | null;
 }
 
 export interface DocProgress {
@@ -596,6 +756,22 @@ export async function getDocumentProgress(id: string): Promise<DocProgress> {
   return data;
 }
 
+export async function completeDocumentProcessing(id: string): Promise<{ success: boolean; status: string }> {
+  const res = await apiFetch(`/api/stock/documents/${id}/processing-complete`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Không thể hoàn tất xử lý hàng hóa');
+  return data;
+}
+
+export async function confirmLineWithoutSerial(lineId: string, body: { actualQty: number; varianceReason?: string }): Promise<any> {
+  const res = await apiFetch(`/api/stock/lines/${lineId}/confirm-no-serial`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Không thể xác nhận dòng không có Serial');
+  return data;
+}
+
 async function postStock(path: string, body: unknown): Promise<any> {
   const res = await apiFetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
@@ -609,6 +785,9 @@ export const scanSerial = (documentId: string, documentLineId: string, serial: s
 export const scanOutSerial = (documentId: string, documentLineId: string, serial: string) =>
   postStock('/api/stock/serials/scan-out', { documentId, documentLineId, serial });
 
+export const editLineSerial = (documentId: string, documentLineId: string, serial: string, replacement?: string) =>
+  postStock('/api/stock/serials/edit', { documentId, documentLineId, serial, replacement });
+
 export const confirmLineQty = (lineId: string, body: { actualQty: number; varianceReason?: string }) =>
   postStock(`/api/stock/lines/${lineId}/confirm-qty`, body);
 
@@ -616,6 +795,10 @@ export const registerLot = (body: {
   documentId: string; documentLineId: string; lotCode: string; coilCode?: string;
   quantity: number; unit?: string; manufacturedAt?: string; supplier?: string;
 }) => postStock('/api/stock/lots/register', body);
+
+export const allocateLot = (body: {
+  documentId: string; documentLineId: string; lotCode: string; quantity: number;
+}) => postStock('/api/stock/lots/allocate', body);
 
 export interface SerialTimeline {
   serial: {
@@ -634,6 +817,23 @@ export async function getSerialTimeline(serialNumber: string): Promise<SerialTim
   const res = await apiFetch(`/api/stock/serials/timeline/${encodeURIComponent(serialNumber)}`);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Không tải được vòng đời serial');
+  return data;
+}
+
+export interface LotTimeline {
+  lot: {
+    id: string; lotCode: string; coilCode?: string | null; productId: string; productName?: string | null;
+    warehouseId: string; warehouseName?: string | null; initialQty: number; remainingQty: number;
+    unit?: string | null; status: string; supplier?: string | null; manufacturedAt?: string | null;
+  };
+  receipt: { documentId: string; code: string | null; date?: string | null; supplier?: string | null; warehouseId?: string | null; warehouseName?: string | null } | null;
+  moves: { id: string; quantity: number; moveType: string; referenceType?: string | null; referenceId?: string | null; documentLineId?: string | null; warehouseName?: string | null; createdAt: string }[];
+}
+
+export async function getLotTimeline(lotId: string): Promise<LotTimeline> {
+  const res = await apiFetch(`/api/stock/lots/timeline/${encodeURIComponent(lotId)}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Không tải được lịch sử Lô');
   return data;
 }
 

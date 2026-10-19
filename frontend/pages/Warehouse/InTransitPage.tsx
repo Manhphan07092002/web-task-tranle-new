@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Truck, RefreshCw, AlertCircle, PackageCheck } from 'lucide-react';
 import { Card } from '../../components/UI';
+import { Pagination } from '../../components/Pagination';
 import { getStockDocuments, advanceTransfer, type StockDocument } from '../../services/stockService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
@@ -12,11 +13,15 @@ export default function InTransitPage({ deptKey }: { deptKey: DeptKey }) {
   const [rows, setRows] = useState<StockDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [hasMore, setHasMore] = useState(false);
 
   const fetchAll = async () => {
     setLoading(true); setError(null);
     try {
-      setRows(await getStockDocuments({ docType: 'TRANSFER', status: 'IN_TRANSIT' }));
+      const data = await getStockDocuments({ docType: 'TRANSFER', status: 'IN_TRANSIT', limit: pageSize + 1, offset: (page - 1) * pageSize });
+      setHasMore(data.length > pageSize); setRows(data.slice(0, pageSize));
     } catch (e: any) {
       setError(e.message || 'Không tải được điều chuyển');
     } finally {
@@ -24,7 +29,7 @@ export default function InTransitPage({ deptKey }: { deptKey: DeptKey }) {
     }
   };
 
-  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/await-in-effect */ }, []);
+  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/await-in-effect */ }, [page, pageSize]);
 
   return (
     <div className="w-full max-w-[1400px] mx-auto space-y-4">
@@ -76,6 +81,7 @@ export default function InTransitPage({ deptKey }: { deptKey: DeptKey }) {
           </div>
         </Card>
       )}
+      {!loading && rows.length > 0 && <Pagination currentPage={page} totalPages={hasMore ? page + 1 : page} onPageChange={setPage} itemsPerPage={pageSize} onItemsPerPageChange={(s) => { setPageSize(s); setPage(1); }} />}
 
       <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">
         ← Về tổng quan kho vận

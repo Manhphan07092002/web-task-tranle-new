@@ -10,6 +10,7 @@ import { bundlesRoutes } from './stock/bundles.js';
 import { monitoringRoutes } from './stock/monitoring.js';
 import { countsRoutes } from './stock/counts.js';
 import { misaRoutes } from './stock/misa.js';
+import { activityLogsRoutes } from './stock/activityLogs.js';
 
 // Phase A backend kho (09_KHO_VAN §3, §13–18 + D10).
 // - Mọi biến động tồn sinh stock_move + cập nhật balances TRONG transaction.
@@ -28,5 +29,6 @@ export function stockRoutes(db: any) {
   router.use(monitoringRoutes(ctx));
   router.use(countsRoutes(ctx));
   router.use(misaRoutes(ctx));
+  router.use(activityLogsRoutes(ctx));
   return router;
 }

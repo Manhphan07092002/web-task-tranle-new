@@ -2,13 +2,15 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Bookmark, PlusCircle, RefreshCw, AlertCircle, X, ChevronDown, Undo2, CheckCircle2 } from 'lucide-react';
 import { Card } from '../../components/UI';
+import { Pagination } from '../../components/Pagination';
 import { getReservations, holdStock, settleReservation, type Reservation } from '../../services/reservationService';
-import { getWarehouses, type Warehouse } from '../../services/stockService';
+import { getAvailableInventory, getWarehouses, type AvailableInventoryRow, type Warehouse } from '../../services/stockService';
 import { getProducts, type Product } from '../../services/productService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
 import { useAuth } from '../../contexts/AuthContext';
 import { levelOf, LEVELS } from '../../utils/rbac';
+import AvailableInventoryReference from './AvailableInventoryReference';
 
 const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
   HELD: { label: 'Đang giữ', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
@@ -33,15 +35,18 @@ export default function ReservationsPage({ deptKey }: { deptKey: DeptKey }) {
   const [status, setStatus] = useState('HELD');
   const [actingId, setActingId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [hasMore, setHasMore] = useState(false);
 
   const fetchAll = async () => {
     setLoading(true); setError(null);
     try {
       const [r, w] = await Promise.all([
-        getReservations(undefined, status || undefined),
+        getReservations(undefined, status || undefined, { limit: pageSize + 1, offset: (page - 1) * pageSize }),
         getWarehouses().catch(() => [] as Warehouse[]),
       ]);
-      setRows(r); setWarehouses(w);
+      setHasMore(r.length > pageSize); setRows(r.slice(0, pageSize)); setWarehouses(w);
       getProducts().then(setProducts).catch(() => {});
     } catch (e: any) {
       setError(e.message || 'Không tải được giữ hàng');
@@ -50,7 +55,8 @@ export default function ReservationsPage({ deptKey }: { deptKey: DeptKey }) {
     }
   };
 
-  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [status]);
+  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [status, page, pageSize]);
+  useEffect(() => { setPage(1); }, [status]);
 
   const act = async (id: string, action: 'release' | 'consume') => {
     setActingId(id); setError(null);
@@ -154,6 +160,10 @@ export default function ReservationsPage({ deptKey }: { deptKey: DeptKey }) {
         </Card>
       )}
 
+      {!loading && rows.length > 0 && <Pagination currentPage={page} totalPages={hasMore ? page + 1 : page} onPageChange={setPage} itemsPerPage={pageSize} onItemsPerPageChange={(size) => { setPageSize(size); setPage(1); }} />}
+
+      <AvailableInventoryReference />
+
       {showCreate && (
         <HoldCreateModal warehouses={warehouses} products={products}
           onClose={() => setShowCreate(false)}
@@ -179,10 +189,36 @@ function HoldCreateModal({ warehouses, products, onClose, onDone, onError }: {
   const [sourceId, setSourceId] = useState('');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
+  const [availableRows, setAvailableRows] = useState<AvailableInventoryRow[]>([]);
+  const [loadingAvailable, setLoadingAvailable] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingAvailable(true);
+    getAvailableInventory({ onlyAvailable: true, limit: 1000 })
+      .then((result) => {
+        if (!cancelled) setAvailableRows(result.rows.filter((row) => Number(row.available) > 0));
+      })
+      .catch(() => { if (!cancelled) setAvailableRows([]); })
+      .finally(() => { if (!cancelled) setLoadingAvailable(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => { setWarehouseId(''); }, [productId]);
+
+  const availableByWarehouse = new Map(availableRows.filter((row) => row.productId === productId).map((row) => [row.warehouseId, row]));
+  const selectedAvailability = availableByWarehouse.get(warehouseId);
+  const availableProductIds = new Set(availableRows.map((row) => row.productId));
+  const availableProducts = products.filter((product) => availableProductIds.has(product.id));
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!productId || !warehouseId || !(Number(quantity) > 0)) { setErr('Chọn hàng, kho và số lượng hợp lệ.'); return; }
+    if (!selectedAvailability) { setErr('Sản phẩm không còn tồn khả dụng tại kho đã chọn.'); return; }
+    if (Number(quantity) > Number(selectedAvailability.available)) {
+      setErr(`Số lượng giữ không được vượt quá tồn khả dụng (${Number(selectedAvailability.available).toLocaleString('vi-VN')} ${selectedAvailability.unit || ''}).`);
+      return;
+    }
     setSaving(true); setErr('');
     try {
       await holdStock({ productId, warehouseId, quantity: Number(quantity), sourceType, sourceId: sourceId || undefined });
@@ -207,24 +243,29 @@ function HoldCreateModal({ warehouses, products, onClose, onDone, onError }: {
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
               <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Mặt hàng</label>
-              <select value={productId} onChange={(e) => setProductId(e.target.value)} required
+              <select value={productId} onChange={(e) => setProductId(e.target.value)} required disabled={loadingAvailable}
                 className="w-full px-4 py-2.5 border border-gray-200 rounded-xl bg-white text-sm outline-none">
-                <option value="">-- Chọn hàng --</option>
-                {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                <option value="">{loadingAvailable ? 'Đang tải sản phẩm còn tồn...' : availableProducts.length === 0 ? 'Không có sản phẩm còn tồn' : '-- Chọn hàng --'}</option>
+                {availableProducts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>
             <div>
               <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Kho</label>
-              <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} required
+              <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} required disabled={!productId || loadingAvailable}
                 className="w-full px-4 py-2.5 border border-gray-200 rounded-xl bg-white text-sm outline-none">
-                <option value="">-- Chọn kho --</option>
-                {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                <option value="">{loadingAvailable ? 'Đang tải kho có hàng...' : !productId ? 'Chọn mặt hàng trước' : availableRows.length === 0 ? 'Không có kho còn hàng' : '-- Chọn kho --'}</option>
+                {warehouses.filter((w) => availableByWarehouse.has(w.id)).map((w) => {
+                  const available = availableByWarehouse.get(w.id)?.available || 0;
+                  const unit = availableByWarehouse.get(w.id)?.unit || '';
+                  return <option key={w.id} value={w.id}>{w.name} · còn {Number(available).toLocaleString('vi-VN')} {unit}</option>;
+                })}
               </select>
             </div>
             <div>
               <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Số lượng</label>
-              <input type="number" min={1} step="any" value={quantity} onChange={(e) => setQuantity(Number(e.target.value))}
+              <input type="number" min={1} max={selectedAvailability ? Number(selectedAvailability.available) : undefined} step="any" value={quantity} onChange={(e) => setQuantity(Number(e.target.value))}
                 className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm outline-none" />
+              {selectedAvailability && <p className="text-[11px] text-emerald-600 mt-1">Khả dụng: {Number(selectedAvailability.available).toLocaleString('vi-VN')} {selectedAvailability.unit || ''}</p>}
             </div>
             <div>
               <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Nguồn</label>

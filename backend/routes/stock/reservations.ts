@@ -7,7 +7,7 @@ import { beginStockTransaction } from '../../utils/stockTransaction.js';
 import type { StockContext } from './context.js';
 
 export function reservationsRoutes(ctx: StockContext) {
-  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, assertLocation, isSaleableLocation, availableOf, assertNotCounting, paginationOf } = ctx;
+  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, assertLocation, isSaleableLocation, availableOf, assertNotCounting, paginationOf, recordWarehouseActivity } = ctx;
   const router = Router();
   // ── Giữ hàng / phân bổ (§21: hold/release/consume, TP+NV trong scope) ─────────
 
@@ -87,6 +87,11 @@ export function reservationsRoutes(ctx: StockContext) {
            ON DUPLICATE KEY UPDATE reserved = reserved + VALUES(reserved), updatedAt = VALUES(updatedAt)`,
           [productId, warehouseId, locationId || '', quantity, now]
         );
+        await recordWarehouseActivity(db.run.bind(db), {
+          actionType: 'RESERVATION_HELD', entityType: 'RESERVATION', entityId: id,
+          productId, warehouseId, quantity: Number(quantity), userId: user.id,
+          metadata: { locationId: locationId || '', sourceType: sourceType || 'INTERNAL', sourceId: sourceId ?? null, expiresAt: expiresAt ?? null },
+        });
         await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
         await db.run('ROLLBACK'); transactionOpen = false;
@@ -142,6 +147,13 @@ export function reservationsRoutes(ctx: StockContext) {
           );
         }
         await db.run('UPDATE reservations SET status = ? WHERE id = ?', [toStatus, r.id]);
+        await recordWarehouseActivity(db.run.bind(db), {
+          actionType: toStatus === 'CONSUMED' ? 'RESERVATION_CONSUMED' : 'RESERVATION_RELEASED',
+          entityType: 'RESERVATION', entityId: r.id, productId: r.productId,
+          warehouseId: r.warehouseId, quantity: Number(r.quantity), userId: user.id,
+          oldData: { status: 'HELD' }, newData: { status: toStatus },
+          metadata: { locationId: r.locationId || '', sourceType: r.sourceType, sourceId: r.sourceId || null },
+        });
         await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
         await db.run('ROLLBACK'); transactionOpen = false;

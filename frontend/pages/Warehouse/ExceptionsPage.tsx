@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { TriangleAlert, RefreshCw, AlertCircle, ChevronDown } from 'lucide-react';
 import { Card } from '../../components/UI';
+import { Pagination } from '../../components/Pagination';
 import { getStockBalances, getWarehouses, type StockBalanceRow, type Warehouse } from '../../services/stockService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
@@ -20,15 +21,20 @@ export default function ExceptionsPage({ deptKey }: { deptKey: DeptKey }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [warehouseId, setWarehouseId] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [hasMore, setHasMore] = useState(false);
 
   const fetchAll = async () => {
     setLoading(true); setError(null);
     try {
-      const [b, w] = await Promise.all([
-        getStockBalances(warehouseId ? { warehouseId } : {}),
+      const [groupRows, w] = await Promise.all([
+        Promise.all(GROUPS.map((group) => getStockBalances({ warehouseId: warehouseId || undefined, purpose: group.purpose, limit: pageSize + 1, offset: (page - 1) * pageSize }))),
         getWarehouses().catch(() => [] as Warehouse[]),
       ]);
-      setRows(b.filter((r) => r.locationPurpose && r.locationPurpose !== 'SALEABLE' && ['QUARANTINE', 'WARRANTY', 'DAMAGED', 'DEMO'].includes(r.locationPurpose)));
+      const hasNext = groupRows.some((group) => group.length > pageSize);
+      setHasMore(hasNext);
+      setRows(groupRows.flatMap((group) => group.slice(0, pageSize)));
       setWarehouses(w);
     } catch (e: any) {
       setError(e.message || 'Không tải được hàng ngoại lệ');
@@ -37,13 +43,15 @@ export default function ExceptionsPage({ deptKey }: { deptKey: DeptKey }) {
     }
   };
 
-  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [warehouseId]);
-
+  useEffect(() => { setPage(1); }, [warehouseId]);
+  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [warehouseId, page, pageSize]);
   const counts = useMemo(() => GROUPS.map((g) => ({
     ...g,
     lines: rows.filter((r) => r.locationPurpose === g.purpose).length,
     qty: rows.filter((r) => r.locationPurpose === g.purpose).reduce((s, r) => s + Number(r.onHand), 0),
   })), [rows]);
+  const maxRows = Math.max(0, ...counts.map((g) => g.lines));
+  const totalPages = Math.max(1, Math.ceil(maxRows / pageSize));
 
   return (
     <div className="w-full max-w-[1400px] mx-auto space-y-4">
@@ -82,7 +90,7 @@ export default function ExceptionsPage({ deptKey }: { deptKey: DeptKey }) {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {counts.map((g) => {
-            const lines = rows.filter((r) => r.locationPurpose === g.purpose).slice(0, 6);
+            const lines = rows.filter((r) => r.locationPurpose === g.purpose);
             return (
               <Card key={g.purpose} className="p-5">
                 <div className="flex items-center justify-between mb-1">
@@ -109,6 +117,7 @@ export default function ExceptionsPage({ deptKey }: { deptKey: DeptKey }) {
           })}
         </div>
       )}
+      {!loading && maxRows > 0 && <Pagination currentPage={page} totalPages={hasMore ? page + 1 : page} onPageChange={setPage} itemsPerPage={pageSize} onItemsPerPageChange={(s) => { setPageSize(s); setPage(1); }} />}
 
       <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">
         ← Về tổng quan kho vận

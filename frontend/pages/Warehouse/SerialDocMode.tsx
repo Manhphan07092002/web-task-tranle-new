@@ -1,27 +1,29 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ScanLine, RefreshCw, AlertCircle, CheckCircle2, ArrowLeft, PackageCheck, Boxes, Hash, Camera } from 'lucide-react';
+import { ScanLine, RefreshCw, AlertCircle, CheckCircle2, ArrowLeft, PackageCheck, Boxes, Hash, Camera, Pencil, Trash2 } from 'lucide-react';
 import { Card } from '../../components/UI';
 import {
-  getStockDocument, getDocumentProgress, scanSerial, scanOutSerial, registerLot, confirmLineQty,
+  getStockDocument, getDocumentProgress, scanSerial, scanOutSerial, editLineSerial, registerLot, allocateLot, confirmLineQty, confirmLineWithoutSerial, completeDocumentProcessing,
   type DocProgress, type DocLineProgress,
 } from '../../services/stockService';
-import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
+import { getDeptHomePath, getDeptModulePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
 import { ScannerModal } from './StockDocs/ScannerModal';
+import { resolveTracking } from '../../utils/tracking';
 
 const TRACK_LABEL: Record<string, string> = { SERIAL: 'Serial', LOT: 'Lô/Cuộn', QUANTITY: 'Số lượng' };
 
 // Chế độ xử lý Serial/Lô theo phiếu (?documentId=): tiến độ từng dòng,
 // quét serial, đăng ký lô, xác nhận số lượng. Không động vào danh sách chung.
-export default function SerialDocMode({ deptKey }: { deptKey: DeptKey }) {
+export default function SerialDocMode({ deptKey, embedded = false, onClosed }: { deptKey: DeptKey; embedded?: boolean; onClosed?: () => void }) {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const documentId = params.get('documentId') || '';
-  const [doc, setDoc] = useState<{ code?: string | null; docType: string; status: string; warehouseName?: string | null } | null>(null);
+  const [doc, setDoc] = useState<{ code?: string | null; docType: string; status: string; warehouseName?: string | null; sourceWarehouseName?: string | null; destWarehouseName?: string | null; partnerName?: string | null } | null>(null);
   const [progress, setProgress] = useState<DocProgress | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [finishing, setFinishing] = useState(false);
 
   const fetchAll = useCallback(async () => {
     if (!documentId) return;
@@ -39,7 +41,25 @@ export default function SerialDocMode({ deptKey }: { deptKey: DeptKey }) {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
-  const backPath = `${getDeptHomePath(deptKey) || '/'}?m=${doc?.docType === 'ISSUE' ? 'wh_issue' : 'wh_receipt'}`;
+  const finishDocument = async () => {
+    if (!doc || !progress?.allCompleted || finishing || (doc.docType === 'ISSUE' && progress.lines.some((line) => Number(line.availability?.afterIssue) < 0))) return;
+    setFinishing(true); setError(null);
+    try {
+      await completeDocumentProcessing(documentId);
+      if (embedded) onClosed?.();
+      else await fetchAll();
+    } catch (e: any) {
+      setError(e.message || 'Không thể hoàn tất phiếu.');
+    } finally {
+      setFinishing(false);
+    }
+  };
+
+  const backPath = getDeptModulePath(
+    deptKey,
+    doc?.docType === 'ISSUE' ? 'wh_issue' : doc?.docType === 'TRANSFER' ? 'wh_transfer' : 'wh_receipt'
+  );
+  const insufficientStock = doc?.docType === 'ISSUE' && Boolean(progress?.lines.some((line) => Number(line.availability?.afterIssue) < 0));
 
   if (!documentId) {
     return (
@@ -52,25 +72,38 @@ export default function SerialDocMode({ deptKey }: { deptKey: DeptKey }) {
     );
   }
 
-  return (
+  const content = (
     <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kho vận · Xử lý hàng hóa</p>
           <h1 className="text-2xl font-bold text-gray-800 mt-1">
-            Đang xử lý phiếu {doc?.code || '…'}
+            {embedded ? 'Xử lý phiếu' : 'Đang xử lý phiếu'} {doc?.code || '…'}
           </h1>
+          {doc && (
+            <p className="text-xs text-gray-500 mt-1">
+              Kho: {doc.docType === 'TRANSFER' ? `${doc.sourceWarehouseName || '—'} → ${doc.destWarehouseName || '—'}` : doc.warehouseName || '—'}
+              {doc.partnerName ? ` · Đối tác: ${doc.partnerName}` : ''}
+            </p>
+          )}
           {progress && (
             <p className="text-gray-500 text-sm mt-1">
               {progress.lines.filter((l) => l.status === 'COMPLETED').length}/{progress.lines.length} dòng đã đủ
-              {progress.allCompleted ? ' — ✓ đủ điều kiện hoàn tất, quay lại phiếu để bấm Hoàn tất.' : ''}
+              {progress.allCompleted ? ' — ✓ đủ điều kiện hoàn tất.' : ''}
             </p>
           )}
         </div>
         <div className="flex gap-2">
-          <button onClick={() => navigate(backPath)}
+          {progress?.allCompleted && !insufficientStock && doc && doc.status !== 'DONE' && doc.status !== 'IN_TRANSIT' && doc.status !== 'READY' && (
+            <button onClick={finishDocument} disabled={finishing}
+              className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-sm disabled:opacity-60">
+              <PackageCheck size={16} />
+              {finishing ? 'Đang hoàn tất...' : 'Hoàn tất xử lý'}
+            </button>
+          )}
+          <button onClick={() => embedded ? onClosed?.() : navigate(backPath)}
             className="flex items-center gap-2 px-4 py-2.5 border border-gray-200 hover:bg-gray-50 text-gray-700 rounded-xl font-bold text-sm shadow-sm">
-            <ArrowLeft size={16} /> Quay lại phiếu
+            <ArrowLeft size={16} /> {embedded ? 'Đóng xử lý' : 'Quay lại phiếu'}
           </button>
           <button onClick={fetchAll} className="p-2.5 border border-gray-200 rounded-xl hover:bg-gray-50 text-gray-500 shadow-sm" title="Tải lại">
             <RefreshCw size={16} />
@@ -93,18 +126,35 @@ export default function SerialDocMode({ deptKey }: { deptKey: DeptKey }) {
         <div className="space-y-3">
           {progress.allCompleted && (
             <div className="flex items-center gap-2 p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-800 font-bold text-sm">
-              <CheckCircle2 size={18} /> Serial/Lô đã hoàn tất — quay lại phiếu để bấm Hoàn tất nhận/giao hàng.
+              <CheckCircle2 size={18} /> Các dòng hàng đã đủ — bấm “Hoàn tất xử lý” để chuyển phiếu sang trạng thái sẵn sàng hoàn tất.
             </div>
           )}
-          {progress.lines.map((line) => (
-            <LineCard key={line.lineId} line={line} docType={doc?.docType || ''} documentId={progress.documentId} onDone={fetchAll} />
-          ))}
+          {insufficientStock && (
+            <div className="flex items-center gap-2 p-4 bg-red-50 border border-red-200 rounded-2xl text-red-700 font-bold text-sm">
+              <AlertCircle size={18} /> Tồn khả dụng không đủ cho ít nhất một dòng hàng. Hãy giảm số lượng, đổi kho xuất hoặc bổ sung tồn trước khi hoàn tất xử lý.
+            </div>
+          )}
+          <div className={embedded ? 'rounded-2xl border border-gray-100 overflow-hidden bg-white' : 'space-y-3'}>
+            {progress.lines.map((line) => (
+              <LineCard key={line.lineId} line={line} docType={doc?.docType || ''} documentId={progress.documentId} onDone={fetchAll} compact={embedded} canEdit={doc?.status === 'DRAFT' || doc?.status === 'PROCESSING' || doc?.status === 'READY'} />
+            ))}
+          </div>
         </div>
       )}
 
-      <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">
-        ← Về tổng quan kho vận
-      </Link>
+      {!embedded && (
+        <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">
+          ← Về tổng quan kho vận
+        </Link>
+      )}
+    </div>
+  );
+  if (!embedded) return content;
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-[2px] p-3 sm:p-6 flex items-center justify-center" role="dialog" aria-modal="true" aria-label={`Xử lý phiếu ${doc?.code || ''}`}>
+      <div className="w-full max-w-6xl max-h-[94vh] overflow-y-auto rounded-3xl bg-slate-50 shadow-2xl p-3 sm:p-6">
+        {content}
+      </div>
     </div>
   );
 }
@@ -115,17 +165,18 @@ function statusBadge(status: string) {
   return <span className="px-2 py-0.5 rounded-full text-[11px] font-bold border bg-gray-100 text-gray-500 border-gray-200">Chưa xử lý</span>;
 }
 
-function LineCard({ line, docType, documentId, onDone }: { line: DocLineProgress; docType: string; documentId: string; onDone: () => Promise<void> }) {
-  const isIssue = docType === 'ISSUE';
+function LineCard({ line, docType, documentId, onDone, compact = false, canEdit = true }: { line: DocLineProgress; docType: string; documentId: string; onDone: () => Promise<void>; compact?: boolean; canEdit?: boolean }) {
+  const isIssue = docType === 'ISSUE' || docType === 'TRANSFER';
+  const tracking = resolveTracking(line.tracking);
   return (
-    <Card className="p-4 sm:p-5">
+    <Card className={`${compact ? 'rounded-none border-0 border-b border-gray-100 p-4 sm:p-5' : 'p-4 sm:p-5'}`}>
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="min-w-0">
           <p className="font-bold text-gray-900">{line.productName}</p>
           <p className="text-xs text-gray-400 font-mono">{line.productId}</p>
         </div>
         <div className="flex items-center gap-2 text-sm">
-          <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600">{TRACK_LABEL[line.tracking] || line.tracking}</span>
+          <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600">{TRACK_LABEL[tracking] || tracking}</span>
           {statusBadge(line.status)}
         </div>
       </div>
@@ -134,19 +185,28 @@ function LineCard({ line, docType, documentId, onDone }: { line: DocLineProgress
         {' · '}Đã xử lý: <b className="font-mono">{line.processed.toLocaleString('vi-VN')}</b>
         {' · '}Còn thiếu: <b className="font-mono">{Math.max(0, line.required - line.processed).toLocaleString('vi-VN')}</b>
       </p>
+      {isIssue && line.availability && (
+        <div className={`mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2 rounded-xl border p-2.5 text-xs ${line.availability.afterIssue < 0 ? 'border-red-200 bg-red-50' : 'border-gray-100 bg-gray-50'}`}>
+          <div><span className="block text-gray-500">Tồn thực tế</span><b>{Number(line.availability.onHand).toLocaleString('vi-VN')}</b></div>
+          <div><span className="block text-gray-500">Đang giữ</span><b className="text-amber-700">{Number(line.availability.reserved).toLocaleString('vi-VN')}</b></div>
+          <div><span className="block text-gray-500">Khả dụng</span><b className="text-emerald-700">{Number(line.availability.available).toLocaleString('vi-VN')}</b></div>
+          <div><span className="block text-gray-500">Sau xuất</span><b className={line.availability.afterIssue < 0 ? 'text-red-700' : 'text-gray-800'}>{Number(line.availability.afterIssue).toLocaleString('vi-VN')}</b></div>
+          {line.availability.afterIssue < 0 && <p className="col-span-2 sm:col-span-4 text-red-700 font-semibold">Kho hiện tại chỉ có {Number(line.availability.available).toLocaleString('vi-VN')} sản phẩm khả dụng, không đủ số lượng cần xuất.</p>}
+        </div>
+      )}
       <div className="mt-3">
-        {line.tracking === 'SERIAL' && (
-          <SerialBox line={line} isIssue={isIssue} documentId={documentId} onDone={onDone} />
+        {tracking === 'SERIAL' && (
+          line.quantityConfirmed
+            ? <SerialBox line={line} isIssue={isIssue} documentId={documentId} onDone={onDone} canEdit={canEdit} />
+            : <SerialQuantityConfirm line={line} onDone={onDone} />
         )}
-        {line.tracking === 'LOT' && !isIssue && (
+        {tracking === 'LOT' && !isIssue && (
           <LotBox line={line} documentId={documentId} onDone={onDone} />
         )}
-        {line.tracking === 'LOT' && isIssue && (
-          <div className="text-xs text-gray-500">
-            {line.serials.length > 0 ? `Mã lô trên phiếu: ${line.serials.join(', ')}` : 'Chưa có mã lô — sửa phiếu để bổ sung.'}
-          </div>
+        {tracking === 'LOT' && isIssue && (
+          <LotIssueBox line={line} documentId={documentId} onDone={onDone} />
         )}
-        {line.tracking === 'QUANTITY' && (
+        {tracking === 'QUANTITY' && (
           <QuantityBox line={line} onDone={onDone} />
         )}
       </div>
@@ -154,12 +214,98 @@ function LineCard({ line, docType, documentId, onDone }: { line: DocLineProgress
   );
 }
 
-function SerialBox({ line, isIssue, documentId, onDone }: { line: DocLineProgress; isIssue: boolean; documentId: string; onDone: () => Promise<void> }) {
+function SerialQuantityConfirm({ line, onDone }: { line: DocLineProgress; onDone: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [showNoSerial, setShowNoSerial] = useState(false);
+
+  const submit = async () => {
+    if (busy) return;
+    setBusy(true); setErr('');
+    try {
+      await confirmLineQty(line.lineId, { actualQty: line.required });
+      await onDone();
+    } catch (e: any) {
+      setErr(e.message || 'Xác nhận số lượng thất bại');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-gray-500">Xác nhận đủ {line.required.toLocaleString('vi-VN')} sản phẩm để bắt đầu quét Serial.</p>
+      <button type="button" onClick={submit} disabled={busy}
+        className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60">
+        <PackageCheck size={15} /> {busy ? 'Đang xác nhận...' : 'Xác nhận số lượng & bắt đầu quét Serial'}
+      </button>
+      {err && <p className="text-xs text-red-600 flex items-center gap-1"><AlertCircle size={12} />{err}</p>}
+      {!showNoSerial ? (
+        <button type="button" onClick={() => setShowNoSerial(true)} className="text-xs text-gray-500 hover:text-emerald-700 underline underline-offset-2">
+          Không có số Serial
+        </button>
+      ) : (
+        <NoSerialConfirm line={line} onDone={onDone} onCancel={() => setShowNoSerial(false)} />
+      )}
+    </div>
+  );
+}
+
+function NoSerialConfirm({ line, onDone, onCancel }: { line: DocLineProgress; onDone: () => Promise<void>; onCancel: () => void }) {
+  const [actual, setActual] = useState(String(line.required));
+  const [reason, setReason] = useState('Hàng hóa không có Serial');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const needReason = Number(actual) !== line.required;
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy || !(Number(actual) >= 0) || (needReason && !reason.trim())) return;
+    setBusy(true); setErr('');
+    try {
+      await confirmLineWithoutSerial(line.lineId, { actualQty: Number(actual), varianceReason: reason.trim() || undefined });
+      await onDone();
+    } catch (e: any) { setErr(e.message || 'Không thể xác nhận dòng không có Serial'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <form onSubmit={submit} className="mt-2 rounded-xl border border-amber-200 bg-amber-50/70 p-3 space-y-2">
+      <p className="text-xs font-bold text-amber-800">Xác nhận sản phẩm không có số Serial</p>
+      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600">
+        <span>Số lượng trên phiếu: <b>{line.required.toLocaleString('vi-VN')}</b></span>
+        <label className="flex items-center gap-1">Thực nhận:
+          <input value={actual} onChange={(e) => setActual(e.target.value)} inputMode="decimal" className="w-24 px-2 py-1.5 border border-gray-200 rounded-lg bg-white text-right" />
+        </label>
+      </div>
+      <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Lý do" className="w-full px-2.5 py-1.5 border border-gray-200 rounded-lg bg-white text-xs" />
+      <div className="flex gap-2">
+        <button type="submit" disabled={busy} className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold disabled:opacity-60">{busy ? 'Đang lưu...' : 'Xác nhận không có Serial'}</button>
+        <button type="button" onClick={onCancel} className="px-3 py-1.5 text-xs text-gray-500 hover:text-gray-800">Hủy</button>
+      </div>
+      {err && <p className="text-xs text-red-600 flex items-center gap-1"><AlertCircle size={12} />{err}</p>}
+    </form>
+  );
+}
+
+function SerialBox({ line, isIssue, documentId, onDone, canEdit }: { line: DocLineProgress; isIssue: boolean; documentId: string; onDone: () => Promise<void>; canEdit: boolean }) {
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [scanning, setScanning] = useState(false);
   const [okMsg, setOkMsg] = useState('');
+  const [editingSerial, setEditingSerial] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState('');
+
+  const editSerial = async (serial: string, replacement?: string) => {
+    if (!canEdit || busy) return;
+    setBusy(true); setErr(''); setOkMsg('');
+    try {
+      await editLineSerial(documentId, line.lineId, serial, replacement);
+      setEditingSerial(null); setEditingValue('');
+      setOkMsg(replacement ? '✓ Đã sửa Serial' : '✓ Đã xóa Serial khỏi dòng hàng');
+      await onDone();
+    } catch (e: any) { setErr(e.message || 'Không thể sửa Serial'); }
+    finally { setBusy(false); }
+  };
 
   const submitOne = async (code: string): Promise<string | null> => {
     try {
@@ -204,14 +350,42 @@ function SerialBox({ line, isIssue, documentId, onDone }: { line: DocLineProgres
     }
   };
 
+  const errorTitle = /chưa từng nhập|không tìm thấy serial/i.test(err)
+    ? 'Serial chưa có trong lịch sử nhập kho'
+    : /sản phẩm khác/i.test(err)
+      ? 'Serial không đúng sản phẩm'
+      : /không nằm tại kho|sai kho/i.test(err)
+        ? 'Serial không đúng kho xuất'
+        : /đang được giữ/i.test(err)
+          ? 'Serial đang được giữ cho phiếu khác'
+          : /đã được xuất/i.test(err)
+            ? 'Serial đã được xuất'
+            : 'Serial không hợp lệ';
+
   return (
     <div>
       {line.serials.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mb-2">
           {line.serials.map((s) => (
-            <span key={s} className="px-2 py-0.5 rounded-lg bg-gray-100 text-gray-700 font-mono text-xs flex items-center gap-1">
-              <CheckCircle2 size={12} className="text-emerald-500" />{s}
-            </span>
+            editingSerial === s ? (
+              <span key={s} className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-white px-1.5 py-0.5">
+                <input autoFocus value={editingValue} onChange={(e) => setEditingValue(e.target.value)} className="w-24 px-1 py-0.5 text-xs font-mono outline-none" />
+                <button type="button" onClick={() => editSerial(s, editingValue.trim())} className="text-emerald-600 text-xs font-bold">Lưu</button>
+                <button type="button" onClick={() => setEditingSerial(null)} className="text-gray-400 text-xs">Hủy</button>
+              </span>
+            ) : (
+              <span key={s} className="inline-flex items-center gap-1 rounded-lg bg-gray-100 px-2 py-0.5 text-gray-700 font-mono text-xs">
+                <CheckCircle2 size={12} className="text-emerald-500" />{s}
+                {canEdit && <>
+                  <button type="button" title="Sửa Serial" aria-label={`Sửa Serial ${s}`} onClick={() => { setEditingSerial(s); setEditingValue(s); }} className="ml-1 inline-flex items-center gap-0.5 rounded px-1 text-[11px] font-semibold text-gray-500 hover:bg-emerald-50 hover:text-emerald-600">
+                    <Pencil size={11} /> Sửa
+                  </button>
+                  <button type="button" title="Xóa Serial" aria-label={`Xóa Serial ${s}`} onClick={() => editSerial(s)} className="inline-flex items-center gap-0.5 rounded px-1 text-[11px] font-semibold text-gray-500 hover:bg-red-50 hover:text-red-600">
+                    <Trash2 size={11} /> Xóa
+                  </button>
+                </>}
+              </span>
+            )
           ))}
         </div>
       )}
@@ -235,7 +409,12 @@ function SerialBox({ line, isIssue, documentId, onDone }: { line: DocLineProgres
         </>
       )}
       {okMsg && <p className="text-xs text-emerald-600 font-bold mt-1.5">{okMsg}</p>}
-      {err && <p className="text-xs text-red-600 mt-1.5 flex items-center gap-1"><AlertCircle size={12} />{err}</p>}
+      {err && (
+        <div className="mt-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          <AlertCircle size={14} className="mt-0.5 shrink-0" />
+          <div><b className="block">{errorTitle}</b><span>{err}</span></div>
+        </div>
+      )}
     </div>
   );
 }
@@ -301,6 +480,71 @@ function LotBox({ line, documentId, onDone }: { line: DocLineProgress; documentI
           <button type="submit" disabled={busy}
             className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60">
             <Boxes size={15} /> {busy ? '...' : 'Thêm lô'}
+          </button>
+        </form>
+      )}
+      {err && <p className="text-xs text-red-600 mt-1.5 flex items-center gap-1"><AlertCircle size={12} />{err}</p>}
+    </div>
+  );
+}
+
+function LotIssueBox({ line, documentId, onDone }: { line: DocLineProgress; documentId: string; onDone: () => Promise<void> }) {
+  const [lotCode, setLotCode] = useState('');
+  const [quantity, setQuantity] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const allocated = line.lots.reduce((sum, lot) => sum + Number(lot.allocatedQty || 0), 0);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const qty = Number(quantity);
+    if (busy || !lotCode.trim() || !(qty > 0)) return;
+    setBusy(true); setErr('');
+    try {
+      await allocateLot({ documentId, documentLineId: line.lineId, lotCode: lotCode.trim(), quantity: qty });
+      setLotCode(''); setQuantity('');
+      await onDone();
+    } catch (e: any) {
+      setErr(e.message || 'Phân bổ lô thất bại');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      {line.lots.length > 0 && (
+        <div className="mb-2 border border-gray-100 rounded-xl overflow-hidden">
+          <table className="w-full text-xs">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="text-left py-1.5 px-3 font-bold text-gray-500 uppercase">Lô/cuộn nguồn</th>
+                <th className="text-right py-1.5 px-3 font-bold text-gray-500 uppercase">Phân bổ</th>
+                <th className="text-right py-1.5 px-3 font-bold text-gray-500 uppercase">Còn lại</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {line.lots.map((lot) => (
+                <tr key={lot.id}>
+                  <td className="py-1.5 px-3 font-mono font-bold text-gray-800">{lot.lotCode}{lot.coilCode ? ` · ${lot.coilCode}` : ''}</td>
+                  <td className="py-1.5 px-3 text-right tabular-nums">{Number(lot.allocatedQty || 0).toLocaleString('vi-VN')}{lot.unit ? ` ${lot.unit}` : ''}</td>
+                  <td className="py-1.5 px-3 text-right tabular-nums">{Number(lot.remainingQty || 0).toLocaleString('vi-VN')}{lot.unit ? ` ${lot.unit}` : ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="text-xs text-gray-500 mb-2">Đã phân bổ: <b>{allocated.toLocaleString('vi-VN')}</b> / {line.required.toLocaleString('vi-VN')}</p>
+      {line.status !== 'COMPLETED' && (
+        <form onSubmit={submit} className="flex gap-2 flex-wrap">
+          <input value={lotCode} onChange={(e) => setLotCode(e.target.value)} placeholder="Mã lô/cuộn nguồn *"
+            className="flex-1 min-w-[160px] px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500 font-mono" />
+          <input value={quantity} onChange={(e) => setQuantity(e.target.value)} placeholder="Số lượng *" inputMode="decimal"
+            className="w-28 px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none text-right tabular-nums focus:border-emerald-500" />
+          <button type="submit" disabled={busy}
+            className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60">
+            <Boxes size={15} /> {busy ? '...' : 'Phân bổ lô'}
           </button>
         </form>
       )}

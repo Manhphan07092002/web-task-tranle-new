@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Bell, RefreshCw, AlertCircle, ChevronDown, SlidersHorizontal } from 'lucide-react';
 import { Card } from '../../components/UI';
+import { Pagination } from '../../components/Pagination';
 import { getStockAlerts, getWarehouses, saveStockPolicy, type StockAlertRow, type Warehouse } from '../../services/stockService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
@@ -29,16 +30,19 @@ export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [warehouseId, setWarehouseId] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [hasMore, setHasMore] = useState(false);
   const [editing, setEditing] = useState<Record<string, { minStock: string; maxStock: string; reorderPoint: string; leadTimeDays: string; saving: boolean; err: string }>>({});
 
   const fetchAll = async () => {
     setLoading(true); setError(null);
     try {
       const [a, w] = await Promise.all([
-        getStockAlerts(warehouseId || undefined),
+        getStockAlerts(warehouseId || undefined, { limit: pageSize + 1, offset: (page - 1) * pageSize }),
         getWarehouses().catch(() => [] as Warehouse[]),
       ]);
-      setRows(a); setWarehouses(w);
+      setHasMore(a.length > pageSize); setRows(a.slice(0, pageSize)); setWarehouses(w);
     } catch (e: any) {
       setError(e.message || 'Không tải được cảnh báo');
     } finally {
@@ -46,7 +50,9 @@ export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
     }
   };
 
-  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [warehouseId]);
+  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [warehouseId, page, pageSize]);
+  useEffect(() => { setPage(1); }, [warehouseId]);
+  const visibleRows = rows;
 
   const keyOf = (r: StockAlertRow) => `${r.productId}|${r.warehouseId}`;
 
@@ -166,7 +172,7 @@ export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {rows.map((r) => {
+                {visibleRows.map((r) => {
                   const k = keyOf(r);
                   const ed = editing[k];
                   return (
@@ -227,6 +233,7 @@ export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
           </div>
         </Card>
       )}
+      {!loading && rows.length > 0 && <Pagination currentPage={page} totalPages={hasMore ? page + 1 : page} onPageChange={setPage} itemsPerPage={pageSize} onItemsPerPageChange={(s) => { setPageSize(s); setPage(1); }} />}
 
       <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">
         ← Về tổng quan kho vận
