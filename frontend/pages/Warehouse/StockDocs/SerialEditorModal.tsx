@@ -107,6 +107,8 @@ export function SerialEditorModal({ initial, quantity, productId, warehouseId, m
       {scanning && (
         <ScannerModal
           initial={codes}
+          title="Quét Serial / Lô"
+          targetQuantity={quantity}
           onClose={() => setScanning(false)}
           onDone={(scanned) => { setScanning(false); setText(scanned.join('\n')); }}
         />

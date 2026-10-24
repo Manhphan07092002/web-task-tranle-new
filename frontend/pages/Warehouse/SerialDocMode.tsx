@@ -10,6 +10,8 @@ import { getDeptHomePath, getDeptModulePath } from '../../components/layout/menu
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
 import { ScannerModal } from './StockDocs/ScannerModal';
 import { resolveTracking } from '../../utils/tracking';
+import { useBarcodeScanner } from '../../hooks/useBarcodeScanner';
+import { playSuccessBeep, playErrorBuzz, playWarningBeep } from '../../utils/scannerFeedback';
 
 const TRACK_LABEL: Record<string, string> = { SERIAL: 'Serial', LOT: 'Lô/Cuộn', QUANTITY: 'Số lượng' };
 
@@ -39,6 +41,39 @@ export default function SerialDocMode({ deptKey, embedded = false, onClosed }: {
   }, [documentId]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  // Lắng nghe súng bắn barcode phần cứng toàn trang (USB / Bluetooth / PDA)
+  useBarcodeScanner({
+    enabled: Boolean(doc?.status === 'DRAFT' || doc?.status === 'PROCESSING' || doc?.status === 'READY'),
+    onScan: async (scannedCode) => {
+      if (!progress || loading) return;
+      // Tìm dòng hàng đầu tiên chưa hoàn thành có theo dõi SERIAL
+      const targetLine = progress.lines.find(
+        (l) => l.status !== 'COMPLETED' && resolveTracking(l.tracking) === 'SERIAL'
+      );
+      if (!targetLine) {
+        playWarningBeep();
+        setError('Tất cả các dòng hàng theo Serial đã được quét đủ số lượng.');
+        return;
+      }
+
+      try {
+        const scanFn =
+          doc?.docType === 'RETURN'
+            ? scanReturnSerial
+            : doc?.docType === 'ISSUE' || doc?.docType === 'TRANSFER'
+            ? scanOutSerial
+            : scanSerial;
+        await scanFn(documentId, targetLine.lineId, scannedCode);
+        playSuccessBeep();
+        setError(null);
+        await fetchAll();
+      } catch (err: any) {
+        playErrorBuzz();
+        setError(`Lỗi quét súng mã [${scannedCode}] cho "${targetLine.productName}": ${err?.message || 'Không hợp lệ'}`);
+      }
+    },
+  });
 
   const backPath = getDeptModulePath(
     deptKey,
@@ -297,6 +332,16 @@ function SerialBox({ line, scanMode, documentId, onDone, canEdit }: { line: DocL
     await onDone();
   };
 
+  const handleRealtimeScan = async (code: string) => {
+    try {
+      await (scanMode === 'out' ? scanOutSerial : scanMode === 'return' ? scanReturnSerial : scanSerial)(documentId, line.lineId, code);
+      await onDone();
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, message: e.message || 'Thất bại' };
+    }
+  };
+
   const submit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const code = value.trim();
@@ -305,8 +350,10 @@ function SerialBox({ line, scanMode, documentId, onDone, canEdit }: { line: DocL
     try {
       await (scanMode === 'out' ? scanOutSerial : scanMode === 'return' ? scanReturnSerial : scanSerial)(documentId, line.lineId, code);
       setValue('');
+      playSuccessBeep();
       await onDone();
     } catch (e: any) {
+      playErrorBuzz();
       setErr(e.message || 'Thêm serial thất bại');
     } finally {
       setBusy(false);
@@ -367,7 +414,14 @@ function SerialBox({ line, scanMode, documentId, onDone, canEdit }: { line: DocL
             </button>
           </form>
           {scanning && (
-            <ScannerModal initial={line.serials} onClose={() => setScanning(false)} onDone={handleScannerDone} />
+            <ScannerModal
+              initial={line.serials}
+              title={`Quét Serial: ${line.productName}`}
+              targetQuantity={line.required}
+              onClose={() => setScanning(false)}
+              onScanItem={handleRealtimeScan}
+              onDone={handleScannerDone}
+            />
           )}
         </>
       )}
