@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertCircle, CheckCircle2, ClipboardList, RefreshCw, Search } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ClipboardList, RefreshCw, Search, Calendar, ArrowUpDown } from 'lucide-react';
 import { Card } from '../../components/UI';
 import { Pagination } from '../../components/Pagination';
 import {
@@ -27,6 +27,79 @@ const TYPES = [
   { id: 'RETURN', label: 'Trả hàng', code: 'PTH', module: 'wh_return' },
   { id: 'COUNT', label: 'Kiểm kê', code: 'PKK', module: 'wh_count' },
 ] as const;
+
+type DatePreset = 'ALL' | 'TODAY' | 'WEEK' | 'MONTH' | 'YEAR' | 'CUSTOM';
+
+const MONTH_OPTIONS = [
+  { value: 1, label: 'Tháng 1' },
+  { value: 2, label: 'Tháng 2' },
+  { value: 3, label: 'Tháng 3' },
+  { value: 4, label: 'Tháng 4' },
+  { value: 5, label: 'Tháng 5' },
+  { value: 6, label: 'Tháng 6' },
+  { value: 7, label: 'Tháng 7' },
+  { value: 8, label: 'Tháng 8' },
+  { value: 9, label: 'Tháng 9' },
+  { value: 10, label: 'Tháng 10' },
+  { value: 11, label: 'Tháng 11' },
+  { value: 12, label: 'Tháng 12' },
+];
+
+function checkDateInRange(
+  createdAtStr: string | null | undefined,
+  preset: DatePreset,
+  dateFrom: string,
+  dateTo: string,
+  selectedMonth: number,
+  selectedYear: number
+): boolean {
+  if (preset === 'ALL') return true;
+  if (!createdAtStr) return false;
+  const docDate = new Date(createdAtStr);
+  if (isNaN(docDate.getTime())) return false;
+
+  const now = new Date();
+
+  if (preset === 'TODAY') {
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+    const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    return docDate >= start && docDate <= end;
+  }
+
+  if (preset === 'WEEK') {
+    const start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    start.setHours(0, 0, 0, 0);
+    return docDate >= start;
+  }
+
+  if (preset === 'MONTH') {
+    const start = new Date(selectedYear, selectedMonth - 1, 1, 0, 0, 0);
+    const end = new Date(selectedYear, selectedMonth, 0, 23, 59, 59, 999);
+    return docDate >= start && docDate <= end;
+  }
+
+  if (preset === 'YEAR') {
+    const start = new Date(selectedYear, 0, 1, 0, 0, 0);
+    const end = new Date(selectedYear, 11, 31, 23, 59, 59, 999);
+    return docDate >= start && docDate <= end;
+  }
+
+  if (preset === 'CUSTOM') {
+    if (dateFrom) {
+      const from = new Date(dateFrom);
+      from.setHours(0, 0, 0, 0);
+      if (docDate < from) return false;
+    }
+    if (dateTo) {
+      const to = new Date(dateTo);
+      to.setHours(23, 59, 59, 999);
+      if (docDate > to) return false;
+    }
+    return true;
+  }
+
+  return true;
+}
 
 function typeMeta(docType: string) {
   return TYPES.find((item) => item.id === docType) || { id: docType, label: docType, code: '', module: 'wh_receipt' };
@@ -61,18 +134,55 @@ function ProcessingQueueList({ deptKey, documentId }: { deptKey: DeptKey; docume
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const now = useMemo(() => new Date(), []);
+  const currentMonth = now.getMonth() + 1;
+  const currentYear = now.getFullYear();
+
   const savedState = useMemo(() => loadSavedState(), []);
   const [query, setQuery] = useState(savedState?.query || '');
   const [typeFilter, setTypeFilter] = useState(savedState?.typeFilter || 'ALL');
   const [warehouseFilter, setWarehouseFilter] = useState(savedState?.warehouseFilter || 'ALL');
+  const [datePreset, setDatePreset] = useState<DatePreset>(savedState?.datePreset || 'ALL');
+  const [dateFrom, setDateFrom] = useState(savedState?.dateFrom || '');
+  const [dateTo, setDateTo] = useState(savedState?.dateTo || '');
+  const [selectedMonth, setSelectedMonth] = useState<number>(Number(savedState?.selectedMonth) || currentMonth);
+  const [selectedYear, setSelectedYear] = useState<number>(Number(savedState?.selectedYear) || currentYear);
+  const [dateSortOrder, setDateSortOrder] = useState<'desc' | 'asc'>(savedState?.dateSortOrder || 'desc');
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [page, setPage] = useState(savedState?.page || 1);
   const [pageSize, setPageSize] = useState(savedState?.pageSize || 10);
 
+  // Danh sách các năm có trong hệ thống để chọn
+  const availableYears = useMemo(() => {
+    const yearsSet = new Set<number>([currentYear, currentYear - 1, currentYear - 2]);
+    docs.forEach((d) => {
+      if (d.createdAt) {
+        const y = new Date(d.createdAt).getFullYear();
+        if (!isNaN(y)) yearsSet.add(y);
+      }
+    });
+    return Array.from(yearsSet).sort((a, b) => b - a);
+  }, [docs, currentYear]);
+
   // Lưu bộ lọc & phân trang vào sessionStorage để giữ nguyên khi quay lại
   useEffect(() => {
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ query, typeFilter, warehouseFilter, page, pageSize }));
-  }, [query, typeFilter, warehouseFilter, page, pageSize]);
+    sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        query,
+        typeFilter,
+        warehouseFilter,
+        datePreset,
+        dateFrom,
+        dateTo,
+        selectedMonth,
+        selectedYear,
+        dateSortOrder,
+        page,
+        pageSize,
+      })
+    );
+  }, [query, typeFilter, warehouseFilter, datePreset, dateFrom, dateTo, selectedMonth, selectedYear, dateSortOrder, page, pageSize]);
 
   // Nếu người dùng truy cập trực tiếp bằng URL có ?documentId=xxx, tự động điều hướng sang trang gốc tương ứng
   useEffect(() => {
@@ -158,16 +268,36 @@ function ProcessingQueueList({ deptKey, documentId }: { deptKey: DeptKey; docume
         || (doc.docType === 'TRANSFER'
           ? doc.sourceWarehouseId === warehouseFilter || doc.destWarehouseId === warehouseFilter
           : doc.warehouseId === warehouseFilter))
+      .filter((doc) => checkDateInRange(doc.createdAt, datePreset, dateFrom, dateTo, selectedMonth, selectedYear))
       .filter((doc) => !needle || [doc.code, doc.partnerName, doc.warehouseName, doc.id].some((value) => String(value || '').toLowerCase().includes(needle)))
-      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-  }, [docs, query, typeFilter, warehouseFilter]);
+      .sort((a, b) => {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return dateSortOrder === 'desc' ? timeB - timeA : timeA - timeB;
+      });
+  }, [docs, query, typeFilter, warehouseFilter, datePreset, dateFrom, dateTo, selectedMonth, selectedYear, dateSortOrder]);
 
   const totalPages = Math.max(1, Math.ceil(pending.length / pageSize));
   const visiblePending = pending.slice((page - 1) * pageSize, page * pageSize);
 
   // Điều hướng người dùng tới trang nghiệp vụ gốc tương ứng (Nhập/Xuất/Điều chuyển/Trả hàng/Kiểm kê)
   const navigateToDoc = (doc: StockDocument) => {
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ query, typeFilter, warehouseFilter, page, pageSize }));
+    sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        query,
+        typeFilter,
+        warehouseFilter,
+        datePreset,
+        dateFrom,
+        dateTo,
+        selectedMonth,
+        selectedYear,
+        dateSortOrder,
+        page,
+        pageSize,
+      })
+    );
     const meta = typeMeta(doc.docType);
     const targetModule = meta.module || 'wh_receipt';
     navigate(getDeptModulePath(deptKey, targetModule, { documentId: doc.id, from: 'wh_processing' }));
@@ -216,14 +346,316 @@ function ProcessingQueueList({ deptKey, documentId }: { deptKey: DeptKey; docume
             {warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
           </select>
         </div>
-        {(typeFilter !== 'ALL' || warehouseFilter !== 'ALL' || query) && (
+        {(typeFilter !== 'ALL' ||
+          warehouseFilter !== 'ALL' ||
+          query ||
+          datePreset !== 'ALL' ||
+          dateFrom ||
+          dateTo ||
+          dateSortOrder !== 'desc' ||
+          selectedMonth !== currentMonth ||
+          selectedYear !== currentYear) && (
           <button
             type="button"
-            onClick={() => { setQuery(''); setTypeFilter('ALL'); setWarehouseFilter('ALL'); setPage(1); }}
+            onClick={() => {
+              setQuery('');
+              setTypeFilter('ALL');
+              setWarehouseFilter('ALL');
+              setDatePreset('ALL');
+              setDateFrom('');
+              setDateTo('');
+              setSelectedMonth(currentMonth);
+              setSelectedYear(currentYear);
+              setDateSortOrder('desc');
+              setPage(1);
+            }}
             className="px-3 py-2 text-xs sm:text-sm text-gray-500 hover:text-emerald-700 font-medium whitespace-nowrap cursor-pointer text-center"
           >
             Xóa lọc
           </button>
+        )}
+      </div>
+
+      {/* Thanh lọc theo Ngày - Tháng - Năm & Sắp xếp */}
+      <div className="flex flex-col gap-2.5 p-3 bg-white border border-gray-200/90 rounded-2xl shadow-2xs">
+        {/* Hàng 1: Nút mốc thời gian & Sắp xếp */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <div className="flex items-center gap-1 text-xs font-bold text-gray-500 uppercase tracking-wider mr-1">
+              <Calendar size={14} className="text-emerald-600" />
+              <span>Thời gian:</span>
+            </div>
+            {[
+              { id: 'ALL' as DatePreset, label: 'Tất cả' },
+              { id: 'TODAY' as DatePreset, label: 'Hôm nay' },
+              { id: 'WEEK' as DatePreset, label: '7 ngày qua' },
+              {
+                id: 'MONTH' as DatePreset,
+                label:
+                  datePreset === 'MONTH'
+                    ? `Tháng ${selectedMonth}/${selectedYear}`
+                    : 'Theo tháng',
+              },
+              {
+                id: 'YEAR' as DatePreset,
+                label:
+                  datePreset === 'YEAR'
+                    ? `Năm ${selectedYear}`
+                    : 'Theo năm',
+              },
+              { id: 'CUSTOM' as DatePreset, label: 'Khoảng ngày' },
+            ].map((p) => {
+              const isActive = datePreset === p.id;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => {
+                    setDatePreset(p.id);
+                    setPage(1);
+                  }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                    isActive
+                      ? 'bg-emerald-50 border-emerald-300 text-emerald-800 shadow-2xs'
+                      : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Sắp xếp */}
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <label className="flex items-center gap-1.5 rounded-xl border border-gray-200 bg-gray-50/70 px-2.5 py-1.5 text-xs font-semibold text-gray-700 cursor-pointer">
+              <ArrowUpDown size={13} className="text-gray-400" />
+              <span className="hidden sm:inline text-gray-500">Sắp xếp:</span>
+              <select
+                value={dateSortOrder}
+                onChange={(e) => {
+                  setDateSortOrder(e.target.value as 'asc' | 'desc');
+                  setPage(1);
+                }}
+                className="bg-transparent text-xs font-bold text-gray-800 outline-none cursor-pointer"
+                aria-label="Sắp xếp theo ngày tạo"
+              >
+                <option value="desc">Mới nhất</option>
+                <option value="asc">Cũ nhất</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        {/* Hàng 2: Bộ chọn chi tiết khi ở chế độ Theo tháng / Theo năm / Khoảng ngày */}
+        {(datePreset === 'MONTH' || datePreset === 'YEAR' || datePreset === 'CUSTOM') && (
+          <div className="flex items-center gap-3 flex-wrap p-2.5 bg-emerald-50/40 border border-emerald-100 rounded-xl text-xs">
+            {datePreset === 'MONTH' && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-bold text-emerald-900 flex items-center gap-1 text-xs">
+                  <Calendar size={13} className="text-emerald-600" />
+                  <span>Chọn tháng trong năm:</span>
+                </span>
+
+                {/* Dropdown tháng cho Mobile */}
+                <div className="flex sm:hidden items-center gap-1 bg-white border border-emerald-200 px-2 py-1 rounded-lg shadow-2xs">
+                  <select
+                    value={selectedMonth}
+                    onChange={(e) => {
+                      setSelectedMonth(Number(e.target.value));
+                      setPage(1);
+                    }}
+                    className="bg-transparent text-xs font-bold text-emerald-800 outline-none cursor-pointer"
+                    aria-label="Chọn tháng"
+                  >
+                    {MONTH_OPTIONS.map((m) => (
+                      <option key={m.value} value={m.value}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 12 nút tháng T1 -> T12 cho Tablet & Desktop */}
+                <div className="hidden sm:flex items-center gap-1 bg-white/90 p-0.5 rounded-lg border border-emerald-200 shadow-2xs">
+                  {MONTH_OPTIONS.map((m) => {
+                    const isSelected = selectedMonth === m.value;
+                    const isCurrent = m.value === currentMonth && selectedYear === currentYear;
+                    return (
+                      <button
+                        key={m.value}
+                        type="button"
+                        onClick={() => {
+                          setSelectedMonth(m.value);
+                          setPage(1);
+                        }}
+                        className={`px-2 py-0.5 rounded text-xs font-bold transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-emerald-600 text-white shadow-xs'
+                            : isCurrent
+                            ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                            : 'text-gray-600 hover:bg-emerald-50 hover:text-emerald-700'
+                        }`}
+                        title={m.label}
+                      >
+                        T{m.value}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Chọn Năm */}
+                <div className="flex items-center gap-1.5 bg-white border border-emerald-200 px-2 py-1 rounded-lg shadow-2xs">
+                  <span className="text-gray-500 font-medium text-xs">Năm:</span>
+                  <select
+                    value={selectedYear}
+                    onChange={(e) => {
+                      setSelectedYear(Number(e.target.value));
+                      setPage(1);
+                    }}
+                    className="bg-transparent text-xs font-bold text-emerald-800 outline-none cursor-pointer"
+                    aria-label="Chọn năm"
+                  >
+                    {availableYears.map((y) => (
+                      <option key={y} value={y}>
+                        Năm {y}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {(selectedMonth !== currentMonth || selectedYear !== currentYear) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedMonth(currentMonth);
+                      setSelectedYear(currentYear);
+                      setPage(1);
+                    }}
+                    className="px-2 py-1 bg-white hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-semibold cursor-pointer transition-colors shadow-2xs"
+                  >
+                    Về tháng này (T{currentMonth})
+                  </button>
+                )}
+              </div>
+            )}
+
+            {datePreset === 'YEAR' && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-bold text-emerald-900 flex items-center gap-1 text-xs">
+                  <Calendar size={13} className="text-emerald-600" />
+                  <span>Chọn năm cụ thể:</span>
+                </span>
+
+                {/* Dropdown Năm */}
+                <div className="flex items-center gap-1.5 bg-white border border-emerald-200 px-2.5 py-1 rounded-lg shadow-2xs">
+                  <span className="text-gray-500 font-medium text-xs">Năm:</span>
+                  <select
+                    value={selectedYear}
+                    onChange={(e) => {
+                      setSelectedYear(Number(e.target.value));
+                      setPage(1);
+                    }}
+                    className="bg-transparent text-xs font-bold text-emerald-800 outline-none cursor-pointer"
+                    aria-label="Chọn năm cụ thể"
+                  >
+                    {availableYears.map((y) => (
+                      <option key={y} value={y}>
+                        Năm {y}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Nút bấm nhanh các năm gần đây trên Tablet/Desktop */}
+                <div className="hidden sm:flex items-center gap-1 bg-white/90 p-0.5 rounded-lg border border-emerald-200 shadow-2xs">
+                  {availableYears.slice(0, 5).map((y) => {
+                    const isSelected = selectedYear === y;
+                    const isCurrent = y === currentYear;
+                    return (
+                      <button
+                        key={y}
+                        type="button"
+                        onClick={() => {
+                          setSelectedYear(y);
+                          setPage(1);
+                        }}
+                        className={`px-2.5 py-0.5 rounded text-xs font-bold transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-emerald-600 text-white shadow-xs'
+                            : isCurrent
+                            ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                            : 'text-gray-600 hover:bg-emerald-50 hover:text-emerald-700'
+                        }`}
+                      >
+                        {y}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {selectedYear !== currentYear && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedYear(currentYear);
+                      setPage(1);
+                    }}
+                    className="px-2 py-1 bg-white hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-semibold cursor-pointer transition-colors shadow-2xs"
+                  >
+                    Về năm nay ({currentYear})
+                  </button>
+                )}
+              </div>
+            )}
+
+            {datePreset === 'CUSTOM' && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-bold text-emerald-900 flex items-center gap-1 text-xs">
+                  <Calendar size={13} className="text-emerald-600" />
+                  <span>Khoảng ngày tùy chọn:</span>
+                </span>
+                <div className="flex items-center gap-1.5 bg-white border border-emerald-200 px-2 py-1 rounded-lg shadow-2xs">
+                  <span className="text-gray-500 font-medium">Từ:</span>
+                  <input
+                    type="date"
+                    value={dateFrom}
+                    onChange={(e) => {
+                      setDateFrom(e.target.value);
+                      setPage(1);
+                    }}
+                    className="text-xs font-mono text-gray-800 outline-none cursor-pointer"
+                    aria-label="Từ ngày"
+                  />
+                  <span className="text-gray-400 font-medium">→</span>
+                  <span className="text-gray-500 font-medium">Đến:</span>
+                  <input
+                    type="date"
+                    value={dateTo}
+                    onChange={(e) => {
+                      setDateTo(e.target.value);
+                      setPage(1);
+                    }}
+                    className="text-xs font-mono text-gray-800 outline-none cursor-pointer"
+                    aria-label="Đến ngày"
+                  />
+                </div>
+                {(dateFrom || dateTo) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDateFrom('');
+                      setDateTo('');
+                      setPage(1);
+                    }}
+                    className="px-2 py-1 bg-white hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-semibold cursor-pointer transition-colors shadow-2xs"
+                  >
+                    Xóa khoảng ngày
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         )}
       </div>
 
