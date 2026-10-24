@@ -76,6 +76,8 @@ function makeDb(opts: {
     }),
     get: vi.fn(async (sql: string) => {
       const text = String(sql);
+      if (text.includes('GET_LOCK')) return { acquired: 1 };
+      if (text.includes('RELEASE_LOCK')) return { released: 1 };
       if (text.includes('FROM stock_documents')) return opts.doc;
       if (text.includes('FROM stock_balances')) return opts.balance;
       if (text.includes('FROM stock_locations')) return { warehouseId: 'wh-hn', isActive: 1, purpose: 'SALEABLE' };

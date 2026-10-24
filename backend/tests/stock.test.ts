@@ -99,6 +99,29 @@ describe('stock balances scope', () => {
     const [sql] = db.all.mock.calls.find(([s]: string[]) => String(s).includes('FROM stock_balances b'))!;
     expect(sql).not.toContain('b.warehouseId IN');
   });
+
+  it('uses named SALEABLE locations in inventory detail availability', async () => {
+    const db: any = {
+      all: vi.fn(async (sql: string) => {
+        if (String(sql).includes('FROM user_warehouse_scopes')) return [{ warehouseId: 'wh-hn' }];
+        return [];
+      }),
+      get: vi.fn(async (sql: string) => {
+        if (String(sql).includes('FROM products')) return { id: 'p1', name: 'Panel' };
+        if (String(sql).includes('FROM warehouses')) return { id: 'wh-hn', code: 'HN', name: 'Kho Hà Nội' };
+        if (String(sql).includes('FROM stock_balances b')) return { onHand: 10, reserved: 0, available: 10 };
+        return undefined;
+      }),
+      run: vi.fn(async () => ({ changes: 1 })),
+    };
+
+    const res = await request(appFor(nv, db)).get('/inventory/p1/wh-hn/details').expect(200);
+
+    expect(res.body.summary.available).toBe(10);
+    const [summarySql] = db.get.mock.calls.find(([sql]: [string]) => String(sql).includes('FROM stock_balances b'))!;
+    expect(summarySql).toContain('LEFT JOIN stock_locations l');
+    expect(summarySql).toContain("l.purpose = 'SALEABLE'");
+  });
 });
 
 describe('list pagination', () => {
@@ -1035,10 +1058,15 @@ describe('product bundles buildable', () => {
   it('assembles kits from components and disassembles them back', async () => {
     const kit = { id: 'b1', bundleType: 'STOCKED_KIT', kitProductId: 'kit1' };
     const items = [{ productId: 'p1', qtyPerBundle: 2 }];
-    const mk = (balance: any = { onHand: 10, reserved: 0 }, kitBalance: any = { onHand: 0, reserved: 0 }) => ({
+    const mk = (
+      balance: any = { onHand: 10, reserved: 0 },
+      kitBalance: any = { onHand: 0, reserved: 0 },
+      componentBalances: any[] = [{ locationId: '', onHand: balance.onHand, reserved: balance.reserved }]
+    ) => ({
       all: vi.fn(async (sql: string) => {
         if (String(sql).includes('FROM user_warehouse_scopes')) return [{ warehouseId: 'wh-hn' }];
         if (String(sql).includes('FROM product_bundle_items')) return items;
+        if (String(sql).includes('FROM stock_balances b')) return componentBalances;
         return [];
       }),
       get: vi.fn(async (sql: string, params?: any[]) => {
@@ -1058,6 +1086,13 @@ describe('product bundles buildable', () => {
     const asm = mk();
     await request(appFor(tp, asm)).post('/bundles/b1/assemble').send({ warehouseId: 'wh-hn', quantity: 3 }).expect(200);
     expect(asm.run.mock.calls.some(([s]: string[]) => String(s).includes('INSERT INTO stock_moves'))).toBe(true);
+
+    const namedLocation = mk({ onHand: 6, reserved: 0 }, undefined, [{ locationId: 'saleable-a', onHand: 6, reserved: 0 }]);
+    await request(appFor(tp, namedLocation)).post('/bundles/b1/assemble').send({ warehouseId: 'wh-hn', quantity: 3 }).expect(200);
+    const componentMove = namedLocation.run.mock.calls.find((call: any[]) =>
+      String(call[0]).includes('INSERT INTO stock_moves') && call[1]?.[1] === 'p1'
+    );
+    expect(componentMove?.[1].slice(2, 5)).toEqual(['wh-hn', 'saleable-a', -6]);
 
     const poor = mk({ onHand: 5, reserved: 0 });
     await request(appFor(tp, poor)).post('/bundles/b1/assemble').send({ warehouseId: 'wh-hn', quantity: 3 }).expect(400);
@@ -1117,7 +1152,15 @@ describe('reservation expiry scheduler', () => {
     const expired = { id: 'r1', productId: 'p1', warehouseId: 'wh-hn', locationId: '', quantity: 4 };
     const db: any = {
       all: vi.fn().mockResolvedValue([expired]),
-      get: vi.fn().mockResolvedValue({ status: 'HELD' }),
+      get: vi.fn(async (sql: string) => {
+        if (sql.includes('GET_LOCK')) return { acquired: 1 };
+        if (sql.includes('RELEASE_LOCK')) return { released: 1 };
+        return {
+          id: 'r1', productId: 'p1', warehouseId: 'wh-hn', locationId: '',
+          quantity: 4, consumedQuantity: 0, status: 'HELD',
+          expiresAt: '2026-10-10T00:00:00.000Z',
+        };
+      }),
       run: vi.fn().mockResolvedValue({ changes: 1 }),
     };
     await expect(releaseExpiredReservations(db, new Date('2026-10-11T10:00:00Z'))).resolves.toBe(1);
@@ -1131,7 +1174,7 @@ describe('reservation expiry scheduler', () => {
     const expired = { id: 'r1', productId: 'p1', warehouseId: 'wh-hn', locationId: '', quantity: 4 };
     const raced: any = {
       all: vi.fn().mockResolvedValue([expired]),
-      get: vi.fn().mockResolvedValue({ status: 'RELEASED' }),
+      get: vi.fn(async (sql: string) => sql.includes('GET_LOCK') ? { acquired: 1 } : sql.includes('RELEASE_LOCK') ? { released: 1 } : { status: 'RELEASED' }),
       run: vi.fn().mockResolvedValue({ changes: 1 }),
     };
     await expect(releaseExpiredReservations(raced, new Date())).resolves.toBe(0);
@@ -1139,7 +1182,15 @@ describe('reservation expiry scheduler', () => {
 
     const broken: any = {
       all: vi.fn().mockResolvedValue([expired]),
-      get: vi.fn().mockResolvedValue({ status: 'HELD' }),
+      get: vi.fn(async (sql: string) => {
+        if (sql.includes('GET_LOCK')) return { acquired: 1 };
+        if (sql.includes('RELEASE_LOCK')) return { released: 1 };
+        return {
+          id: 'r1', productId: 'p1', warehouseId: 'wh-hn', locationId: '',
+          quantity: 4, consumedQuantity: 0, status: 'HELD',
+          expiresAt: '2026-10-10T00:00:00.000Z',
+        };
+      }),
       run: vi.fn(async (sql: string) => {
         if (String(sql).includes('UPDATE stock_balances')) throw new Error('db down');
         return { changes: 1 };
@@ -1150,8 +1201,40 @@ describe('reservation expiry scheduler', () => {
 
   it('does nothing when nothing expired', async () => {
     const { releaseExpiredReservations } = await import('../schedulers/reservationExpiry.js');
-    const db: any = { all: vi.fn().mockResolvedValue([]), get: vi.fn(), run: vi.fn() };
+    const db: any = {
+      all: vi.fn().mockResolvedValue([]),
+      get: vi.fn(async (sql: string) => sql.includes('GET_LOCK') ? { acquired: 1 } : { released: 1 }),
+      run: vi.fn(),
+    };
     await expect(releaseExpiredReservations(db, new Date())).resolves.toBe(0);
     expect(db.run).not.toHaveBeenCalled();
+  });
+
+  it('leaves a reservation alone when its expiry was extended after the candidate scan', async () => {
+    const { releaseExpiredReservations } = await import('../schedulers/reservationExpiry.js');
+    const db: any = {
+      all: vi.fn().mockResolvedValue([{ id: 'r1' }]),
+      get: vi.fn(async (sql: string) => {
+        if (sql.includes('GET_LOCK')) return { acquired: 1 };
+        if (sql.includes('RELEASE_LOCK')) return { released: 1 };
+        return { id: 'r1', status: 'HELD', quantity: 4, consumedQuantity: 0, expiresAt: '2026-10-12T00:00:00.000Z' };
+      }),
+      run: vi.fn().mockResolvedValue({ changes: 1 }),
+    };
+    await expect(releaseExpiredReservations(db, new Date('2026-10-11T10:00:00Z'))).resolves.toBe(0);
+    expect(db.run.mock.calls.map(([sql]: [string]) => sql)).toEqual(['START TRANSACTION', 'ROLLBACK']);
+    expect(db.run.mock.calls.some(([sql]: [string]) => sql.includes('reserved = reserved - ?'))).toBe(false);
+  });
+
+  it('skips the scan when another process owns the expiry lock', async () => {
+    const { releaseExpiredReservations } = await import('../schedulers/reservationExpiry.js');
+    const db: any = {
+      all: vi.fn(),
+      get: vi.fn().mockResolvedValue({ acquired: 0 }),
+      run: vi.fn(),
+    };
+    await expect(releaseExpiredReservations(db, new Date())).resolves.toBe(0);
+    expect(db.all).not.toHaveBeenCalled();
+    expect(db.get).toHaveBeenCalledWith('SELECT GET_LOCK(?, 10) AS acquired', ['reservation_expiry_lock']);
   });
 });

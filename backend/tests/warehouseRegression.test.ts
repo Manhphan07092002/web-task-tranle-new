@@ -33,6 +33,8 @@ function fixture(options: { type?: string; quantities?: number[]; onHand?: numbe
       return [];
     }),
     get: (sql: string, params: any[] = []) => gate.run(sql, async () => {
+      if (sql.includes('GET_LOCK')) return { acquired: 1 };
+      if (sql.includes('RELEASE_LOCK')) return { released: 1 };
       if (sql.includes('FROM stock_documents')) return structuredClone(doc);
       if (sql.includes('FROM products')) return { id: 'p1' };
       if (sql.includes('FROM stock_balances')) return { ...balance };
@@ -96,6 +98,7 @@ describe('warehouse stock integrity regressions', () => {
 
   it('runs expiry under a real transaction context and does not repeat it', async () => {
     const f = fixture({ reserved: 4 });
+    f.reservation.expiresAt = '2020-01-01T00:00:00.000Z';
     expect(await releaseExpiredReservations(f.db)).toBe(1);
     expect(await releaseExpiredReservations(f.db)).toBe(0);
     expect(f.balance.reserved).toBe(0);

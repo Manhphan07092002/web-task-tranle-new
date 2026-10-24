@@ -36,42 +36,46 @@ export async function checkStockAlerts(db: any, now = new Date()): Promise<numbe
 
   const nowIso = now.toISOString();
   const changed: ChangedAlert[] = [];
-  await db.run('START TRANSACTION');
-  try {
-    const states: AlertStateRow[] = await db.all(
-      'SELECT productId, warehouseId, alertType, isActive, stateVersion FROM stock_alert_state FOR UPDATE'
-    );
-    const stateMap = new Map((states || []).map((row) => [stateKey(row.productId, row.warehouseId), row]));
-
-    for (const [key, alert] of alertMap) {
-      const current = stateMap.get(key);
-      const currentActive = Boolean(Number(current?.isActive ?? 0));
-      if (currentActive && current?.alertType === alert.alertType) continue;
-      const stateVersion = Number(current?.stateVersion || 0) + 1;
-      await db.run(
-        `INSERT INTO stock_alert_state
-           (productId, warehouseId, alertType, isActive, stateVersion, lastChangedAt)
-         VALUES (?, ?, ?, 1, ?, ?)
-         ON DUPLICATE KEY UPDATE alertType = VALUES(alertType), isActive = 1,
-           stateVersion = VALUES(stateVersion), lastChangedAt = VALUES(lastChangedAt)`,
-        [alert.productId, alert.warehouseId, alert.alertType, stateVersion, nowIso]
+  const updateState = async () => {
+    await db.run('START TRANSACTION');
+    try {
+      const states: AlertStateRow[] = await db.all(
+        'SELECT productId, warehouseId, alertType, isActive, stateVersion FROM stock_alert_state FOR UPDATE'
       );
-      changed.push({ ...alert, stateVersion });
-    }
+      const stateMap = new Map((states || []).map((row) => [stateKey(row.productId, row.warehouseId), row]));
 
-    for (const state of states || []) {
-      if (!Number(state.isActive)) continue;
-      if (alertMap.has(stateKey(state.productId, state.warehouseId))) continue;
-      await db.run(
-        'UPDATE stock_alert_state SET isActive = 0, lastChangedAt = ? WHERE productId = ? AND warehouseId = ?',
-        [nowIso, state.productId, state.warehouseId]
-      );
+      for (const [key, alert] of alertMap) {
+        const current = stateMap.get(key);
+        const currentActive = Boolean(Number(current?.isActive ?? 0));
+        if (currentActive && current?.alertType === alert.alertType) continue;
+        const stateVersion = Number(current?.stateVersion || 0) + 1;
+        await db.run(
+          `INSERT INTO stock_alert_state
+             (productId, warehouseId, alertType, isActive, stateVersion, lastChangedAt)
+           VALUES (?, ?, ?, 1, ?, ?)
+           ON DUPLICATE KEY UPDATE alertType = VALUES(alertType), isActive = 1,
+             stateVersion = VALUES(stateVersion), lastChangedAt = VALUES(lastChangedAt)`,
+          [alert.productId, alert.warehouseId, alert.alertType, stateVersion, nowIso]
+        );
+        changed.push({ ...alert, stateVersion });
+      }
+
+      for (const state of states || []) {
+        if (!Number(state.isActive)) continue;
+        if (alertMap.has(stateKey(state.productId, state.warehouseId))) continue;
+        await db.run(
+          'UPDATE stock_alert_state SET isActive = 0, lastChangedAt = ? WHERE productId = ? AND warehouseId = ?',
+          [nowIso, state.productId, state.warehouseId]
+        );
+      }
+      await db.run('COMMIT');
+    } catch (error) {
+      await db.run('ROLLBACK').catch(() => undefined);
+      throw error;
     }
-    await db.run('COMMIT');
-  } catch (error) {
-    await db.run('ROLLBACK').catch(() => undefined);
-    throw error;
-  }
+  };
+  if (typeof db.runWithRequestContext === 'function') await db.runWithRequestContext(updateState);
+  else await updateState();
 
   if (changed.length === 0) return 0;
 

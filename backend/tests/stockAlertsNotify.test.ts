@@ -89,6 +89,16 @@ describe('Phase 6C stock alert notifications', () => {
     expect(stateInsert?.[1]).toEqual(['p1', 'wh-hn', 'OUT', 1, '2026-10-23T08:00:00.000Z']);
   });
 
+  it('opens the alert-state transaction inside a database request context', async () => {
+    const db = notifyDb({ alerts: [alertRow()], states: [], recipients: [] });
+    db.runWithRequestContext = vi.fn(async (callback: () => Promise<unknown>) => callback());
+
+    await checkStockAlerts(db);
+
+    expect(db.runWithRequestContext).toHaveBeenCalledTimes(1);
+    expect(db.runCalls.some(([sql]: [string, any[]]) => String(sql).includes('START TRANSACTION'))).toBe(true);
+  });
+
   it('does not notify again while the same alert stays active', async () => {
     const db = notifyDb({
       alerts: [alertRow()],

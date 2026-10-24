@@ -7,7 +7,7 @@ import { beginStockTransaction } from '../../utils/stockTransaction.js';
 import type { StockContext } from './context.js';
 
 export function bundlesRoutes(ctx: StockContext) {
-  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, saleableAvailableOf, postMove } = ctx;
+  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, postMove } = ctx;
   const router = Router();
   // ── Combo / bộ sản phẩm (§23: buildable từ available) ─────────────────────────
 
@@ -162,12 +162,34 @@ export function bundlesRoutes(ctx: StockContext) {
       const items = await db.all('SELECT productId, qtyPerBundle FROM product_bundle_items WHERE bundleId = ?', [bundle.id]);
       if (items.length === 0) return res.status(400).json({ error: 'Bundle has no components' });
       const now = new Date().toISOString();
+      const componentPostings = new Map<string, { locationId: string; quantity: number }[]>();
       if (direction === 1) {
         for (const item of items) {
-          const available = await saleableAvailableOf(item.productId, warehouseId);
-          if (available < Number(item.qtyPerBundle) * qty) {
+          const required = Number(item.qtyPerBundle) * qty;
+          const balances = await db.all(
+            `SELECT b.locationId, b.onHand, b.reserved
+             FROM stock_balances b
+             LEFT JOIN stock_locations l ON l.id = b.locationId AND l.warehouseId = b.warehouseId
+             WHERE b.productId = ? AND b.warehouseId = ?
+               AND (b.locationId = '' OR (l.isActive = 1 AND l.purpose = 'SALEABLE'))
+               AND b.onHand > b.reserved
+             ORDER BY CASE WHEN b.locationId = '' THEN 0 ELSE 1 END, b.locationId
+             FOR UPDATE`,
+            [item.productId, warehouseId]
+          );
+          let remaining = required;
+          const postings: { locationId: string; quantity: number }[] = [];
+          for (const balance of balances || []) {
+            const available = Math.max(0, Number(balance.onHand || 0) - Number(balance.reserved || 0));
+            const consumed = Math.min(available, remaining);
+            if (consumed > 0) postings.push({ locationId: balance.locationId || '', quantity: consumed });
+            remaining -= consumed;
+            if (remaining <= 0) break;
+          }
+          if (remaining > 0) {
             return res.status(400).json({ error: `Insufficient stock for component: ${item.productId}` });
           }
+          componentPostings.set(item.productId, postings);
         }
       } else {
         const kit = await db.get(
@@ -180,13 +202,18 @@ export function bundlesRoutes(ctx: StockContext) {
       }
       try {
         for (const item of items) {
-          const delta = direction * Number(item.qtyPerBundle) * qty;
-          await postMove(db.run.bind(db), {
-            productId: item.productId, warehouseId, locationId: '',
-            quantity: -delta, moveType: direction === 1 ? 'KIT_OUT' : 'KIT_IN',
-            referenceType: 'KIT', referenceId: bundle.id,
-            documentLineId: null, createdBy: user.id,
-          });
+          const postings = direction === 1
+            ? componentPostings.get(item.productId) || []
+            : [{ locationId: '', quantity: Number(item.qtyPerBundle) * qty }];
+          for (const posting of postings) {
+            await postMove(db.run.bind(db), {
+              productId: item.productId, warehouseId, locationId: posting.locationId,
+              quantity: direction === 1 ? -posting.quantity : posting.quantity,
+              moveType: direction === 1 ? 'KIT_OUT' : 'KIT_IN',
+              referenceType: 'KIT', referenceId: bundle.id,
+              documentLineId: null, createdBy: user.id,
+            });
+          }
         }
         await postMove(db.run.bind(db), {
           productId: bundle.kitProductId, warehouseId, locationId: '',

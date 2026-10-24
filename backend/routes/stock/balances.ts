@@ -99,9 +99,12 @@ export function balancesRoutes(ctx: StockContext) {
       const warehouse = await db.get('SELECT id, code, name FROM warehouses WHERE id = ?', [warehouseId]);
       if (!product || !warehouse) return res.status(404).json({ error: 'Không tìm thấy sản phẩm hoặc kho' });
       const summary = await db.get(
-        `SELECT COALESCE(SUM(onHand), 0) AS onHand, COALESCE(SUM(reserved), 0) AS reserved,
-          COALESCE(SUM(CASE WHEN locationId = '' OR locationId IS NULL THEN onHand - reserved ELSE 0 END), 0) AS available
-         FROM stock_balances WHERE productId = ? AND warehouseId = ?`,
+        `SELECT COALESCE(SUM(b.onHand), 0) AS onHand, COALESCE(SUM(b.reserved), 0) AS reserved,
+          COALESCE(SUM(CASE WHEN b.locationId = '' OR (l.isActive = 1 AND l.purpose = 'SALEABLE')
+            THEN b.onHand - b.reserved ELSE 0 END), 0) AS available
+         FROM stock_balances b
+         LEFT JOIN stock_locations l ON l.id = b.locationId AND l.warehouseId = b.warehouseId
+         WHERE b.productId = ? AND b.warehouseId = ?`,
         [productId, warehouseId]
       );
       const serials = await db.all(
