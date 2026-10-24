@@ -821,6 +821,21 @@ export const scanOutSerial = (documentId: string, documentLineId: string, serial
 export const scanReturnSerial = (documentId: string, documentLineId: string, serial: string) =>
   postStock('/api/stock/serials/scan-return', { documentId, documentLineId, serial });
 
+export interface SmartScanResult {
+  success: boolean;
+  matchedLineId: string;
+  productId: string;
+  productName: string;
+  serial: string;
+  count: number;
+  required: number;
+  completed: boolean;
+  processingCompleted: boolean;
+}
+
+export const smartScanSerial = (documentId: string, serial: string): Promise<SmartScanResult> =>
+  postStock('/api/stock/serials/scan-smart', { documentId, serial });
+
 export const editLineSerial = (documentId: string, documentLineId: string, serial: string, replacement?: string) =>
   postStock('/api/stock/serials/edit', { documentId, documentLineId, serial, replacement });
 
@@ -845,6 +860,7 @@ export interface SerialTimeline {
     warehouseId: string; warehouseName?: string | null; status: string; stockStatus: string;
     supplier?: string | null; customerName?: string | null; projectId?: string | null;
     receivedAt?: string | null; outDate?: string | null;
+    unit?: string | null; tracking?: string | null;
   };
   receipt: { documentId: string; code: string | null; date?: string | null; supplier?: string | null; warehouseId?: string | null; warehouseName?: string | null } | null;
   issue: { documentId: string; code: string | null; date?: string | null; customerName?: string | null; projectId?: string | null; warehouseId?: string | null; warehouseName?: string | null } | null;

@@ -2194,6 +2194,11 @@ export function documentsRoutes(ctx: StockContext) {
     replacement: z.string().trim().min(1).max(191).optional(),
   });
 
+  const SmartScanSchema = z.object({
+    documentId: z.string().trim().min(1).max(191),
+    serial: z.string().trim().min(1).max(191),
+  });
+
   router.post('/serials/edit', validate(SerialEditSchema), async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
@@ -2531,6 +2536,150 @@ export function documentsRoutes(ctx: StockContext) {
       }
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to scan serial for issue' }); } finally {
       if (transactionOpen) await db.run('ROLLBACK');
+    }
+  });
+
+  /** Quét thông minh (Smart Scan): Tự động khớp Serial vào đúng dòng sản phẩm trên phiếu */
+  router.post('/serials/scan-smart', validate(SmartScanSchema), async (req, res) => {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    let transactionOpen = false;
+    try {
+      const { documentId, serial } = req.body;
+      const code = String(serial).trim();
+      const doc = await db.get('SELECT * FROM stock_documents WHERE id = ?', [documentId]);
+      if (!doc) return res.status(404).json({ error: 'Document not found' });
+      if (!(await canWriteDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING' && doc.status !== 'READY') {
+        return res.status(400).json({ error: 'Phiếu đã đóng hoặc đã hủy, không thể quét thêm Serial' });
+      }
+
+      const lines = await db.all(
+        `SELECT l.*, p.name AS productName, p.tracking FROM stock_document_lines l
+         LEFT JOIN products p ON p.id = l.productId WHERE l.documentId = ?`,
+        [documentId]
+      );
+      if (!lines || lines.length === 0) {
+        return res.status(400).json({ error: 'Phiếu chưa có dòng hàng nào' });
+      }
+
+      if (doc.docType === 'ISSUE' || doc.docType === 'TRANSFER') {
+        const sourceWarehouseId = doc.docType === 'TRANSFER' ? doc.sourceWarehouseId : doc.warehouseId;
+        const row = await db.get('SELECT * FROM stock_serials WHERE serialNumber = ? LIMIT 1', [code]);
+        if (!row) {
+          return res.status(404).json({ error: `Không tìm thấy Serial "${code}" trong kho. Serial này chưa từng nhập kho.` });
+        }
+        if (row.stockStatus === 'OUT') {
+          const issueDoc = row.issueDocumentId
+            ? await db.get('SELECT code FROM stock_documents WHERE id = ?', [row.issueDocumentId]).catch(() => null)
+            : null;
+          return res.status(400).json({ error: `Serial "${code}" đã xuất theo ${issueDoc?.code || 'phiếu khác'}` });
+        }
+        if (row.stockStatus === 'RESERVED' && row.issueDocumentId !== documentId) {
+          const resDoc = row.issueDocumentId
+            ? await db.get('SELECT code FROM stock_documents WHERE id = ?', [row.issueDocumentId]).catch(() => null)
+            : null;
+          return res.status(400).json({ error: `Serial "${code}" đang được giữ cho ${resDoc?.code || 'phiếu khác'}` });
+        }
+        if (row.warehouseId !== sourceWarehouseId) {
+          return res.status(400).json({ error: `Serial "${code}" không nằm tại kho đang xuất (kho hiện tại: ${row.warehouseId})` });
+        }
+
+        const matchingLines = lines.filter((l) => l.productId === row.productId);
+        if (matchingLines.length === 0) {
+          return res.status(400).json({ error: `Serial "${code}" thuộc sản phẩm [${row.productId}], nhưng sản phẩm này không có trên phiếu ${doc.code || ''}` });
+        }
+
+        const already = matchingLines.find((l) => parseSerials(l.serialLot).some((s) => s.toLowerCase() === code.toLowerCase()));
+        if (already) {
+          return res.status(400).json({ error: `Serial "${code}" đã được quét cho dòng "${already.productName || already.productId}"` });
+        }
+
+        const targetLine = matchingLines.find((l) => parseSerials(l.serialLot).length < Number(l.quantity));
+        if (!targetLine) {
+          return res.status(400).json({ error: `Dòng sản phẩm "${matchingLines[0].productName || row.productId}" đã được quét đủ số lượng yêu cầu` });
+        }
+
+        await beginStockTransaction(db, [sourceWarehouseId]);
+        transactionOpen = true;
+        const locked = await db.get('SELECT * FROM stock_serials WHERE serialNumber = ? LIMIT 1 FOR UPDATE', [code]);
+        const lockedState = locked?.stockStatus || 'IN_STOCK';
+        if (!locked || (lockedState !== 'IN_STOCK' && !(lockedState === 'RESERVED' && locked?.issueDocumentId === documentId))) {
+          await db.run('ROLLBACK'); transactionOpen = false;
+          return res.status(409).json({ error: 'Serial vừa bị giữ/xuất bởi người khác, hãy quét lại' });
+        }
+        const fresh = await db.get('SELECT * FROM stock_document_lines WHERE id = ? FOR UPDATE', [targetLine.id]);
+        if (!fresh) { await db.run('ROLLBACK'); transactionOpen = false; return res.status(404).json({ error: 'Document line not found' }); }
+        const freshSerials = parseSerials(fresh.serialLot);
+        if (freshSerials.some((s) => s.toLowerCase() === code.toLowerCase()) || freshSerials.length >= Number(fresh.quantity)) {
+          await db.run('ROLLBACK'); transactionOpen = false;
+          return res.status(400).json({ error: 'Serial đã được thêm hoặc dòng đã đủ số lượng' });
+        }
+        await db.run(
+          `UPDATE stock_serials SET stockStatus = 'RESERVED', issueDocumentId = ?, issueLineId = ?, updatedAt = ? WHERE id = ?`,
+          [documentId, targetLine.id, new Date().toISOString(), locked.id]
+        );
+        const result = await appendLineSerial(fresh, code, true);
+        const processingCompleted = await refreshProcessingAfterSerialScan(documentId);
+        await recordWarehouseActivity(db.run.bind(db), {
+          actionType: 'SERIAL_SCANNED_OUT', entityType: 'SERIAL', documentId, entityId: locked.id,
+          productId: fresh.productId, serialId: locked.id, warehouseId: sourceWarehouseId,
+          quantity: -1, userId: user.id,
+          metadata: { documentLineId: targetLine.id, serial: code, processingCount: result.count, smartMatch: true },
+        });
+        await db.run('COMMIT'); transactionOpen = false;
+        return res.status(201).json({
+          success: true, matchedLineId: targetLine.id, productId: fresh.productId,
+          productName: targetLine.productName || fresh.productId, serial: code,
+          count: result.count, required: Number(fresh.quantity), completed: result.completed, processingCompleted,
+        });
+      } else if (doc.docType === 'RECEIPT') {
+        const exists = await db.get('SELECT id FROM stock_serials WHERE serialNumber = ? LIMIT 1', [code]);
+        if (exists) {
+          return res.status(409).json({ error: `Serial "${code}" đã tồn tại trong hệ thống. Không thể nhập lại mã này.` });
+        }
+        const alreadyInDoc = lines.find((l) => parseSerials(l.serialLot).some((s) => s.toLowerCase() === code.toLowerCase()));
+        if (alreadyInDoc) {
+          return res.status(400).json({ error: `Serial "${code}" đã được quét trên phiếu này` });
+        }
+        const targetLine = lines.find((l) => parseSerials(l.serialLot).length < Number(l.quantity));
+        if (!targetLine) {
+          return res.status(400).json({ error: 'Tất cả các dòng hàng trên phiếu nhập đã đủ số lượng' });
+        }
+
+        await beginStockTransaction(db, [doc.warehouseId]);
+        transactionOpen = true;
+        const fresh = await db.get('SELECT * FROM stock_document_lines WHERE id = ? FOR UPDATE', [targetLine.id]);
+        if (!fresh) { await db.run('ROLLBACK'); transactionOpen = false; return res.status(404).json({ error: 'Document line not found' }); }
+        const freshSerials = parseSerials(fresh.serialLot);
+        if (freshSerials.length >= Number(fresh.quantity)) {
+          await db.run('ROLLBACK'); transactionOpen = false;
+          return res.status(400).json({ error: 'Dòng sản phẩm đã đủ số lượng' });
+        }
+        const dup = await db.get('SELECT id FROM stock_serials WHERE serialNumber = ? LIMIT 1', [code]);
+        if (dup) {
+          await db.run('ROLLBACK'); transactionOpen = false;
+          return res.status(409).json({ error: `Serial "${code}" vừa được ghi nhận bởi người khác.` });
+        }
+        const result = await appendLineSerial(fresh, code, true);
+        const processingCompleted = await refreshProcessingAfterSerialScan(documentId);
+        await recordWarehouseActivity(db.run.bind(db), {
+          actionType: 'SERIAL_SCANNED_IN', entityType: 'SERIAL', documentId, entityId: code,
+          productId: fresh.productId, warehouseId: doc.warehouseId, quantity: 1, userId: user.id,
+          metadata: { documentLineId: targetLine.id, serial: code, processingCount: result.count, smartMatch: true },
+        });
+        await db.run('COMMIT'); transactionOpen = false;
+        return res.status(201).json({
+          success: true, matchedLineId: targetLine.id, productId: fresh.productId,
+          productName: targetLine.productName || fresh.productId, serial: code,
+          count: result.count, required: Number(fresh.quantity), completed: result.completed, processingCompleted,
+        });
+      } else {
+        return res.status(400).json({ error: 'Chức năng quét thông minh chưa hỗ trợ loại phiếu này' });
+      }
+    } catch (e: any) {
+      if (transactionOpen) await db.run('ROLLBACK');
+      return res.status(e.status || 500).json({ error: e.status ? e.message : 'Thao tác quét thông minh thất bại' });
     }
   });
   // ── Tiến độ xử lý + xác nhận số lượng + đăng ký lô ──────────────────────────

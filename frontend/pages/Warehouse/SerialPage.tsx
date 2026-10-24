@@ -14,6 +14,7 @@ import { levelOf, LEVELS } from '../../utils/rbac';
 import SerialDocMode from './SerialDocMode';
 import { SerialTimelineModal } from './StockDocs/SerialTimelineModal';
 import { LotTimelineModal } from './StockDocs/LotTimelineModal';
+import { QuickScanLookupModal } from './StockDocs/QuickScanLookupModal';
 
 const STATUSES: SerialStatus[] = ['SALEABLE', 'WARRANTY', 'DAMAGED', 'DEMO', 'QUARANTINE', 'SOLD'];
 const STATUS_LABEL: Record<string, string> = {
@@ -39,6 +40,7 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
   const [editing, setEditing] = useState<StockSerial | null>(null);
   const [timelineSerial, setTimelineSerial] = useState<string | null>(null);
   const [timelineLotId, setTimelineLotId] = useState<string | null>(null);
+  const [showQuickScan, setShowQuickScan] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [hasMore, setHasMore] = useState(false);
@@ -101,6 +103,15 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
         </div>
         <button onClick={fetchAll} className="p-2.5 border border-gray-200 rounded-xl hover:bg-gray-50 text-gray-500 shadow-sm" title="Tải lại">
           <RefreshCw size={16} />
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowQuickScan(true)}
+          className="flex items-center gap-1.5 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-sm transition-all"
+          title="Quét hoặc nhập serial để tra cứu toàn diện hồ sơ thiết bị"
+        >
+          <ScanLine size={16} />
+          <span>Tra cứu nhanh</span>
         </button>
       </div>
 
@@ -187,6 +198,9 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
       )}
       {timelineLotId && (
         <LotTimelineModal lotId={timelineLotId} onClose={() => setTimelineLotId(null)} />
+      )}
+      {showQuickScan && (
+        <QuickScanLookupModal onClose={() => setShowQuickScan(false)} />
       )}
 
       <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">

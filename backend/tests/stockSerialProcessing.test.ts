@@ -645,3 +645,66 @@ describe('processing summary + PUT keeps progress (Phase 3+)', () => {
     )).toBe(true);
   });
 });
+
+describe('smart scan auto-matching (/serials/scan-smart)', () => {
+  it('automatically matches the right product line for an issue document', async () => {
+    const db = procDb({
+      docType: 'ISSUE',
+      status: 'PROCESSING',
+      lines: [
+        { id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 2, serialLot: '', processingStatus: 'PENDING' },
+        { id: 'l2', documentId: 'doc1', productId: 'p2', quantity: 1, serialLot: '', processingStatus: 'PENDING' },
+      ],
+      trackings: { p1: 'SERIAL', p2: 'SERIAL' },
+      serials: {
+        'SN-P2-01': { id: 's2', productId: 'p2', warehouseId: 'wh-hn', stockStatus: 'IN_STOCK', receiptDocumentId: 'rec1' },
+      },
+    });
+
+    const res = await request(appFor(tp, db)).post('/serials/scan-smart').send({
+      documentId: 'doc1',
+      serial: 'SN-P2-01',
+    }).expect(201);
+
+    expect(res.body.success).toBe(true);
+    expect(res.body.matchedLineId).toBe('l2');
+    expect(res.body.productId).toBe('p2');
+    expect(res.body.serial).toBe('SN-P2-01');
+  });
+
+  it('rejects serial not found in warehouse for issue', async () => {
+    const db = procDb({
+      docType: 'ISSUE',
+      status: 'PROCESSING',
+      lines: [{ id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 2, serialLot: '', processingStatus: 'PENDING' }],
+      trackings: { p1: 'SERIAL' },
+      serials: {},
+    });
+
+    const res = await request(appFor(tp, db)).post('/serials/scan-smart').send({
+      documentId: 'doc1',
+      serial: 'UNKNOWN-SN',
+    }).expect(404);
+
+    expect(res.body.error).toContain('Không tìm thấy Serial');
+  });
+
+  it('automatically matches the open line for a receipt document', async () => {
+    const db = procDb({
+      docType: 'RECEIPT',
+      status: 'PROCESSING',
+      lines: [{ id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 2, serialLot: '', processingStatus: 'PENDING' }],
+      trackings: { p1: 'SERIAL' },
+      serials: {},
+    });
+
+    const res = await request(appFor(tp, db)).post('/serials/scan-smart').send({
+      documentId: 'doc1',
+      serial: 'NEW-SN-001',
+    }).expect(201);
+
+    expect(res.body.success).toBe(true);
+    expect(res.body.matchedLineId).toBe('l1');
+    expect(res.body.serial).toBe('NEW-SN-001');
+  });
+});

@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ScanLine, RefreshCw, AlertCircle, CheckCircle2, ArrowLeft, Boxes, Hash, Camera, Pencil, Trash2, PackageCheck } from 'lucide-react';
 import { Card } from '../../components/UI';
 import {
-  getStockDocument, getDocumentProgress, scanSerial, scanOutSerial, scanReturnSerial, editLineSerial, registerLot, allocateLot, confirmLineQty, confirmLineWithoutSerial, enableLineSerial,
+  getStockDocument, getDocumentProgress, scanSerial, scanOutSerial, scanReturnSerial, editLineSerial, registerLot, allocateLot, confirmLineQty, confirmLineWithoutSerial, enableLineSerial, smartScanSerial,
   type DocProgress, type DocLineProgress,
 } from '../../services/stockService';
 import { getDeptHomePath, getDeptModulePath } from '../../components/layout/menus/departmentMenus';
@@ -26,6 +26,12 @@ export default function SerialDocMode({ deptKey, embedded = false, onClosed }: {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Trạng thái Quét thông minh tự khớp dòng
+  const [smartScanInput, setSmartScanInput] = useState('');
+  const [smartScanBusy, setSmartScanBusy] = useState(false);
+  const [smartScanSuccess, setSmartScanSuccess] = useState<string | null>(null);
+  const [showSmartScanner, setShowSmartScanner] = useState(false);
+
   const fetchAll = useCallback(async () => {
     if (!documentId) return;
     setLoading(true); setError(null);
@@ -44,36 +50,43 @@ export default function SerialDocMode({ deptKey, embedded = false, onClosed }: {
 
   // Lắng nghe súng bắn barcode phần cứng toàn trang (USB / Bluetooth / PDA)
   useBarcodeScanner({
-    enabled: Boolean(doc?.status === 'DRAFT' || doc?.status === 'PROCESSING' || doc?.status === 'READY'),
+    enabled: Boolean(doc?.status === 'DRAFT' || doc?.status === 'PROCESSING' || doc?.status === 'READY') && !showSmartScanner,
     onScan: async (scannedCode) => {
       if (!progress || loading) return;
-      // Tìm dòng hàng đầu tiên chưa hoàn thành có theo dõi SERIAL
-      const targetLine = progress.lines.find(
-        (l) => l.status !== 'COMPLETED' && resolveTracking(l.tracking) === 'SERIAL'
-      );
-      if (!targetLine) {
-        playWarningBeep();
-        setError('Tất cả các dòng hàng theo Serial đã được quét đủ số lượng.');
-        return;
-      }
-
+      setError(null);
+      setSmartScanSuccess(null);
       try {
-        const scanFn =
-          doc?.docType === 'RETURN'
-            ? scanReturnSerial
-            : doc?.docType === 'ISSUE' || doc?.docType === 'TRANSFER'
-            ? scanOutSerial
-            : scanSerial;
-        await scanFn(documentId, targetLine.lineId, scannedCode);
+        const res = await smartScanSerial(documentId, scannedCode);
         playSuccessBeep();
-        setError(null);
+        setSmartScanSuccess(`✓ Quét súng thành công: [${scannedCode}] → Khớp vào "${res.productName}" (${res.count}/${res.required})`);
         await fetchAll();
       } catch (err: any) {
         playErrorBuzz();
-        setError(`Lỗi quét súng mã [${scannedCode}] cho "${targetLine.productName}": ${err?.message || 'Không hợp lệ'}`);
+        setError(`Lỗi quét súng mã [${scannedCode}]: ${err?.message || 'Không thể gán vào phiếu'}`);
       }
     },
   });
+
+  const handleSmartScanSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const code = smartScanInput.trim();
+    if (!code || smartScanBusy) return;
+    setSmartScanBusy(true);
+    setError(null);
+    setSmartScanSuccess(null);
+    try {
+      const res = await smartScanSerial(documentId, code);
+      playSuccessBeep();
+      setSmartScanInput('');
+      setSmartScanSuccess(`✓ Đã gán [${code}] vào sản phẩm "${res.productName}" (${res.count}/${res.required})`);
+      await fetchAll();
+    } catch (err: any) {
+      playErrorBuzz();
+      setError(`Lỗi quét mã [${code}]: ${err?.message || 'Không thể gán vào phiếu'}`);
+    } finally {
+      setSmartScanBusy(false);
+    }
+  };
 
   const backPath = getDeptModulePath(
     deptKey,
@@ -147,6 +160,79 @@ export default function SerialDocMode({ deptKey, embedded = false, onClosed }: {
               <AlertCircle size={18} /> Tồn khả dụng không đủ cho ít nhất một dòng hàng. Hãy giảm số lượng, đổi kho xuất hoặc bổ sung tồn trước khi hoàn tất xử lý.
             </div>
           )}
+
+          {/* Thanh Quét thông minh tự khớp sản phẩm */}
+          {doc && (doc.status === 'DRAFT' || doc.status === 'PROCESSING' || doc.status === 'READY') && !progress.allCompleted && (
+            <Card className="p-4 bg-gradient-to-r from-emerald-50/80 via-teal-50/40 to-white border border-emerald-200/90 shadow-sm rounded-2xl">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-sm shrink-0">
+                    <ScanLine size={20} />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-gray-900 text-sm flex items-center gap-2">
+                      Quét thông minh tự khớp dòng
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                        Auto-Match
+                      </span>
+                    </h3>
+                    <p className="text-xs text-gray-500">
+                      Bắn hoặc quét mã bất kỳ, hệ thống sẽ tự động tìm đúng mặt hàng trên phiếu để gán Serial
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <form onSubmit={handleSmartScanSubmit} className="flex-1 sm:w-80 flex gap-1.5">
+                    <input
+                      type="text"
+                      value={smartScanInput}
+                      onChange={(e) => setSmartScanInput(e.target.value)}
+                      placeholder="Bắn súng hoặc gõ Serial rồi Enter..."
+                      className="flex-1 px-3 py-2 bg-white border border-emerald-300 rounded-xl text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm"
+                    />
+                    <button
+                      type="submit"
+                      disabled={smartScanBusy || !smartScanInput.trim()}
+                      className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shrink-0 transition-colors shadow-sm"
+                    >
+                      {smartScanBusy ? '...' : 'Gán'}
+                    </button>
+                  </form>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowSmartScanner(true)}
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-white border border-emerald-300 hover:bg-emerald-50 text-emerald-800 rounded-xl text-xs font-bold shrink-0 transition-colors shadow-sm"
+                  >
+                    <Camera size={14} />
+                    <span>Camera</span>
+                  </button>
+                </div>
+              </div>
+
+              {smartScanSuccess && (
+                <div className="mt-2.5 flex items-center gap-2 text-xs font-bold text-emerald-800 bg-white/95 px-3 py-2 rounded-xl border border-emerald-200 animate-in fade-in shadow-xs">
+                  <CheckCircle2 size={15} className="text-emerald-600 shrink-0" />
+                  <span>{smartScanSuccess}</span>
+                </div>
+              )}
+            </Card>
+          )}
+
+          {showSmartScanner && (
+            <ScannerModal
+              title={`Quét thông minh toàn phiếu: ${doc?.code || ''}`}
+              onClose={() => setShowSmartScanner(false)}
+              onScanItem={async (code) => {
+                const res = await smartScanSerial(documentId, code);
+                setSmartScanSuccess(`✓ Đã nhận [${code}] → Khớp vào "${res.productName}" (${res.count}/${res.required})`);
+                await fetchAll();
+                return { success: true };
+              }}
+            />
+          )}
+
           <div className={embedded ? 'rounded-2xl border border-gray-100 overflow-hidden bg-white' : 'space-y-3'}>
             {progress.lines.map((line) => (
               <LineCard key={line.lineId} line={line} docType={doc?.docType || ''} documentId={progress.documentId} onDone={fetchAll} compact={embedded} canEdit={doc?.status === 'DRAFT' || doc?.status === 'PROCESSING' || doc?.status === 'READY'} />
