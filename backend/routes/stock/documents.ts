@@ -2585,17 +2585,17 @@ export function documentsRoutes(ctx: StockContext) {
           return res.status(400).json({ error: `Serial "${code}" không nằm tại kho đang xuất (kho hiện tại: ${row.warehouseId})` });
         }
 
-        const matchingLines = lines.filter((l) => l.productId === row.productId);
+        const matchingLines = lines.filter((l: any) => l.productId === row.productId);
         if (matchingLines.length === 0) {
           return res.status(400).json({ error: `Serial "${code}" thuộc sản phẩm [${row.productId}], nhưng sản phẩm này không có trên phiếu ${doc.code || ''}` });
         }
 
-        const already = matchingLines.find((l) => parseSerials(l.serialLot).some((s) => s.toLowerCase() === code.toLowerCase()));
+        const already = matchingLines.find((l: any) => parseSerials(l.serialLot).some((s: string) => s.toLowerCase() === code.toLowerCase()));
         if (already) {
           return res.status(400).json({ error: `Serial "${code}" đã được quét cho dòng "${already.productName || already.productId}"` });
         }
 
-        const targetLine = matchingLines.find((l) => parseSerials(l.serialLot).length < Number(l.quantity));
+        const targetLine = matchingLines.find((l: any) => parseSerials(l.serialLot).length < Number(l.quantity));
         if (!targetLine) {
           return res.status(400).json({ error: `Dòng sản phẩm "${matchingLines[0].productName || row.productId}" đã được quét đủ số lượng yêu cầu` });
         }
@@ -2638,11 +2638,11 @@ export function documentsRoutes(ctx: StockContext) {
         if (exists) {
           return res.status(409).json({ error: `Serial "${code}" đã tồn tại trong hệ thống. Không thể nhập lại mã này.` });
         }
-        const alreadyInDoc = lines.find((l) => parseSerials(l.serialLot).some((s) => s.toLowerCase() === code.toLowerCase()));
+        const alreadyInDoc = lines.find((l: any) => parseSerials(l.serialLot).some((s: string) => s.toLowerCase() === code.toLowerCase()));
         if (alreadyInDoc) {
           return res.status(400).json({ error: `Serial "${code}" đã được quét trên phiếu này` });
         }
-        const targetLine = lines.find((l) => parseSerials(l.serialLot).length < Number(l.quantity));
+        const targetLine = lines.find((l: any) => parseSerials(l.serialLot).length < Number(l.quantity));
         if (!targetLine) {
           return res.status(400).json({ error: 'Tất cả các dòng hàng trên phiếu nhập đã đủ số lượng' });
         }

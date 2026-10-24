@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
 import { normalizeManagementLevel, MANAGEMENT_LEVELS } from '../../middleware/auth.js';
 import { beginStockTransaction } from '../../utils/stockTransaction.js';
-import { getWarrantyStartType, resolveWarrantyStart, warrantyEndDate } from '../../utils/warranty.js';
+import { getWarrantyStartType, resolveWarrantyStart, warrantyEndDate, toDateOnly } from '../../utils/warranty.js';
 import type { StockContext } from './context.js';
 
 export function serialsRoutes(ctx: StockContext) {
@@ -255,8 +255,8 @@ export function serialsRoutes(ctx: StockContext) {
       ).catch(() => []);
 
       const startType = await getWarrantyStartType(db);
-      const outDate = s.outDate || issue?.postingDate || issue?.docDate || null;
-      const warrantyStart = s.warrantyStart
+      const outDate = toDateOnly(s.outDate) || toDateOnly(issue?.postingDate) || toDateOnly(issue?.docDate) || null;
+      const warrantyStart = toDateOnly(s.warrantyStart)
         || resolveWarrantyStart({
           startType,
           outboundDate: outDate,
@@ -297,7 +297,10 @@ export function serialsRoutes(ctx: StockContext) {
         },
         moves: moves || [],
       });
-    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch serial timeline' }); }
+    } catch (e: any) {
+      console.error('getSerialTimeline error:', e);
+      res.status(e.status || 500).json({ error: e.status ? e.message : (e.message || 'Không thể tải vòng đời serial') });
+    }
   });
 
   // Lô quản lý theo số lượng, nên vòng đời hiển thị phiếu nhập và các lần phân bổ/xuất của chính lô đó.
