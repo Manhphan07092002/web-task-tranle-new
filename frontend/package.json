@@ -40,6 +40,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/react-flatpickr": "^3.8.11",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
     "@vitejs/plugin-react": "^5.0.0",
     "tailwindcss": "^4.2.2",
     "typescript": "~5.8.2",

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, AlertCircle, Trash2, Camera, CheckCircle2, Volume2, VolumeX, Zap } from 'lucide-react';
+import { X, AlertCircle, Trash2, Camera, CheckCircle2, Volume2, VolumeX, Zap, Image as ImageIcon, ShieldAlert, ExternalLink } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { playSuccessBeep, playErrorBuzz, playWarningBeep } from '../../../utils/scannerFeedback';
 import { parseBarcodeData } from '../../../utils/barcodeParser';
@@ -39,6 +39,11 @@ export function ScannerModal({
 
   const [torchOn, setTorchOn] = useState(false);
   const [hasTorch, setHasTorch] = useState(false);
+  const [isInsecureHttp, setIsInsecureHttp] = useState(false);
+  const [scanningFile, setScanningFile] = useState(false);
+
+  const fileInputCameraRef = useRef<HTMLInputElement>(null);
+  const fileInputGalleryRef = useRef<HTMLInputElement>(null);
 
   // Trạng thái phản hồi tức thì trên camera
   const [flashFeedback, setFlashFeedback] = useState<{
@@ -52,6 +57,86 @@ export function ScannerModal({
   const lastScannedCodeRef = useRef('');
   const lastScanTimeRef = useRef(0);
 
+  // Xử lý mã quét chung cho cả Camera Live và Chụp ảnh File
+  const processCode = async (code: string) => {
+    const timeStr = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    // 1. CHẾ ĐỘ XÁC THỰC REAL-TIME (Nếu có callback onScanItem)
+    if (onScanItem) {
+      try {
+        const res = await onScanItem(code);
+        const isFail = res && typeof res === 'object' && res.success === false;
+
+        if (isFail) {
+          // Thất bại
+          if (soundEnabledRef.current) playErrorBuzz();
+          const errMsg = res?.message || 'Không thể chấp nhận mã này';
+          setFlashFeedback({ type: 'error', code, message: errMsg });
+          setHistory((prev) => [{ code, success: false, message: errMsg, time: timeStr }, ...prev.slice(0, 19)]);
+        } else {
+          // Thành công
+          if (soundEnabledRef.current) playSuccessBeep();
+          setFlashFeedback({ type: 'success', code, message: 'Hợp lệ ✓' });
+          if (!codesRef.current.includes(code)) {
+            codesRef.current = [...codesRef.current, code];
+            setCodes(codesRef.current);
+          }
+          setHistory((prev) => [{ code, success: true, message: 'Hợp lệ', time: timeStr }, ...prev.slice(0, 19)]);
+        }
+      } catch (err: any) {
+        if (soundEnabledRef.current) playErrorBuzz();
+        const errMsg = err?.message || 'Lỗi khi gửi lên server';
+        setFlashFeedback({ type: 'error', code, message: errMsg });
+        setHistory((prev) => [{ code, success: false, message: errMsg, time: timeStr }, ...prev.slice(0, 19)]);
+      }
+      return;
+    }
+
+    // 2. CHẾ ĐỘ BATCH TIÊU CHUẨN (Không có onScanItem)
+    if (codesRef.current.includes(code)) {
+      if (soundEnabledRef.current) playWarningBeep();
+      setFlashFeedback({ type: 'warning', code, message: 'Mã đã quét trước đó' });
+      return;
+    }
+
+    if (soundEnabledRef.current) playSuccessBeep();
+    codesRef.current = [...codesRef.current, code];
+    setCodes(codesRef.current);
+    setFlashFeedback({ type: 'success', code, message: 'Đã thêm' });
+    setHistory((prev) => [{ code, success: true, message: 'Đã thêm', time: timeStr }, ...prev.slice(0, 19)]);
+  };
+
+  // Quét ảnh từ camera chụp ảnh hoặc tải tệp (Không cần HTTPS)
+  const handleFileScan = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setScanningFile(true);
+    try {
+      let worker = scannerRef.current;
+      if (!worker) {
+        worker = new Html5Qrcode('tl-serial-scanner-viewport');
+        scannerRef.current = worker;
+      }
+      const decodedText = await worker.scanFile(file, false);
+      if (decodedText) {
+        const raw = String(decodedText || '').trim();
+        const parsed = parseBarcodeData(raw);
+        const code = parsed.serial || raw;
+        await processCode(code);
+      }
+    } catch (err: any) {
+      if (soundEnabledRef.current) playErrorBuzz();
+      setFlashFeedback({
+        type: 'error',
+        code: 'Ảnh chụp',
+        message: 'Không tìm thấy mã vạch / QR trong ảnh',
+      });
+    } finally {
+      setScanningFile(false);
+      if (e.target) e.target.value = '';
+    }
+  };
+
   // Khởi động Camera
   useEffect(() => {
     let cancelled = false;
@@ -59,12 +144,32 @@ export function ScannerModal({
     const scanner = new Html5Qrcode(scannerId);
     scannerRef.current = scanner;
 
+    // Kiểm tra tính bảo mật của Origin (HTTPS)
+    const isNonSecure =
+      typeof window !== 'undefined' &&
+      !window.isSecureContext &&
+      window.location.hostname !== 'localhost' &&
+      window.location.hostname !== '127.0.0.1';
+
+    if (isNonSecure) {
+      setIsInsecureHttp(true);
+      setError('Trình duyệt di động (iOS Safari / Android Chrome) chặn Camera trên kết nối HTTP thường.');
+      return;
+    }
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setError('Trình duyệt không hỗ trợ mở camera trực tiếp qua HTTP. Vui lòng chuyển sang link HTTPS hoặc dùng chức năng Chụp ảnh quét mã.');
+      return;
+    }
+
     (async () => {
       try {
-        const cameras = await Html5Qrcode.getCameras();
+        const cameras = await Html5Qrcode.getCameras().catch((err: any) => {
+          throw new Error(err?.message || 'Quyền truy cập camera bị từ chối');
+        });
         if (cancelled) return;
         if (!cameras || cameras.length === 0) {
-          setError('Không tìm thấy camera trên thiết bị hoặc quyền bị từ chối (yêu cầu HTTPS).');
+          setError('Không tìm thấy camera trên thiết bị.');
           return;
         }
 
@@ -91,55 +196,11 @@ export function ScannerModal({
 
             // Đang bận xử lý
             processingRef.current = true;
-            const timeStr = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-            // 1. CHẾ ĐỘ XÁC THỰC REAL-TIME (Nếu có callback onScanItem)
-            if (onScanItem) {
-              try {
-                const res = await onScanItem(code);
-                const isFail = res && typeof res === 'object' && res.success === false;
-
-                if (isFail) {
-                  // Thất bại
-                  if (soundEnabledRef.current) playErrorBuzz();
-                  const errMsg = res?.message || 'Không thể chấp nhận mã này';
-                  setFlashFeedback({ type: 'error', code, message: errMsg });
-                  setHistory((prev) => [{ code, success: false, message: errMsg, time: timeStr }, ...prev.slice(0, 19)]);
-                } else {
-                  // Thành công
-                  if (soundEnabledRef.current) playSuccessBeep();
-                  setFlashFeedback({ type: 'success', code, message: 'Hợp lệ ✓' });
-                  if (!codesRef.current.includes(code)) {
-                    codesRef.current = [...codesRef.current, code];
-                    setCodes(codesRef.current);
-                  }
-                  setHistory((prev) => [{ code, success: true, message: 'Hợp lệ', time: timeStr }, ...prev.slice(0, 19)]);
-                }
-              } catch (err: any) {
-                if (soundEnabledRef.current) playErrorBuzz();
-                const errMsg = err?.message || 'Lỗi khi gửi lên server';
-                setFlashFeedback({ type: 'error', code, message: errMsg });
-                setHistory((prev) => [{ code, success: false, message: errMsg, time: timeStr }, ...prev.slice(0, 19)]);
-              } finally {
-                processingRef.current = false;
-              }
-              return;
-            }
-
-            // 2. CHẾ ĐỘ BATCH TIÊU CHUẨN (Không có onScanItem)
-            if (codesRef.current.includes(code)) {
-              if (soundEnabledRef.current) playWarningBeep();
-              setFlashFeedback({ type: 'warning', code, message: 'Mã đã quét trước đó' });
+            try {
+              await processCode(code);
+            } finally {
               processingRef.current = false;
-              return;
             }
-
-            if (soundEnabledRef.current) playSuccessBeep();
-            codesRef.current = [...codesRef.current, code];
-            setCodes(codesRef.current);
-            setFlashFeedback({ type: 'success', code, message: 'Đã thêm' });
-            setHistory((prev) => [{ code, success: true, message: 'Đã thêm', time: timeStr }, ...prev.slice(0, 19)]);
-            processingRef.current = false;
           },
           () => { /* Bỏ qua frame không đọc được */ }
         );
@@ -150,7 +211,13 @@ export function ScannerModal({
           if (track?.torch) setHasTorch(true);
         } catch { /* noop */ }
       } catch (e: any) {
-        if (!cancelled) setError(e?.message || 'Không thể mở camera. Vui lòng cấp quyền camera trong trình duyệt.');
+        if (!cancelled) {
+          const msg = e?.message || '';
+          if (msg.includes('secure') || msg.includes('HTTPS') || msg.includes('permission') || msg.includes('NotAllowedError')) {
+            setIsInsecureHttp(true);
+          }
+          setError(e?.message || 'Không thể mở camera. Vui lòng cấp quyền camera trong trình duyệt hoặc chuyển sang HTTPS.');
+        }
       }
     })();
 
@@ -255,12 +322,86 @@ export function ScannerModal({
           </div>
         </div>
 
+        {/* Hidden inputs cho chụp ảnh quét file (Bypass HTTPS restriction) */}
+        <input
+          ref={fileInputCameraRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={handleFileScan}
+          className="hidden"
+        />
+        <input
+          ref={fileInputGalleryRef}
+          type="file"
+          accept="image/*"
+          onChange={handleFileScan}
+          className="hidden"
+        />
+
         {/* Camera Viewport & Phản hồi trực quan */}
         <div className="p-4 space-y-3 overflow-y-auto">
           {error ? (
-            <div className="flex items-center gap-2 p-3.5 bg-red-50 border border-red-200 rounded-2xl text-red-700 text-xs">
-              <AlertCircle size={16} className="shrink-0" />
-              <span>{error}</span>
+            <div className="space-y-3">
+              <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl text-amber-900 text-xs space-y-3 shadow-2xs">
+                <div className="flex items-start gap-2.5">
+                  <ShieldAlert size={18} className="text-amber-600 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-bold text-sm text-amber-950">
+                      {isInsecureHttp
+                        ? 'Trình duyệt di động chặn Camera trên kết nối HTTP'
+                        : 'Không thể mở Camera trực tiếp'}
+                    </p>
+                    <p className="text-amber-800 leading-relaxed text-[11.5px]">
+                      {error}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-amber-200/70 flex flex-col sm:flex-row gap-2">
+                  {typeof window !== 'undefined' && window.location.protocol === 'http:' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        window.location.href = window.location.href.replace(/^http:/, 'https:');
+                      }}
+                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                    >
+                      <ExternalLink size={14} />
+                      Chuyển sang link HTTPS ({window.location.host})
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    disabled={scanningFile}
+                    onClick={() => fileInputCameraRef.current?.click()}
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                  >
+                    <Camera size={14} />
+                    {scanningFile ? 'Đang đọc ảnh...' : 'Chụp ảnh quét mã'}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={scanningFile}
+                    onClick={() => fileInputGalleryRef.current?.click()}
+                    className="flex items-center justify-center gap-1.5 px-3 py-2 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    <ImageIcon size={14} />
+                    Chọn ảnh
+                  </button>
+                </div>
+
+                {isInsecureHttp && (
+                  <div className="text-[11px] text-gray-500 bg-white/70 p-2.5 rounded-xl border border-amber-100 space-y-1 leading-relaxed">
+                    <p className="font-semibold text-gray-700">💡 Mẹo cho Android Chrome:</p>
+                    <p>
+                      Mở tab mới $\to$ gõ <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-800 font-mono">chrome://flags/#unsafely-treat-insecure-origin-as-secure</code> $\to$ Thêm <code className="font-mono text-blue-700">{typeof window !== 'undefined' ? window.location.origin : ''}</code> $\to$ Bật <b>Enabled</b> và bấm <b>Relaunch</b>.
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
             <div className="relative rounded-2xl overflow-hidden bg-black ring-2 ring-black/5 min-h-[220px]">
@@ -294,12 +435,35 @@ export function ScannerModal({
             </div>
           )}
 
-          {/* Thanh trạng thái đếm */}
-          <div className="flex items-center justify-between text-xs px-1">
+          {/* Thanh trạng thái đếm & nút chụp ảnh dự phòng */}
+          <div className="flex items-center justify-between text-xs px-1 gap-2 flex-wrap">
             <span className="text-gray-500">
               Đã nhận: <b className="text-emerald-700 font-mono text-sm">{codes.length}</b>
               {targetQuantity ? ` / ${targetQuantity} thiết bị` : ' mã'}
             </span>
+
+            <div className="flex items-center gap-1.5 ml-auto">
+              <button
+                type="button"
+                disabled={scanningFile}
+                onClick={() => fileInputCameraRef.current?.click()}
+                className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold text-gray-600 hover:text-blue-600 bg-gray-100 hover:bg-blue-50 border border-gray-200 rounded-lg transition-colors cursor-pointer"
+                title="Chụp ảnh quét mã trực tiếp từ Camera điện thoại"
+              >
+                <Camera size={12} />
+                {scanningFile ? 'Đang đọc...' : 'Chụp ảnh'}
+              </button>
+              <button
+                type="button"
+                disabled={scanningFile}
+                onClick={() => fileInputGalleryRef.current?.click()}
+                className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold text-gray-600 hover:text-blue-600 bg-gray-100 hover:bg-blue-50 border border-gray-200 rounded-lg transition-colors cursor-pointer"
+                title="Tải ảnh từ thư viện thiết bị"
+              >
+                <ImageIcon size={12} />
+                Tải ảnh
+              </button>
+            </div>
             {targetQuantity && codes.length >= targetQuantity && (
               <span className="text-emerald-600 font-bold flex items-center gap-1">
                 <CheckCircle2 size={13} /> Đã đủ số lượng
