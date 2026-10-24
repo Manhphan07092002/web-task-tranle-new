@@ -34,6 +34,8 @@ describe('warrantyEndDate', () => {
   it('adds calendar months', () => {
     expect(warrantyEndDate('2026-10-15', 12)).toBe('2027-10-15');
     expect(warrantyEndDate('2026-01-31', 1)).toBe('2026-03-03');
+    // Test JavaScript Date object (e.g. returned by mysql2)
+    expect(warrantyEndDate(new Date('2026-10-22T17:00:00.000Z'), 120)).toBe('2036-10-22');
   });
   it('returns null without start or months', () => {
     expect(warrantyEndDate(null, 12)).toBe(null);

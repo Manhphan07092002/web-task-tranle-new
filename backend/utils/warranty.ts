@@ -2,11 +2,24 @@ export type WarrantyStartType = 'OUTBOUND' | 'DELIVERY' | 'INSTALLATION' | 'ACCE
 
 const VALID: WarrantyStartType[] = ['OUTBOUND', 'DELIVERY', 'INSTALLATION', 'ACCEPTANCE'];
 
-function toDateOnly(value: unknown): string | null {
-  const s = String(value || '').trim().slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
-  const t = Date.parse(s);
-  return Number.isNaN(t) ? null : s;
+export function toDateOnly(value: unknown): string | null {
+  if (!value) return null;
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    return value.toISOString().slice(0, 10);
+  }
+  const s = String(value).trim();
+  if (!s) return null;
+  const prefix = s.slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(prefix)) {
+    const t = Date.parse(prefix);
+    return Number.isNaN(t) ? null : prefix;
+  }
+  const dt = new Date(s);
+  if (!Number.isNaN(dt.getTime())) {
+    return dt.toISOString().slice(0, 10);
+  }
+  return null;
 }
 
 export async function getWarrantyStartType(db: any): Promise<WarrantyStartType> {
@@ -48,9 +61,10 @@ export function resolveWarrantyStart(args: {
 }
 
 /** Ngày hết BH = start + số tháng (cộng tháng dương lịch, vd 15/10 + 1 tháng = 15/11). */
-export function warrantyEndDate(startDate: string | null, months: number): string | null {
-  if (!startDate || !(months > 0)) return null;
-  const [y, m, d] = startDate.split('-').map(Number);
+export function warrantyEndDate(startDate: unknown, months: number): string | null {
+  const dStr = toDateOnly(startDate);
+  if (!dStr || !(months > 0)) return null;
+  const [y, m, d] = dStr.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1 + months, d));
   if (Number.isNaN(dt.getTime())) return null;
   return dt.toISOString().slice(0, 10);
