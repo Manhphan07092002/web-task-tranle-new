@@ -8,6 +8,7 @@ export interface StockBalanceRow {
   reserved: number;
   available: number;
   productName: string | null;
+  productCode?: string | null;
   warehouseCode: string | null;
   warehouseName: string | null;
   locationCode: string | null;
@@ -42,6 +43,7 @@ export interface AvailableInventoryRow {
   reserved: number;
   available: number;
   productName: string | null;
+  productCode?: string | null;
   unit: string | null;
   category: string | null;
   origin: string | null;
@@ -65,7 +67,7 @@ export async function getAvailableInventory(params: { warehouseId?: string; q?: 
 }
 
 export interface InventoryDetails {
-  product: { id: string; name: string; unit?: string | null; category?: string | null; origin?: string | null; tracking?: string | null };
+  product: { id: string; name: string; importCode?: string | null; unit?: string | null; category?: string | null; origin?: string | null; tracking?: string | null };
   warehouse: { id: string; code: string; name: string };
   summary: { onHand: number; reserved: number; available: number };
   serials: Array<{ id: string; serialNumber: string | null; stockStatus: string; status: string; receivedAt?: string | null; outDate?: string | null; supplier?: string | null; receiptCode?: string | null; receiptPartnerName?: string | null; issueCode?: string | null; issuePartnerName?: string | null }>;
@@ -121,6 +123,18 @@ export async function deleteWarehouse(id: string): Promise<void> {
   invalidateWarehousesCache();
 }
 
+export interface StockDocReservationLink {
+  id: string;
+  documentLineId: string;
+  reservationId: string;
+  allocatedQuantity: number;
+  quantity: number;
+  consumedQuantity?: number | null;
+  status: 'HELD' | 'RELEASED' | 'CONSUMED' | string;
+  sourceType?: string | null;
+  sourceId?: string | null;
+}
+
 export interface StockDocument {
   id: string;
   code: string | null;
@@ -163,6 +177,19 @@ export interface StockDocument {
   createdByName?: string | null;
   missingSerials?: number | null;
   lines?: StockDocDetailLine[];
+  /** Liên kết giữ hàng của phiếu xuất (chỉ trả ở GET chi tiết). */
+  reservationLinks?: StockDocReservationLink[];
+  /** Chỉ có ở phiếu trả: nguồn nhập đầu tiên và phiếu xuất gốc, truy theo Serial. */
+  returnTrace?: {
+    sourceIssue: { code: string | null; shippedAt: string | null } | null;
+    receiptSources: Array<{
+      documentId: string;
+      code: string | null;
+      partnerCode: string | null;
+      partnerName: string | null;
+      receivedAt: string | null;
+    }>;
+  } | null;
 }
 
 export interface StockDocDetailLine extends StockDocLine {
@@ -183,8 +210,12 @@ export interface StockDocDetailLine extends StockDocLine {
 }
 
 export interface StockDocLine {
+  /** ID dòng do backend sinh — dùng để giữ liên kết reservation khi sửa phiếu. */
+  id?: string;
   productId: string;
   quantity: number;
+  /** Các reservation đang giữ cho dòng phiếu xuất. */
+  reservationIds?: string[];
   unitPrice?: number;
   locationId?: string | null;
   note?: string | null;
@@ -221,13 +252,14 @@ export interface ReceiptDocBody {
   attachments?: string | string[] | null;
 }
 
-export async function getStockDocuments(params: { docType?: string; status?: string; warehouseId?: string; from?: string; to?: string; limit?: number; offset?: number } = {}): Promise<StockDocument[]> {
+export async function getStockDocuments(params: { docType?: string; status?: string; warehouseId?: string; from?: string; to?: string; sortOrder?: 'asc' | 'desc'; limit?: number; offset?: number } = {}): Promise<StockDocument[]> {
   const qs = new URLSearchParams();
   if (params.docType) qs.set('docType', params.docType);
   if (params.status) qs.set('status', params.status);
   if (params.warehouseId) qs.set('warehouseId', params.warehouseId);
   if (params.from) qs.set('from', params.from);
   if (params.to) qs.set('to', params.to);
+  if (params.sortOrder) qs.set('sortOrder', params.sortOrder);
   if (params.limit !== undefined) qs.set('limit', String(params.limit));
   if (params.offset) qs.set('offset', String(params.offset));
   const res = await apiFetch(`/api/stock/documents${qs.toString() ? `?${qs}` : ''}`);
@@ -737,6 +769,7 @@ export interface DocLineProgress {
   varianceQty: number | null;
   quantityConfirmed?: boolean;
   serialSkipped?: boolean;
+  canEnableSerial?: boolean;
   status: 'PENDING' | 'PARTIAL' | 'COMPLETED';
   availability?: { onHand: number; reserved: number; available: number; afterIssue: number } | null;
 }
@@ -785,11 +818,17 @@ export const scanSerial = (documentId: string, documentLineId: string, serial: s
 export const scanOutSerial = (documentId: string, documentLineId: string, serial: string) =>
   postStock('/api/stock/serials/scan-out', { documentId, documentLineId, serial });
 
+export const scanReturnSerial = (documentId: string, documentLineId: string, serial: string) =>
+  postStock('/api/stock/serials/scan-return', { documentId, documentLineId, serial });
+
 export const editLineSerial = (documentId: string, documentLineId: string, serial: string, replacement?: string) =>
   postStock('/api/stock/serials/edit', { documentId, documentLineId, serial, replacement });
 
 export const confirmLineQty = (lineId: string, body: { actualQty: number; varianceReason?: string }) =>
   postStock(`/api/stock/lines/${lineId}/confirm-qty`, body);
+
+export const enableLineSerial = (lineId: string) =>
+  postStock(`/api/stock/lines/${lineId}/enable-serial`, {});
 
 export const registerLot = (body: {
   documentId: string; documentLineId: string; lotCode: string; coilCode?: string;

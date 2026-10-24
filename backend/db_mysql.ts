@@ -530,6 +530,7 @@ CREATE TABLE IF NOT EXISTS product_warehouse_policies (
 CREATE TABLE IF NOT EXISTS reservations (
   id VARCHAR(191) PRIMARY KEY, productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
   locationId VARCHAR(191) NULL, quantity DOUBLE NOT NULL DEFAULT 0,
+  consumedQuantity DOUBLE NOT NULL DEFAULT 0,
   sourceType VARCHAR(32) NOT NULL DEFAULT 'INTERNAL', sourceId VARCHAR(191) NULL,
   requestedBy VARCHAR(191) NULL, status VARCHAR(32) NOT NULL DEFAULT 'HELD',
   expiresAt DATETIME NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -1506,6 +1507,50 @@ export async function initDbMysql(): Promise<MysqlDb> {
           WHEN 'document' THEN 'DOCUMENT'
           ELSE entityType END
           WHERE entityType IN ('product', 'warehouse', 'project', 'document')`);
+      });
+
+      await runVersionedMigration(db, 42, 'stock_alert_state', async () => {
+        // Trạng thái cảnh báo để scheduler chỉ notify khi cảnh báo mới/đổi mức,
+        // tránh gửi lặp mỗi vòng quét. stateVersion tăng mỗi lần kích hoạt lại.
+        await db.run(`
+          CREATE TABLE IF NOT EXISTS stock_alert_state (
+            productId VARCHAR(191) NOT NULL,
+            warehouseId VARCHAR(191) NOT NULL,
+            alertType VARCHAR(16) NOT NULL,
+            isActive TINYINT NOT NULL DEFAULT 1,
+            stateVersion INT NOT NULL DEFAULT 1,
+            lastChangedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            lastNotifiedAt DATETIME NULL,
+            lastNotifiedVersion INT NOT NULL DEFAULT 0,
+            PRIMARY KEY (productId, warehouseId),
+            INDEX idx_sas_active (warehouseId, isActive)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
+      await runVersionedMigration(db, 43, 'issue_reservation_links', async () => {
+        // Lượng đã tiêu thụ của một reservation. Cột này cho phép một reservation
+        // được dùng một phần rồi phần còn lại tái sử dụng cho phiếu xuất khác.
+        const column = await db.get(
+          `SELECT COUNT(*) AS count FROM information_schema.columns
+           WHERE table_schema = DATABASE() AND table_name = 'reservations' AND column_name = 'consumedQuantity'`
+        );
+        if (Number(column?.count ?? 0) === 0) {
+          await db.run('ALTER TABLE reservations ADD COLUMN consumedQuantity DOUBLE NOT NULL DEFAULT 0 AFTER quantity');
+        }
+        // Mỗi reservation chỉ gắn tối đa một dòng phiếu xuất tại một thời điểm.
+        // Link được dọn khi phiếu hủy/xóa/hoàn tất để phần còn lại có thể tái sử dụng.
+        await db.run(`
+          CREATE TABLE IF NOT EXISTS stock_document_line_reservations (
+            id VARCHAR(191) PRIMARY KEY,
+            documentLineId VARCHAR(191) NOT NULL,
+            reservationId VARCHAR(191) NOT NULL,
+            quantity DOUBLE NOT NULL DEFAULT 0,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_sdlr_reservation (reservationId),
+            INDEX idx_sdlr_line (documentLineId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
       });
 
 

@@ -8,6 +8,7 @@ export interface Product {
   origin?: string;
   defaultPrice?: number; // legacy
   importQuantity?: number;
+  /** @deprecated Legacy field; stock is tracked in stock_balances/stock_moves. */
   remainingQuantity?: number;
   importPrice?: number;
   salePrice?: number;

@@ -230,7 +230,7 @@ function CountDetailModal({ count, onClose, onChanged, onError }: {
         </div>
         <div className="flex-1 overflow-y-auto overflow-x-auto px-6 py-4">
           {err && <div className="flex items-center gap-2 p-3 mb-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm"><AlertCircle size={14} />{err}</div>}
-          <table className="w-full text-sm">
+          <table className="wh-table w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-gray-400 uppercase">
                 <th className="py-2">Hàng / Vị trí</th>

@@ -13,6 +13,7 @@ import {
   type PartnerSuggestion, type PartnerSuggestionsData, type StockDocDetailLine, type AvailableInventoryRow,
 } from '../../../services/stockService';
 import { getProducts, createProduct, suggestCode, type Product } from '../../../services/productService';
+import { getReservations, type Reservation } from '../../../services/reservationService';
 import { getDeptHomePath } from '../../../components/layout/menus/departmentMenus';
 import { useData } from '../../../contexts/DataContext';
 import type { DeptKey } from '../../../components/layout/menus/menuTypes';
@@ -48,6 +49,9 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
   const [quickCreate, setQuickCreate] = useState<{ line: number; name: string; code: string } | null>(null);
   // Editor serial/lot cho từng dòng.
   const [serialEdit, setSerialEdit] = useState<number | null>(null);
+  // Giữ hàng đang HELD của kho — dùng để gắn vào dòng phiếu xuất.
+  const [heldReservations, setHeldReservations] = useState<Reservation[]>([]);
+  const [reservationPicker, setReservationPicker] = useState<number | null>(null);
   const [partnerSuggestions, setPartnerSuggestions] = useState<PartnerSuggestionsData>({
     partners: [],
     deliverers: [],
@@ -91,6 +95,24 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
       .finally(() => { if (!cancelled) setSourceInventoryLoading(false); });
     return () => { cancelled = true; };
   }, [requiresSourceAvailability, warehouseId]);
+
+  useEffect(() => {
+    if (kind !== 'ISSUE' || !warehouseId) {
+      setHeldReservations([]);
+      return;
+    }
+    let cancelled = false;
+    getReservations(warehouseId, 'HELD', { limit: 1000 })
+      .then((rows) => {
+        if (cancelled) return;
+        setHeldReservations((rows || []).filter((r) => {
+          const remaining = Number(r.quantity || 0) - Number(r.consumedQuantity || 0);
+          return remaining > 0;
+        }));
+      })
+      .catch(() => { if (!cancelled) setHeldReservations([]); });
+    return () => { cancelled = true; };
+  }, [kind, warehouseId]);
 
   // Chế độ sửa phiếu nháp: nạp chi tiết rồi đổ vào form.
   useEffect(() => {
@@ -142,9 +164,17 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
             }
           } catch { /* attachments không phải JSON — bỏ qua */ }
         }
+        const linksByLine = new Map<string, string[]>();
+        for (const link of doc.reservationLinks || []) {
+          const list = linksByLine.get(link.documentLineId) || [];
+          list.push(link.reservationId);
+          linksByLine.set(link.documentLineId, list);
+        }
         setLines((doc.lines || []).map((l) => ({
+          id: (l as any).id,
           productId: l.productId,
           quantity: Number(l.quantity) || 1,
+          reservationIds: linksByLine.get((l as any).id) || [],
           unitPrice: Number(l.unitPrice) || 0,
           locationId: (l as any).locationId ?? null,
           unit: (l as any).unit || '',
@@ -164,7 +194,10 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
       .finally(() => { if (active) setLoadingDoc(false); });
     return () => { active = false; };
   }, [editingId]);
-  const moneyKind = kind !== 'TRANSFER';
+  const isReturn = kind === 'RETURN';
+  // Phiếu trả là chứng từ nhận lại thiết bị đã xuất, không phải phiếu nhập mua
+  // hàng. Giá, VAT, thanh toán và hạch toán không được nhập tại đây.
+  const moneyKind = kind !== 'TRANSFER' && !isReturn;
   const [costTab, setCostTab] = useState<'goods' | 'cost'>('goods');
   const [referenceType, setReferenceType] = useState('PO');
   const [referenceId, setReferenceId] = useState('');
@@ -258,7 +291,7 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
   useEffect(() => {
     let active = true;
     setLocations([]);
-    setLines(lines => lines.map(line => ({ ...line, locationId: '' })));
+    setLines(lines => lines.map(line => ({ ...line, locationId: '', reservationIds: [] })));
     if (warehouseId) getStockLocations(warehouseId)
       .then(rows => { if (active) setLocations(rows.filter(row => row.isActive)); })
       .catch(error => { if (active) setErr(error.message); });
@@ -289,10 +322,11 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
   const pickProduct = (i: number, p: Product | null) => {
     setLines((ls) => ls.map((l, j) => {
       if (j !== i) return l;
-      if (!p) return { ...l, productId: '', unit: '' };
+      if (!p) return { ...l, productId: '', unit: '', reservationIds: [] };
       return {
         ...l,
         productId: p.id,
+        reservationIds: [],
         unitPrice: Number(l.unitPrice) > 0 ? l.unitPrice : (p.salePrice || p.defaultPrice || 0),
         unit: p.unit || l.unit || '',
       };
@@ -361,9 +395,15 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
       setErr('Chi phí mua hàng phải là số hợp lệ và không được âm.');
       return;
     }
+    if (isReturn && !notes.trim()) {
+      setErr('Vui lòng nhập lý do trả hàng.');
+      return;
+    }
 
     const clean = lines.map((l) => ({
       ...l,
+      id: undefined,
+      reservationIds: kind === 'ISSUE' ? (l.reservationIds || []) : undefined,
       quantity: Number(l.quantity),
       serialLot: l.serialLot?.trim() || undefined,
       vatRate: canEditFinancials ? Number(l.vatRate ?? 8) : 8,
@@ -389,8 +429,8 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
         invoiceDate: invoiceDate || undefined,
         paymentStatus,
         paymentDueDate: paymentDueDate || undefined,
-        referenceType: referenceType || undefined,
-        referenceId: referenceId.trim() || undefined,
+        referenceType: !isReturn ? (referenceType || undefined) : undefined,
+        referenceId: !isReturn ? (referenceId.trim() || undefined) : undefined,
         invoiceLookupCode: invoiceLookupCode.trim() || undefined,
         invoiceLookupUrl: invoiceLookupUrl.trim() || undefined,
         shippingFee: canEditFinancials && shippingFee !== '' ? shipping : undefined,
@@ -479,7 +519,7 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
             <div className={`grid gap-4 ${kind === 'TRANSFER' ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'}`}>
               <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
                 <label className="text-xs font-bold text-gray-600 uppercase tracking-wider whitespace-nowrap shrink-0 sm:min-w-[70px]">
-                  {kind === 'TRANSFER' ? 'Kho gửi' : 'Kho'} <span className="text-red-500 font-bold">*</span>
+                  {kind === 'TRANSFER' ? 'Kho gửi' : isReturn ? 'Kho nhận trả' : 'Kho'} <span className="text-red-500 font-bold">*</span>
                 </label>
                 <div className="flex-1 min-w-0">
                   <SearchCombo
@@ -516,6 +556,11 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
                 </div>
               )}
             </div>
+            {isReturn && (
+              <p className="-mt-2 text-xs text-gray-500">
+                Chọn kho thực tế nhận lại hàng. Kho này có thể khác kho nhập hoặc kho xuất trước đây; Serial quét đầu tiên sẽ tự xác định phiếu xuất và đơn vị trả.
+              </p>
+            )}
             {moneyKind && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
@@ -647,8 +692,8 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
               </div>
             )}
             <div>
-              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Dòng hàng</label>
-              <div className="flex items-center gap-2 flex-wrap mb-2">
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">{isReturn ? 'Thiết bị trả' : 'Dòng hàng'}</label>
+              {!isReturn && <div className="flex items-center gap-2 flex-wrap mb-2">
                 <div className="flex bg-gray-100 rounded-xl p-0.5">
                   <button type="button" onClick={() => setCostTab('goods')}
                     className={`px-3 py-1.5 text-xs font-bold rounded-lg ${costTab === 'goods' ? 'bg-white shadow text-emerald-700' : 'text-gray-500'}`}>Hàng tiền</button>
@@ -656,17 +701,17 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
                     className={`px-3 py-1.5 text-xs font-bold rounded-lg ${costTab === 'cost' ? 'bg-white shadow text-emerald-700' : 'text-gray-500'}`}>Chi phí</button>
                 </div>
                 <span className="ml-auto text-xs text-gray-400">Loại tiền: <b className="text-gray-700">VNĐ</b></span>
-              </div>
-              {costTab === 'goods' ? (
+              </div>}
+              {(isReturn || costTab === 'goods') ? (
                 <div className="overflow-x-auto border border-gray-200">
-                  <table className="w-full text-sm min-w-[900px]">
+                  <table className={`wh-table wh-table-compact w-full text-sm ${isReturn ? 'min-w-[520px]' : 'min-w-[900px]'}`}>
                     <thead className="bg-gray-50 sticky top-0">
                       <tr>
                         <th className="py-2 px-1 text-xs font-bold text-gray-500 uppercase w-8 text-center">#</th>
-                        <th className="py-2 px-1 text-center text-xs font-bold text-gray-500 uppercase w-20">Mã hàng <span className="text-red-500 font-bold">*</span></th>
-                        <th className="py-2 px-2 text-left text-xs font-bold text-gray-500 uppercase min-w-[180px]">Tên hàng <span className="text-red-500 font-bold">*</span></th>
-                        <th className="py-2 px-1 text-center text-xs font-bold text-gray-500 uppercase w-16">Kho</th>
-                        <th className="py-2 px-1 text-center text-xs font-bold text-gray-500 uppercase w-32">Vị trí</th>
+                        {!isReturn && <th className="py-2 px-1 text-center text-xs font-bold text-gray-500 uppercase w-20">Mã hàng <span className="text-red-500 font-bold">*</span></th>}
+                        <th className="py-2 px-2 text-left text-xs font-bold text-gray-500 uppercase min-w-[180px]">{isReturn ? 'Thiết bị' : 'Tên hàng'} <span className="text-red-500 font-bold">*</span></th>
+                        {!isReturn && <th className="py-2 px-1 text-center text-xs font-bold text-gray-500 uppercase w-16">Kho</th>}
+                        {!isReturn && <th className="py-2 px-1 text-center text-xs font-bold text-gray-500 uppercase w-32">Vị trí</th>}
                         <th className="py-2 px-0.5 text-center text-xs font-bold text-gray-500 uppercase hidden md:table-cell w-12">ĐVT</th>
                         <th className="py-2 px-0.5 text-center text-xs font-bold text-gray-500 uppercase w-12">SL <span className="text-red-500 font-bold">*</span></th>
                         {moneyKind && (
@@ -711,7 +756,7 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
                               <span className="text-gray-400">{i + 1}</span>
                             )}
                           </td>
-                          <td className="py-1 px-1 w-20 text-center">
+                          {!isReturn && <td className="py-1 px-1 w-20 text-center">
                             <SearchCombo
                               items={selectableProducts}
                               selectedId={l.productId}
@@ -747,7 +792,7 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
                                 </div>
                               )}
                             />
-                          </td>
+                          </td>}
                           <td className="py-1 px-2 min-w-[180px]">
                             <SearchCombo
                               items={selectableProducts}
@@ -783,24 +828,24 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
                               )}
                             />
                           </td>
-                          <td className="py-1 px-1 text-center text-gray-600 text-xs w-16">{whCode}</td>
-                          <td className="py-1 px-1 text-center w-32">
-                            <select aria-label="Vị trí hàng" value={l.locationId || ''} onChange={e => setLine(i, { locationId: e.target.value })} className="w-32 px-1.5 py-1 border border-gray-200 rounded-none text-xs outline-none bg-white truncate text-center mx-auto">
+                          {!isReturn && <td className="py-1 px-1 text-center text-gray-600 text-xs w-16">{whCode}</td>}
+                          {!isReturn && <td className="py-1 px-1 text-center w-32">
+                            <select aria-label="Vị trí hàng" value={l.locationId || ''} onChange={e => setLine(i, { locationId: e.target.value, reservationIds: [] })} className="w-32 px-1.5 py-1 border border-gray-200 rounded-none text-xs outline-none bg-white truncate text-center mx-auto">
                               <option value="">Chưa phân vị trí</option>
                               {locations.filter(location => kind !== 'ISSUE' || location.purpose === 'SALEABLE').map(location => <option key={location.id} value={location.id}>{location.code} · {location.name}</option>)}
                             </select>
-                          </td>
+                          </td>}
                           <td className="py-1 px-0.5 text-center hidden md:table-cell w-12">
-                            <UnitSuggestInput
+                            {isReturn ? <span className="text-xs text-gray-600">{l.unit || localProducts.find((p) => p.id === l.productId)?.unit || '—'}</span> : <UnitSuggestInput
                               value={l.unit !== undefined ? (l.unit || '') : (localProducts.find((p) => p.id === l.productId)?.unit || '')}
                               onChange={(val) => setLine(i, { unit: val })}
                               availableUnits={availableUnits}
                               placeholder="ĐVT"
                               className="w-11 px-0.5 py-1 border border-gray-200 rounded-none bg-white text-xs outline-none text-center mx-auto focus:border-emerald-500"
-                            />
+                            />}
                           </td>
                           <td className="py-1 px-0.5 text-center w-12">
-                            <input type="number" min={0.000001} step="any" value={l.quantity}
+                            <input type="number" min={isReturn ? 1 : 0.000001} step={isReturn ? 1 : 'any'} value={l.quantity}
                               onChange={(e) => setLine(i, { quantity: Number(e.target.value) })}
                               className={`w-11 px-0.5 py-1 border rounded-none text-xs outline-none text-center tabular-nums mx-auto [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none transition-colors ${
                                 hasAttemptedSubmit && invalidQty
@@ -849,6 +894,18 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
                                     </button>
                                   );
                                 })()}
+                                {kind === 'ISSUE' && (
+                                  <button type="button" onClick={() => setReservationPicker(i)}
+                                    title={l.reservationIds?.length ? `${l.reservationIds.length} giữ hàng đã gắn — bấm để sửa` : 'Gắn hàng đã giữ cho dòng xuất'}
+                                    className={`mt-1 w-28 px-1.5 py-1 border rounded-none text-xs outline-none text-center mx-auto transition-colors flex items-center justify-center gap-1 ${
+                                      l.reservationIds?.length
+                                        ? 'border-sky-300 bg-sky-50 text-sky-800 font-bold'
+                                        : 'border-dashed border-gray-300 text-gray-400 hover:border-sky-400 hover:text-sky-600'
+                                    }`}>
+                                    <PackageCheck size={12} className="shrink-0" />
+                                    <span className="tabular-nums">{l.reservationIds?.length ? `${l.reservationIds.length} giữ` : 'Giữ hàng'}</span>
+                                  </button>
+                                )}
                               </td>
                             </>
                           )}
@@ -1010,9 +1067,11 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
             )}
             {!moneyKind && (
               <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Ghi chú</label>
+                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">{isReturn ? <>Lý do trả hàng <span className="text-red-500">*</span></> : 'Ghi chú'}</label>
                 <textarea ref={notesRef} value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
-                  className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm outline-none resize-none" />
+                  required={isReturn}
+                  placeholder={isReturn ? 'Ví dụ: Khách hoàn trả thiết bị không sử dụng / đổi bảo hành...' : undefined}
+                  className={`w-full px-4 py-2.5 border rounded-xl text-sm outline-none resize-none ${hasAttemptedSubmit && isReturn && !notes.trim() ? 'border-red-400 bg-red-50' : 'border-gray-200'}`} />
               </div>
             )}
           </div>
@@ -1020,7 +1079,7 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
             <button type="button" onClick={requestClose} className="w-full sm:w-auto px-4 py-2.5 sm:py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-xl text-center">Hủy</button>
             <button type="submit" disabled={saving || loadingDoc}
               className="w-full sm:w-auto px-5 py-2.5 sm:py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60 flex items-center justify-center gap-2">
-              {saving ? <><RefreshCw size={14} className="animate-spin" />Đang lưu...</> : (isEditing ? 'Lưu thay đổi' : 'Tạo phiếu nháp')}
+              {saving ? <><RefreshCw size={14} className="animate-spin" />Đang lưu...</> : (isEditing ? 'Lưu thay đổi' : isReturn ? 'Tạo phiếu trả hàng' : 'Tạo phiếu nháp')}
             </button>
           </div>
         </form>
@@ -1049,6 +1108,91 @@ export function DocCreateModal({ kind, warehouses, products, users, canEditFinan
           onClose={() => setSerialEdit(null)}
         />
       )}
+      {reservationPicker !== null && lines[reservationPicker] && (
+        <ReservationPickerModal
+          key={`reservation-${reservationPicker}`}
+          line={lines[reservationPicker]}
+          reservations={heldReservations}
+          productName={productName(lines[reservationPicker].productId)}
+          onSave={(ids) => { setLine(reservationPicker, { reservationIds: ids }); setReservationPicker(null); }}
+          onClose={() => setReservationPicker(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ReservationPickerModal({ line, reservations, productName, onSave, onClose }: {
+  line: StockDocLine;
+  reservations: Reservation[];
+  productName: string;
+  onSave: (ids: string[]) => void;
+  onClose: () => void;
+}) {
+  const [selected, setSelected] = useState<string[]>(line.reservationIds || []);
+  const available = reservations.filter((r) =>
+    r.productId === line.productId
+    && String(r.locationId || '') === String(line.locationId || '')
+  );
+  const remainingOf = (r: Reservation) => Math.max(0, Number(r.quantity || 0) - Number(r.consumedQuantity || 0));
+  const selectedTotal = available
+    .filter((r) => selected.includes(r.id))
+    .reduce((sum, r) => sum + remainingOf(r), 0);
+  const toggle = (id: string) => {
+    setSelected((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  };
+  return (
+    <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <div>
+            <h3 className="font-bold text-gray-900">Gắn hàng đã giữ</h3>
+            <p className="text-xs text-gray-500 mt-0.5">{productName || 'Chưa chọn hàng'} · SL dòng: {Number(line.quantity) || 0}</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          {!line.productId ? (
+            <p className="text-sm text-gray-500">Chọn hàng hóa trước khi gắn giữ hàng.</p>
+          ) : available.length === 0 ? (
+            <div className="text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-xl p-4">
+              Không có giữ hàng HELD phù hợp sản phẩm, kho và vị trí này.
+            </div>
+          ) : available.map((r) => {
+            const checked = selected.includes(r.id);
+            return (
+              <label key={r.id} className={`flex items-start gap-3 p-3 border rounded-xl cursor-pointer transition-colors ${checked ? 'border-sky-300 bg-sky-50' : 'border-gray-200 hover:bg-gray-50'}`}>
+                <input type="checkbox" checked={checked} onChange={() => toggle(r.id)} className="mt-1 accent-sky-600" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-semibold text-sm text-gray-900 truncate">{r.productName || productName}</span>
+                    <span className="text-sm font-bold text-sky-700 tabular-nums">{remainingOf(r).toLocaleString('vi-VN')}</span>
+                  </div>
+                  <div className="text-xs text-gray-500 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+                    <span>Nguồn: {r.sourceType}{r.sourceId ? ` · ${r.sourceId}` : ''}</span>
+                    {r.expiresAt && <span>Hết hạn: {new Date(r.expiresAt).toLocaleString('vi-VN')}</span>}
+                    <span className="font-mono text-gray-400">{r.id.slice(0, 8)}</span>
+                  </div>
+                </div>
+              </label>
+            );
+          })}
+        </div>
+        <div className="px-5 py-4 border-t border-gray-100 bg-gray-50 flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between">
+          <p className="text-xs text-gray-500">
+            Đã chọn <b>{selected.length}</b> giữ hàng · Tổng còn giữ <b>{selectedTotal.toLocaleString('vi-VN')}</b>.
+            {selectedTotal > (Number(line.quantity) || 0) && (
+              <span className="text-amber-700"> Hệ thống chỉ trừ tối đa theo số lượng dòng.</span>
+            )}
+          </p>
+          <div className="flex items-center gap-2 justify-end">
+            <button type="button" onClick={() => setSelected([])} className="px-3 py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-xl">Bỏ chọn</button>
+            <button type="button" onClick={onClose} className="px-3 py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-xl">Hủy</button>
+            <button type="button" onClick={() => onSave(selected)} className="px-4 py-2 text-sm font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-xl">Lưu</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

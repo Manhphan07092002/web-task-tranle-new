@@ -8,32 +8,37 @@ export const sendNotification = async (
   type: string,
   title: string,
   message: string,
-  relatedId?: string
-) => {
+  relatedId?: string,
+  dedupeKeyOverride?: string
+): Promise<boolean> => {
   try {
     const id = randomUUID();
     const createdAt = new Date().toISOString();
-    const dedupeKey = notificationDedupeKey(userId, type, relatedId);
+    const dedupeKey = dedupeKeyOverride ?? notificationDedupeKey(userId, type, relatedId);
     
     // 1. Insert into database
     const result = await db.run(
       'INSERT IGNORE INTO notifications (id, userId, type, title, message, relatedId, dedupeKey, isRead, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)',
       [id, userId, type, title, message, relatedId || null, dedupeKey, createdAt]
     );
-    if (result && result.changes === 0) return;
+    if (result && result.changes === 0) return false;
 
     // 2. Emit to socket
-    const io = getIO();
-    io.to(userId).emit('new_notification', {
-      id,
-      userId,
-      type,
-      title,
-      message,
-      relatedId,
-      isRead: 0,
-      createdAt
-    });
+    try {
+      const io = getIO();
+      io.to(userId).emit('new_notification', {
+        id,
+        userId,
+        type,
+        title,
+        message,
+        relatedId,
+        isRead: 0,
+        createdAt
+      });
+    } catch {
+      // Notification đã lưu DB; socket có thể chưa khởi tạo trong test/CLI.
+    }
 
     // 3. Send Email Notification based on user preferences
     try {
@@ -46,6 +51,8 @@ export const sendNotification = async (
         if (type.startsWith('task_') && prefs.taskNotifs !== false) shouldSendEmail = true;
         if (type.startsWith('report_') && prefs.reportNotifs !== false) shouldSendEmail = true;
         if (type.startsWith('meeting_') && prefs.meetingNotifs !== false) shouldSendEmail = true;
+        // Cảnh báo tồn kho mặc định chỉ in-app/socket; email là opt-in.
+        if (type.startsWith('stock_') && prefs.stockNotifs === true) shouldSendEmail = true;
 
         if (shouldSendEmail) {
           // Fire and forget email to avoid blocking the API response
@@ -90,7 +97,9 @@ export const sendNotification = async (
       console.error('[Notify] Failed to send email notification.');
     }
 
+    return true;
   } catch {
     console.error('Failed to send notification.');
+    return false;
   }
 };

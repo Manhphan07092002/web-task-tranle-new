@@ -143,7 +143,7 @@ export default function BundlePage({ deptKey }: { deptKey: DeptKey }) {
                 </div>
               )}
               <div className="overflow-x-auto">
-              <table className="w-full text-xs">
+              <table className="wh-table wh-table-compact w-full text-xs">
                 <thead>
                   <tr className="text-gray-400 uppercase text-[10px]">
                     <th className="text-left py-1.5 font-bold">Thành phần</th>

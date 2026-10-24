@@ -141,7 +141,7 @@ export default function InventoryPage({ deptKey }: { deptKey: DeptKey }) {
       ) : (
         <Card className="overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="wh-table w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
                   <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm</th>
@@ -159,7 +159,7 @@ export default function InventoryPage({ deptKey }: { deptKey: DeptKey }) {
                     <tr key={`${r.productId}|${r.warehouseId}|${r.locationId}`} className="hover:bg-gray-50/70">
                       <td className="py-2 px-5">
                         <p className="font-semibold text-gray-800">{r.productName || r.productId}</p>
-                        <p className="text-xs text-gray-400 font-mono">{r.productId}</p>
+                        <p className="text-xs text-gray-400 font-mono" title={r.productId}>{r.productCode || r.productId}</p>
                       </td>
                       <td className="py-2 px-4 text-gray-500 text-xs">
                         {r.warehouseName || r.warehouseId}

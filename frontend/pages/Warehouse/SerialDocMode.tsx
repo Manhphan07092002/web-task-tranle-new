@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ScanLine, RefreshCw, AlertCircle, CheckCircle2, ArrowLeft, PackageCheck, Boxes, Hash, Camera, Pencil, Trash2 } from 'lucide-react';
+import { ScanLine, RefreshCw, AlertCircle, CheckCircle2, ArrowLeft, Boxes, Hash, Camera, Pencil, Trash2, PackageCheck } from 'lucide-react';
 import { Card } from '../../components/UI';
 import {
-  getStockDocument, getDocumentProgress, scanSerial, scanOutSerial, editLineSerial, registerLot, allocateLot, confirmLineQty, confirmLineWithoutSerial, completeDocumentProcessing,
+  getStockDocument, getDocumentProgress, scanSerial, scanOutSerial, scanReturnSerial, editLineSerial, registerLot, allocateLot, confirmLineQty, confirmLineWithoutSerial, enableLineSerial,
   type DocProgress, type DocLineProgress,
 } from '../../services/stockService';
 import { getDeptHomePath, getDeptModulePath } from '../../components/layout/menus/departmentMenus';
@@ -23,7 +23,6 @@ export default function SerialDocMode({ deptKey, embedded = false, onClosed }: {
   const [progress, setProgress] = useState<DocProgress | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [finishing, setFinishing] = useState(false);
 
   const fetchAll = useCallback(async () => {
     if (!documentId) return;
@@ -40,20 +39,6 @@ export default function SerialDocMode({ deptKey, embedded = false, onClosed }: {
   }, [documentId]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
-
-  const finishDocument = async () => {
-    if (!doc || !progress?.allCompleted || finishing || (doc.docType === 'ISSUE' && progress.lines.some((line) => Number(line.availability?.afterIssue) < 0))) return;
-    setFinishing(true); setError(null);
-    try {
-      await completeDocumentProcessing(documentId);
-      if (embedded) onClosed?.();
-      else await fetchAll();
-    } catch (e: any) {
-      setError(e.message || 'Không thể hoàn tất phiếu.');
-    } finally {
-      setFinishing(false);
-    }
-  };
 
   const backPath = getDeptModulePath(
     deptKey,
@@ -89,18 +74,11 @@ export default function SerialDocMode({ deptKey, embedded = false, onClosed }: {
           {progress && (
             <p className="text-gray-500 text-sm mt-1">
               {progress.lines.filter((l) => l.status === 'COMPLETED').length}/{progress.lines.length} dòng đã đủ
-              {progress.allCompleted ? ' — ✓ đủ điều kiện hoàn tất.' : ''}
+              {progress.allCompleted ? ' — ✓ Đã tự động chuyển sang sẵn sàng hoàn tất.' : ''}
             </p>
           )}
         </div>
         <div className="flex gap-2">
-          {progress?.allCompleted && !insufficientStock && doc && doc.status !== 'DONE' && doc.status !== 'IN_TRANSIT' && doc.status !== 'READY' && (
-            <button onClick={finishDocument} disabled={finishing}
-              className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-sm disabled:opacity-60">
-              <PackageCheck size={16} />
-              {finishing ? 'Đang hoàn tất...' : 'Hoàn tất xử lý'}
-            </button>
-          )}
           <button onClick={() => embedded ? onClosed?.() : navigate(backPath)}
             className="flex items-center gap-2 px-4 py-2.5 border border-gray-200 hover:bg-gray-50 text-gray-700 rounded-xl font-bold text-sm shadow-sm">
             <ArrowLeft size={16} /> {embedded ? 'Đóng xử lý' : 'Quay lại phiếu'}
@@ -126,7 +104,7 @@ export default function SerialDocMode({ deptKey, embedded = false, onClosed }: {
         <div className="space-y-3">
           {progress.allCompleted && (
             <div className="flex items-center gap-2 p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-800 font-bold text-sm">
-              <CheckCircle2 size={18} /> Các dòng hàng đã đủ — bấm “Hoàn tất xử lý” để chuyển phiếu sang trạng thái sẵn sàng hoàn tất.
+              <CheckCircle2 size={18} /> Các dòng hàng đã đủ — phiếu đã tự chuyển sang trạng thái sẵn sàng hoàn tất. Quay lại danh sách để thực hiện bước ghi nhận kho cuối cùng.
             </div>
           )}
           {insufficientStock && (
@@ -195,58 +173,43 @@ function LineCard({ line, docType, documentId, onDone, compact = false, canEdit 
         </div>
       )}
       <div className="mt-3">
-        {tracking === 'SERIAL' && (
-          line.quantityConfirmed
-            ? <SerialBox line={line} isIssue={isIssue} documentId={documentId} onDone={onDone} canEdit={canEdit} />
-            : <SerialQuantityConfirm line={line} onDone={onDone} />
-        )}
-        {tracking === 'LOT' && !isIssue && (
-          <LotBox line={line} documentId={documentId} onDone={onDone} />
-        )}
-        {tracking === 'LOT' && isIssue && (
-          <LotIssueBox line={line} documentId={documentId} onDone={onDone} />
-        )}
-        {tracking === 'QUANTITY' && (
-          <QuantityBox line={line} onDone={onDone} />
-        )}
+        <SerialBox
+          line={line}
+          scanMode={docType === 'RETURN' ? 'return' : isIssue ? 'out' : 'in'}
+          documentId={documentId}
+          onDone={onDone}
+          canEdit={canEdit}
+        />
       </div>
     </Card>
   );
 }
 
-function SerialQuantityConfirm({ line, onDone }: { line: DocLineProgress; onDone: () => Promise<void> }) {
+function EnableSerialBox({ line, onDone }: { line: DocLineProgress; onDone: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [showNoSerial, setShowNoSerial] = useState(false);
 
-  const submit = async () => {
+  const enable = async () => {
     if (busy) return;
     setBusy(true); setErr('');
     try {
-      await confirmLineQty(line.lineId, { actualQty: line.required });
+      await enableLineSerial(line.lineId);
       await onDone();
     } catch (e: any) {
-      setErr(e.message || 'Xác nhận số lượng thất bại');
+      setErr(e.message || 'Không thể chuyển sang quét Serial');
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="space-y-2">
-      <p className="text-xs text-gray-500">Xác nhận đủ {line.required.toLocaleString('vi-VN')} sản phẩm để bắt đầu quét Serial.</p>
-      <button type="button" onClick={submit} disabled={busy}
-        className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60">
-        <PackageCheck size={15} /> {busy ? 'Đang xác nhận...' : 'Xác nhận số lượng & bắt đầu quét Serial'}
+    <div className="mt-3 border-t border-dashed border-gray-200 pt-3">
+      <p className="text-xs text-gray-500">Cần đối chiếu từng thiết bị? Chuyển dòng này sang quy trình quét Serial.</p>
+      <button type="button" onClick={enable} disabled={busy}
+        className="mt-2 flex items-center gap-1.5 px-4 py-2 border border-emerald-600 text-emerald-700 hover:bg-emerald-50 rounded-xl font-bold text-sm disabled:opacity-60">
+        <ScanLine size={15} /> {busy ? 'Đang chuẩn bị...' : 'Quét Serial cho dòng này'}
       </button>
-      {err && <p className="text-xs text-red-600 flex items-center gap-1"><AlertCircle size={12} />{err}</p>}
-      {!showNoSerial ? (
-        <button type="button" onClick={() => setShowNoSerial(true)} className="text-xs text-gray-500 hover:text-emerald-700 underline underline-offset-2">
-          Không có số Serial
-        </button>
-      ) : (
-        <NoSerialConfirm line={line} onDone={onDone} onCancel={() => setShowNoSerial(false)} />
-      )}
+      {err && <p className="mt-1.5 text-xs text-red-600 flex items-center gap-1"><AlertCircle size={12} />{err}</p>}
     </div>
   );
 }
@@ -286,7 +249,7 @@ function NoSerialConfirm({ line, onDone, onCancel }: { line: DocLineProgress; on
   );
 }
 
-function SerialBox({ line, isIssue, documentId, onDone, canEdit }: { line: DocLineProgress; isIssue: boolean; documentId: string; onDone: () => Promise<void>; canEdit: boolean }) {
+function SerialBox({ line, scanMode, documentId, onDone, canEdit }: { line: DocLineProgress; scanMode: 'in' | 'out' | 'return'; documentId: string; onDone: () => Promise<void>; canEdit: boolean }) {
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -309,7 +272,7 @@ function SerialBox({ line, isIssue, documentId, onDone, canEdit }: { line: DocLi
 
   const submitOne = async (code: string): Promise<string | null> => {
     try {
-      await (isIssue ? scanOutSerial : scanSerial)(documentId, line.lineId, code);
+      await (scanMode === 'out' ? scanOutSerial : scanMode === 'return' ? scanReturnSerial : scanSerial)(documentId, line.lineId, code);
       return null;
     } catch (e: any) {
       return `${code}: ${e.message || 'thất bại'}`;
@@ -340,7 +303,7 @@ function SerialBox({ line, isIssue, documentId, onDone, canEdit }: { line: DocLi
     if (!code || busy) return;
     setBusy(true); setErr(''); setOkMsg('');
     try {
-      await (isIssue ? scanOutSerial : scanSerial)(documentId, line.lineId, code);
+      await (scanMode === 'out' ? scanOutSerial : scanMode === 'return' ? scanReturnSerial : scanSerial)(documentId, line.lineId, code);
       setValue('');
       await onDone();
     } catch (e: any) {
@@ -451,7 +414,7 @@ function LotBox({ line, documentId, onDone }: { line: DocLineProgress; documentI
     <div>
       {line.lots.length > 0 && (
         <div className="mb-2 border border-gray-100 rounded-xl overflow-hidden">
-          <table className="w-full text-xs">
+          <table className="wh-table wh-table-compact w-full text-xs">
             <thead className="bg-gray-50">
               <tr>
                 <th className="text-left py-1.5 px-3 font-bold text-gray-500 uppercase">Mã lô/cuộn</th>
@@ -515,7 +478,7 @@ function LotIssueBox({ line, documentId, onDone }: { line: DocLineProgress; docu
     <div>
       {line.lots.length > 0 && (
         <div className="mb-2 border border-gray-100 rounded-xl overflow-hidden">
-          <table className="w-full text-xs">
+          <table className="wh-table wh-table-compact w-full text-xs">
             <thead className="bg-gray-50">
               <tr>
                 <th className="text-left py-1.5 px-3 font-bold text-gray-500 uppercase">Lô/cuộn nguồn</th>

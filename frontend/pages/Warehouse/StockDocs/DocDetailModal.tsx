@@ -119,6 +119,18 @@ export function DocDetailModal({
   const st = doc ? STATUS_LABEL[doc.status] || STATUS_LABEL.DRAFT : STATUS_LABEL.DRAFT;
   const isTransfer = doc?.docType === 'TRANSFER' || kind === 'TRANSFER';
   const meta = KIND_META[kind];
+  const formatDate = (value?: string | null) => {
+    if (!value) return '—';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString('vi-VN');
+  };
+  const returnReceiptSources = doc?.returnTrace?.receiptSources || [];
+  const importedBy = returnReceiptSources
+    .map((source) => source.partnerName || source.partnerCode || source.code)
+    .filter((value): value is string => Boolean(value));
+  const importedDates = returnReceiptSources
+    .map((source) => formatDate(source.receivedAt))
+    .filter((value) => value !== '—');
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-stretch justify-center p-0 overflow-y-auto">
@@ -176,7 +188,7 @@ export function DocDetailModal({
           ) : doc ? (
             <>
               {/* Header Info Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className={`grid grid-cols-1 ${doc.docType === 'RETURN' ? 'md:grid-cols-2 xl:grid-cols-4' : 'md:grid-cols-3'} gap-4`}>
                 {/* Block 1: Thông tin kho & thời gian */}
                 <div className="bg-gray-50/70 border border-gray-100 rounded-xl p-3.5 space-y-2">
                   <div className="text-xs font-bold text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -302,6 +314,40 @@ export function DocDetailModal({
                     </div>
                   </div>
                 </div>
+
+                {doc.docType === 'RETURN' && (
+                  <div className="bg-sky-50/60 border border-sky-100 rounded-xl p-3.5 space-y-2">
+                    <div className="text-xs font-bold text-sky-700 uppercase tracking-wider flex items-center gap-1.5">
+                      <PackageCheck size={13} className="text-sky-600" />
+                      <span>Nguồn gốc thiết bị</span>
+                    </div>
+                    <div className="space-y-1.5 text-xs">
+                      <div className="flex justify-between gap-3">
+                        <span className="text-gray-500 shrink-0">Đơn vị nhập:</span>
+                        <span className="font-semibold text-gray-800 text-right truncate" title={importedBy.join(' · ')}>
+                          {importedBy.length > 0 ? importedBy.join(' · ') : 'Chưa xác định'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <span className="text-gray-500 shrink-0">Ngày nhập:</span>
+                        <span className="font-semibold text-gray-800 text-right">
+                          {importedDates.length > 0 ? importedDates.join(' · ') : 'Chưa xác định'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <span className="text-gray-500 shrink-0">Ngày xuất hàng:</span>
+                        <span className="font-semibold text-gray-800 text-right">
+                          {formatDate(doc.returnTrace?.sourceIssue?.shippedAt)}
+                        </span>
+                      </div>
+                      {doc.returnTrace?.sourceIssue?.code && (
+                        <div className="text-[11px] text-sky-700 pt-0.5">
+                          Theo phiếu xuất {doc.returnTrace.sourceIssue.code}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Items Table */}
@@ -312,7 +358,7 @@ export function DocDetailModal({
                   </span>
                 </div>
                 <div className="overflow-x-auto max-h-[380px]">
-                  <table className="w-full text-xs text-left">
+                  <table className="wh-table wh-table-compact w-full text-xs text-left">
                     <thead className="bg-gray-100/70 border-b border-gray-200 text-gray-600 uppercase font-semibold">
                       <tr>
                         <th className="py-2 px-3 text-center w-10">#</th>

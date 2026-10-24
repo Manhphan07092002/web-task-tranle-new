@@ -22,6 +22,9 @@ function mockDbForSuggestions(opts: {
   projectRows?: any[];
   doc?: any;
   lines?: any[];
+  serialRows?: any[];
+  receiptMoves?: any[];
+  sourceIssue?: any;
   scopes?: string[];
 } = {}) {
   const runs: string[] = [];
@@ -29,6 +32,8 @@ function mockDbForSuggestions(opts: {
     runs,
     all: vi.fn(async (sql: string) => {
       const s = String(sql);
+      if (s.includes('FROM stock_moves sm')) return opts.receiptMoves ?? [];
+      if (s.includes('FROM stock_serials')) return opts.serialRows ?? [];
       if (s.includes('FROM stock_documents')) {
         return opts.docRows ?? [
           { partnerCode: 'NCC-01', partnerName: 'Công ty Alpha', partnerAddress: 'Hà Nội', deliverer: 'Nguyễn Văn A', notes: 'Nhập lô hàng 01' },
@@ -61,6 +66,7 @@ function mockDbForSuggestions(opts: {
     }),
     get: vi.fn(async (sql: string) => {
       const s = String(sql);
+      if (s.includes("docType = 'ISSUE'")) return opts.sourceIssue;
       if (s.includes('FROM stock_documents')) {
         return opts.doc ?? { id: 'doc-123', docType: 'RECEIPT', status: 'DRAFT', warehouseId: 'wh-1', partnerName: 'Công ty Alpha' };
       }
@@ -139,6 +145,54 @@ describe('Stock Partner Suggestions & Document Flow API', () => {
     expect(res.body.partnerName).toBe('Công ty Alpha');
     expect(res.body.lines).toHaveLength(1);
     expect(res.body.lines[0].productName).toBe('Pin mặt trời 550W');
+  });
+
+  it('sorts document lists by creation date before pagination', async () => {
+    const db = mockDbForSuggestions({
+      docRows: [{ id: 'doc-old', docType: 'RETURN', status: 'DRAFT', warehouseId: 'wh-1' }],
+      scopes: ['wh-1'],
+    });
+
+    await request(appFor(warehouseManager, db)).get('/documents?docType=RETURN&sortOrder=asc').expect(200);
+
+    const listQuery = db.all.mock.calls.find(([sql]: [string]) => String(sql).includes('FROM stock_documents d'))?.[0];
+    expect(String(listQuery)).toContain('ORDER BY d.createdAt ASC');
+  });
+
+  it('rejects an unsupported document date sort order', async () => {
+    const db = mockDbForSuggestions({ scopes: ['wh-1'] });
+
+    const response = await request(appFor(warehouseManager, db)).get('/documents?sortOrder=sideways').expect(400);
+
+    expect(response.body.error).toMatch(/sắp xếp ngày/i);
+  });
+
+  it('traces return source from Serial history instead of the return warehouse', async () => {
+    const doc = {
+      id: 'pth-1', code: 'PTH-26-0004', docType: 'RETURN', status: 'READY',
+      warehouseId: 'wh-return', referenceId: 'pxk-1',
+    };
+    const db = mockDbForSuggestions({
+      doc,
+      lines: [{ id: 'line-1', productId: 'p1', quantity: 1, serialLot: 'SN-001' }],
+      serialRows: [{ id: 'serial-1' }],
+      sourceIssue: { code: 'PXK-26-0001', shippedAt: '2026-10-20T00:00:00.000Z' },
+      receiptMoves: [{
+        serialId: 'serial-1', documentId: 'pnk-1', code: 'PNK-26-0010',
+        partnerCode: 'NCC-01', partnerName: 'Nhà cung cấp Alpha', receivedAt: '2026-10-01T00:00:00.000Z',
+      }],
+      scopes: ['wh-return'],
+    });
+
+    const res = await request(appFor(warehouseManager, db)).get('/documents/pth-1').expect(200);
+
+    expect(res.body.returnTrace).toEqual({
+      sourceIssue: { code: 'PXK-26-0001', shippedAt: '2026-10-20T00:00:00.000Z' },
+      receiptSources: [{
+        documentId: 'pnk-1', code: 'PNK-26-0010', partnerCode: 'NCC-01',
+        partnerName: 'Nhà cung cấp Alpha', receivedAt: '2026-10-01T00:00:00.000Z',
+      }],
+    });
   });
 
   it('cancels draft document via POST /documents/:id/cancel', async () => {

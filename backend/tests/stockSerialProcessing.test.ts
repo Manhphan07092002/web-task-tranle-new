@@ -17,6 +17,8 @@ function appFor(user: any, db: any) {
 interface ProcOpts {
   docType?: string;
   status?: string;
+  referenceId?: string | null;
+  warehouseId?: string;
   lines?: any[];
   trackings?: Record<string, string>;
   serials?: Record<string, any>;
@@ -29,8 +31,8 @@ function procDb(opts: ProcOpts = {}) {
   const calls: [string, any[]][] = [];
   const doc: any = {
     id: 'doc1', docType: opts.docType || 'RECEIPT', status: opts.status || 'DRAFT',
-    code: 'PNK-26-0001', warehouseId: 'wh-hn', sourceWarehouseId: 'wh-hn',
-    destWarehouseId: 'wh-hcm', referenceType: null, partnerName: 'NCC A',
+    code: 'PNK-26-0001', warehouseId: opts.warehouseId || 'wh-hn', sourceWarehouseId: 'wh-hn',
+    destWarehouseId: 'wh-hcm', referenceType: null, referenceId: opts.referenceId ?? null, partnerName: 'NCC A',
   };
   const lines: any[] = (opts.lines || [
     { id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 2, locationId: null, serialLot: '', processingStatus: 'PENDING' },
@@ -68,7 +70,14 @@ function procDb(opts: ProcOpts = {}) {
       return [];
     }),
     get: vi.fn(async (sql: string, params: any[] = []) => {
-      if (sql.includes('FROM stock_documents')) return params[0] === 'doc1' ? { ...doc } : undefined;
+      if (sql.includes('FROM stock_documents')) {
+        if (params[0] === 'doc1') return { ...doc };
+        // Phiếu xuất nguồn được truy từ Serial khi xử lý trả hàng.
+        return { id: params[0], docType: 'ISSUE', status: 'DONE', code: 'PXK-ORIGIN', partnerCode: 'KH-01', partnerName: 'Khách hàng gốc' };
+      }
+      if (sql.includes('COUNT(*) AS incomplete') && sql.includes('stock_document_lines')) {
+        return { incomplete: lines.filter((line) => line.processingStatus !== 'COMPLETED').length };
+      }
       if (sql.includes('FROM stock_document_lines')) {
         return lines.find((l) => l.id === params[0]);
       }
@@ -97,8 +106,8 @@ function procDb(opts: ProcOpts = {}) {
     }),
     run: vi.fn(async (sql: string, params: any[] = []) => {
       calls.push([sql, params]);
-      if (sql.includes('UPDATE stock_documents SET status')) {
-        doc.status = sql.includes("'PROCESSING'") ? 'PROCESSING' : params[0];
+      if (sql.includes('UPDATE stock_documents') && sql.includes('SET status')) {
+        doc.status = sql.includes("SET status = 'PROCESSING'") ? 'PROCESSING' : params[0];
       }
       if (sql.includes('UPDATE stock_document_lines SET serialLot')) {
         const line = lines.find((l) => l.id === params[2]);
@@ -107,6 +116,10 @@ function procDb(opts: ProcOpts = {}) {
       if (sql.includes('UPDATE stock_document_lines SET serialSkipped')) {
         const line = lines.find((l) => l.id === params[3]);
         if (line) { line.serialSkipped = 1; line.actualQty = params[0]; line.varianceQty = params[1]; line.processingStatus = 'COMPLETED'; }
+      }
+      if (sql.includes('UPDATE stock_document_lines') && sql.includes('SET serialRequired = 1')) {
+        const line = lines.find((l) => l.id === params[0]);
+        if (line) { line.serialRequired = 1; line.serialSkipped = 0; line.processingStatus = 'PENDING'; }
       }
       if (sql.includes('UPDATE stock_serials SET stockStatus')) {
         const row = Object.values(serials).find((s: any) => s.serialNumber === params[3] || true);
@@ -147,18 +160,17 @@ describe('SERIAL gating on complete (Phase 2)', () => {
     await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(200);
   });
 
-  it('lets QUANTITY lines through without serials; LOT needs coverage', async () => {
-    for (const tracking of ['QUANTITY', undefined]) {
+  it('only SERIAL requires scanned serials; LOT requires lot registration', async () => {
+    for (const tracking of ['QUANTITY', 'LOT', undefined]) {
       const db = procDb({ status: 'READY', trackings: tracking ? { p1: tracking } : {} });
       const res = await request(appFor(tp, db)).post('/receipts/doc1/complete').send({});
-      expect(res.status).toBe(200);
+      if (tracking === 'LOT') {
+        expect(res.status).toBe(400);
+        expect(res.body.error).toMatch(/Chưa đủ Lô/);
+      } else {
+        expect(res.status).toBe(200);
+      }
     }
-    // LOT line with nothing registered is blocked...
-    const dbEmpty = procDb({ trackings: { p1: 'LOT' } });
-    await request(appFor(tp, dbEmpty)).post('/receipts/doc1/complete').send({}).expect(400);
-    // ...but passes once registered lots cover the quantity
-    const dbCovered = procDb({ status: 'READY', trackings: { p1: 'LOT' }, lots: [{ covered: 2 }] });
-    await request(appFor(tp, dbCovered)).post('/receipts/doc1/complete').send({}).expect(200);
   });
 
   it('completes PROCESSING documents', async () => {
@@ -188,10 +200,11 @@ describe('POST /serials/scan (Phase 2)', () => {
   it('appends serials and marks PROCESSING', async () => {
     const db = procDb({ trackings: { p1: 'SERIAL' } });
     const r1 = await request(appFor(tp, db)).post('/serials/scan').send(body).expect(201);
-    expect(r1.body).toMatchObject({ serial: 'SN-X', count: 1, required: 2, completed: false });
+    expect(r1.body).toMatchObject({ serial: 'SN-X', count: 1, required: 2, completed: false, processingCompleted: false });
     expect(db.doc.status).toBe('PROCESSING');
     const r2 = await request(appFor(tp, db)).post('/serials/scan').send({ ...body, serial: 'SN-Y' }).expect(201);
-    expect(r2.body).toMatchObject({ count: 2, completed: true });
+    expect(r2.body).toMatchObject({ count: 2, completed: true, processingCompleted: true });
+    expect(db.doc.status).toBe('READY');
   });
 
   it('rejects duplicates, over-quantity and global conflicts', async () => {
@@ -207,9 +220,9 @@ describe('POST /serials/scan (Phase 2)', () => {
     await request(appFor(tp, db)).post('/serials/scan').send(body).expect(409);
   });
 
-  it('rejects non-SERIAL products', async () => {
+  it('scans products regardless of their former tracking mode', async () => {
     const db = procDb({ trackings: { p1: 'QUANTITY' } });
-    await request(appFor(tp, db)).post('/serials/scan').send(body).expect(400);
+    await request(appFor(tp, db)).post('/serials/scan').send(body).expect(201);
   });
 
   it('404s unknown documents and lines', async () => {
@@ -263,6 +276,76 @@ describe('POST /serials/scan-out (Phase 2)', () => {
     const db = issueDb({ 'SN-X': { productId: 'p1', warehouseId: 'wh-hn', stockStatus: 'IN_STOCK' } });
     const res = await request(appFor(tp, db)).post('/serials/scan-out').send(base).expect(400);
     expect(res.body.error).toMatch(/chưa từng nhập kho/);
+  });
+});
+
+describe('POST /serials/scan-return', () => {
+  const body = { documentId: 'doc1', documentLineId: 'l1', serial: 'SN-RETURN' };
+
+  it('accepts only a Serial exported by the referenced issue document', async () => {
+    const db = procDb({
+      docType: 'RETURN', referenceId: 'issue-origin',
+      serials: { 'SN-RETURN': { productId: 'p1', warehouseId: 'wh-hn', stockStatus: 'OUT', issueDocumentId: 'issue-origin' } },
+    });
+    await request(appFor(tp, db)).post('/serials/scan-return').send(body).expect(201);
+    expect(db.lines[0].serialLot).toBe('SN-RETURN');
+  });
+
+  it('accepts a partial return without preselecting PXK and derives its source from Serial', async () => {
+    const db = procDb({
+      docType: 'RETURN', referenceId: null,
+      lines: [{ id: 'l1', documentId: 'doc1', productId: 'p1', quantity: 1, locationId: null, serialLot: '', processingStatus: 'PENDING' }],
+      serials: { 'SN-RETURN-1': { productId: 'p1', warehouseId: 'wh-source', stockStatus: 'OUT', issueDocumentId: 'issue-origin' } },
+    });
+    const response = await request(appFor(tp, db)).post('/serials/scan-return')
+      .send({ ...body, serial: 'SN-RETURN-1' }).expect(201);
+
+    expect(response.body).toMatchObject({ serial: 'SN-RETURN-1', required: 1, sourceIssue: { id: 'issue-origin', code: 'PXK-ORIGIN', partnerName: 'Khách hàng gốc' } });
+    expect(db.calls.some(([sql, params]: [string, any[]]) => String(sql).includes("SET referenceType = 'ISSUE'") && params.includes('issue-origin') && params.includes('Khách hàng gốc'))).toBe(true);
+  });
+
+  it('rejects Serial already returned or exported by another issue document', async () => {
+    const alreadyReturned = procDb({
+      docType: 'RETURN', referenceId: 'issue-origin',
+      serials: { 'SN-RETURN': { productId: 'p1', stockStatus: 'IN_STOCK', issueDocumentId: null } },
+    });
+    await request(appFor(tp, alreadyReturned)).post('/serials/scan-return').send(body).expect(409);
+
+    const differentIssue = procDb({
+      docType: 'RETURN', referenceId: 'issue-origin',
+      serials: { 'SN-RETURN': { productId: 'p1', stockStatus: 'OUT', issueDocumentId: 'another-issue' } },
+    });
+    await request(appFor(tp, differentIssue)).post('/serials/scan-return').send(body).expect(400);
+  });
+});
+
+describe('return completion stock destination', () => {
+  it('adds returned serials to the selected return warehouse ledger and balance', async () => {
+    const db = procDb({
+      docType: 'RETURN', status: 'READY', referenceId: 'issue-origin', warehouseId: 'wh-hcm',
+      trackings: { p1: 'SERIAL' },
+      lines: [{
+        id: 'return-line', documentId: 'doc1', productId: 'p1', quantity: 1,
+        locationId: null, serialLot: 'RETURN-SN-01', processingStatus: 'COMPLETED',
+      }],
+      serials: {
+        'RETURN-SN-01': { id: 'serial-return-1', productId: 'p1', warehouseId: 'wh-hn', stockStatus: 'OUT', issueDocumentId: 'issue-origin' },
+      },
+    });
+
+    await request(appFor(tp, db)).post('/returns/doc1/complete').send({}).expect(200);
+
+    const serialRestore = db.calls.find(([sql]: [string]) => String(sql).includes("SET status = 'SALEABLE'"));
+    expect(serialRestore?.[1]?.[0]).toBe('wh-hcm');
+
+    const move = db.calls.find(([sql]: [string]) => String(sql).includes('INSERT INTO stock_moves'));
+    expect(move?.[1]?.[2]).toBe('wh-hcm');
+    expect(move?.[1]?.[4]).toBe(1);
+    expect(move?.[1]?.[5]).toBe('RETURN');
+
+    const balance = db.calls.find(([sql]: [string]) => String(sql).includes('INSERT INTO stock_balances'));
+    expect(balance?.[1]?.[1]).toBe('wh-hcm');
+    expect(balance?.[1]?.[3]).toBe(1);
   });
 });
 
@@ -432,16 +515,15 @@ describe('progress + confirm-qty + lots (Phase 3 backend)', () => {
     expect(res.body.allCompleted).toBe(false);
     const byId: Record<string, any> = Object.fromEntries(res.body.lines.map((l: any) => [l.lineId, l]));
     expect(byId.l1).toMatchObject({ required: 2, processed: 1, tracking: 'SERIAL', status: 'PARTIAL' });
-    expect(byId.l2).toMatchObject({ required: 100, processed: 0, tracking: 'LOT', status: 'PENDING' });
-    expect(byId.l3).toMatchObject({ required: 500, processed: 0, tracking: 'QUANTITY', status: 'PENDING' });
+    expect(byId.l2).toMatchObject({ required: 100, processed: 0, tracking: 'SERIAL', status: 'PENDING' });
+    expect(byId.l3).toMatchObject({ required: 500, processed: 0, tracking: 'SERIAL', status: 'PENDING' });
   });
 
-  it('confirms quantity with variance reason', async () => {
+  it('does not allow a quantity variance to bypass required Serial scans', async () => {
     const db = procDb({ lines: multiLines, trackings });
     const res = await request(appFor(tp, db)).post('/lines/l3/confirm-qty')
-      .send({ actualQty: 495, varianceReason: 'Hao hut van chuyen' }).expect(200);
-    expect(res.body).toEqual({ actualQty: 495, varianceQty: -5 });
-    await request(appFor(tp, db)).post('/lines/l3/confirm-qty').send({ actualQty: 490 }).expect(400);
+      .send({ actualQty: 495, varianceReason: 'Hao hut van chuyen' }).expect(400);
+    expect(res.body.error).toMatch(/quét đủ 500 Serial/);
   });
 
   it('confirms the target quantity before scanning SERIAL lines', async () => {
@@ -461,17 +543,42 @@ describe('progress + confirm-qty + lots (Phase 3 backend)', () => {
     await request(appFor(tp, db)).post('/lines/l3/confirm-qty').send({ actualQty: 500 }).expect(200);
   });
 
-  it('allows a new Serial line to be confirmed as no-Serial without removing the line', async () => {
+  it('presents legacy lines as Serial-required and upgrades their persisted setting', async () => {
+    const db = procDb({
+      docType: 'ISSUE',
+      trackings: { p3: 'QUANTITY' },
+      lines: [{ ...multiLines[2], serialRequired: 0 }],
+      serials: { 'SN-LEGACY': { productId: 'p3', warehouseId: 'wh-hn', stockStatus: 'IN_STOCK', receiptDocumentId: 'pnk1' } },
+    });
+    const progress = await request(appFor(tp, db)).get('/documents/doc1/progress').expect(200);
+    expect(progress.body.lines[0]).toMatchObject({ tracking: 'SERIAL', canEnableSerial: false });
+    const response = await request(appFor(tp, db)).post('/lines/l3/enable-serial').send({}).expect(200);
+    expect(response.body).toEqual({ success: true, serialRequired: true });
+    expect(db.lines[0]).toMatchObject({ serialRequired: 1, processingStatus: 'PENDING' });
+    expect(db.calls.some(([, params]: [string, any[]]) => params.includes('SERIAL_TRACKING_ENABLED'))).toBe(true);
+    await request(appFor(tp, db)).post('/serials/scan-out').send({ documentId: 'doc1', documentLineId: 'l3', serial: 'SN-LEGACY' }).expect(201);
+  });
+
+  it('does not let a processed legacy issue line switch tracking mid-flow', async () => {
+    const db = procDb({
+      docType: 'ISSUE',
+      trackings: { p3: 'QUANTITY' },
+      lines: [{ ...multiLines[2], serialRequired: 0, processingStatus: 'COMPLETED', actualQty: 500 }],
+    });
+    const response = await request(appFor(tp, db)).post('/lines/l3/enable-serial').send({}).expect(400);
+    expect(response.body.error).toMatch(/đã được xử lý/);
+  });
+
+  it('rejects bypassing mandatory Serial scanning', async () => {
     const db = procDb({
       lines: [{ ...multiLines[2], serialRequired: 1 }],
       trackings: { p3: 'QUANTITY' },
     });
-    await request(appFor(tp, db)).post('/lines/l3/confirm-no-serial').send({ actualQty: 500 }).expect(200);
-    expect(db.lines).toHaveLength(1);
-    expect(db.lines[0]).toMatchObject({ serialSkipped: 1, actualQty: 500, processingStatus: 'COMPLETED' });
+    const response = await request(appFor(tp, db)).post('/lines/l3/confirm-no-serial').send({ actualQty: 500 }).expect(400);
+    expect(response.body.error).toMatch(/phải quét đủ Serial/);
   });
 
-  it('registers lots and completes when covered', async () => {
+  it('does not let lot registration replace required Serial scans', async () => {
     const db = procDb({ lines: multiLines, trackings });
     const r1 = await request(appFor(tp, db)).post('/lots/register').send({
       documentId: 'doc1', documentLineId: 'l2', lotCode: 'LAPP-01', quantity: 60, unit: 'm',
@@ -482,14 +589,14 @@ describe('progress + confirm-qty + lots (Phase 3 backend)', () => {
     await request(appFor(tp, dbDup)).post('/lots/register').send({
       documentId: 'doc1', documentLineId: 'l2', lotCode: 'LAPP-01', quantity: 60,
     }).expect(409);
-    // LOT line covered by registered lots passes complete gating
+    // LOT line covered by registered lots still cannot bypass Serial gating.
     const dbCovered = procDb({
       status: 'READY',
       lines: [{ id: 'l2', documentId: 'doc1', productId: 'p2', quantity: 100, locationId: null, serialLot: '', processingStatus: 'PENDING' }],
       trackings: { p2: 'LOT' },
       lots: [{ covered: 100 }],
     });
-    await request(appFor(tp, dbCovered)).post('/receipts/doc1/complete').send({}).expect(200);
+    await request(appFor(tp, dbCovered)).post('/receipts/doc1/complete').send({}).expect(400);
   });
 
   it('rejects lot registration on non-LOT products', async () => {

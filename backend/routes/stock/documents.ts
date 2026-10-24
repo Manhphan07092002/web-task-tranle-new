@@ -9,7 +9,7 @@ import { getWarrantyStartType, resolveWarrantyStart } from '../../utils/warranty
 import type { StockContext } from './context.js';
 
 export function documentsRoutes(ctx: StockContext) {
-  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, canReadDocument, canWriteDocument, assertLocation, availableOf, saleableLocationSet, assertNotCounting, postMove, recordWarehouseActivity, resolveAccountingDefaults, docCode, nextDocCode, paginationOf } = ctx;
+  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, canReadDocument, canWriteDocument, assertLocation, availableOf, saleableLocationSet, assertNotCounting, postMove, postMoves, recordWarehouseActivity, resolveAccountingDefaults, docCode, nextDocCode, paginationOf } = ctx;
   const router = Router();
   // VAT mặc định theo quy ước nghiệp vụ hiện tại. Người có thẩm quyền vẫn có
   // thể thay đổi trên từng dòng; không dùng mã tài khoản mặc định cứng.
@@ -20,7 +20,7 @@ export function documentsRoutes(ctx: StockContext) {
     try {
       const user = req.user;
       const scope = await listScope(user);
-      const { docType, status, warehouseId, from, to } = req.query as Record<string, string | undefined>;
+      const { docType, status, warehouseId, from, to, sortOrder } = req.query as Record<string, string | undefined>;
       if (!isDirector(user)) {
         if (warehouseId && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
         if (!warehouseId && scope.length === 0) return res.json([]);
@@ -58,7 +58,13 @@ export function documentsRoutes(ctx: StockContext) {
         if (!Number.isFinite(toDate.getTime())) return res.status(400).json({ error: 'Ngày kết thúc không hợp lệ' });
         query += ' AND d.createdAt < ?'; params.push(toDate.toISOString());
       }
-      query += ' ORDER BY d.createdAt DESC';
+      const normalizedSortOrder = (sortOrder || 'desc').trim().toLowerCase();
+      if (normalizedSortOrder !== 'asc' && normalizedSortOrder !== 'desc') {
+        return res.status(400).json({ error: 'Thứ tự sắp xếp ngày không hợp lệ' });
+      }
+      // Sắp xếp thực hiện ở DB trước phân trang để "cũ nhất" vẫn chính xác
+      // trên toàn bộ phiếu, không chỉ các dòng của trang hiện tại.
+      query += ` ORDER BY d.createdAt ${normalizedSortOrder.toUpperCase()}`;
       const docPage = paginationOf(req.query as Record<string, string | undefined>);
       query += ' LIMIT ? OFFSET ?';
       params.push(docPage.limit, docPage.offset);
@@ -128,7 +134,7 @@ export function documentsRoutes(ctx: StockContext) {
       if (!(await canReadDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
       const lines = await db.all(
         `SELECT l.*, 
-           p.name AS productName, p.unit, p.origin, p.category, p.tracking,
+           p.name AS productName, p.importCode AS productSku, p.unit, p.origin, p.category, p.tracking,
            loc.code AS locationCode, loc.name AS locationName
          FROM stock_document_lines l
          LEFT JOIN products p ON p.id = l.productId
@@ -136,7 +142,68 @@ export function documentsRoutes(ctx: StockContext) {
          WHERE l.documentId = ?`,
         [id]
       );
-      res.json({ ...doc, lines });
+
+      // Phiếu trả không nhập tay nguồn gốc hàng. Thông tin đơn vị/ngày nhập
+      // phải được truy vết theo Serial qua sổ stock_moves để vẫn đúng sau khi
+      // Serial đã được chuyển kho, xuất, hoặc trả về một kho khác.
+      let returnTrace: {
+        sourceIssue: { code: string | null; shippedAt: string | null } | null;
+        receiptSources: Array<{ documentId: string; code: string | null; partnerCode: string | null; partnerName: string | null; receivedAt: string | null }>;
+      } | null = null;
+      if (doc.docType === 'RETURN') {
+        const serialNumbers = [...new Set((lines || []).flatMap((line: any) => parseSerials(line.serialLot)))];
+        const sourceIssue = doc.referenceId
+          ? await db.get(
+            `SELECT code, COALESCE(docDate, postingDate, createdAt) AS shippedAt
+             FROM stock_documents WHERE id = ? AND docType = 'ISSUE'`,
+            [doc.referenceId]
+          )
+          : null;
+
+        let receiptSources: Array<{ documentId: string; code: string | null; partnerCode: string | null; partnerName: string | null; receivedAt: string | null }> = [];
+        if (serialNumbers.length > 0) {
+          const serialRows = await db.all(
+            `SELECT id FROM stock_serials WHERE serialNumber IN (${serialNumbers.map(() => '?').join(', ')})`,
+            serialNumbers
+          );
+          const serialIds = [...new Set((serialRows || []).map((row: any) => row.id).filter(Boolean))];
+          if (serialIds.length > 0) {
+            const receiptMoves = await db.all(
+              `SELECT sm.serialId, d.id AS documentId, d.code, d.partnerCode, d.partnerName,
+                      COALESCE(d.docDate, d.postingDate, d.createdAt) AS receivedAt
+               FROM stock_moves sm
+               JOIN stock_documents d ON d.id = sm.referenceId AND d.docType = 'RECEIPT'
+               WHERE sm.serialId IN (${serialIds.map(() => '?').join(', ')})
+                 AND sm.moveType = 'RECEIPT'
+               ORDER BY sm.createdAt ASC`,
+              serialIds
+            );
+            // Một Serial có thể đi qua nhiều vòng nhận/xuất/trả. Chỉ lấy lần
+            // nhận đầu tiên để hiển thị nguồn nhập ban đầu của thiết bị.
+            const firstReceiptBySerial = new Map<string, any>();
+            for (const row of receiptMoves || []) {
+              if (!firstReceiptBySerial.has(row.serialId)) firstReceiptBySerial.set(row.serialId, row);
+            }
+            const sourceByDocument = new Map<string, any>();
+            for (const row of firstReceiptBySerial.values()) {
+              if (!sourceByDocument.has(row.documentId)) sourceByDocument.set(row.documentId, row);
+            }
+            receiptSources = [...sourceByDocument.values()].map((row: any) => ({
+              documentId: row.documentId,
+              code: row.code ?? null,
+              partnerCode: row.partnerCode ?? null,
+              partnerName: row.partnerName ?? null,
+              receivedAt: row.receivedAt ?? null,
+            }));
+          }
+        }
+        returnTrace = {
+          sourceIssue: sourceIssue ? { code: sourceIssue.code ?? null, shippedAt: sourceIssue.shippedAt ?? null } : null,
+          receiptSources,
+        };
+      }
+      const reservationLinks = doc.docType === 'ISSUE' ? await loadIssueReservationLinks(id) : [];
+      res.json({ ...doc, lines, reservationLinks, returnTrace });
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch document detail' }); }
   });
 
@@ -154,6 +221,7 @@ export function documentsRoutes(ctx: StockContext) {
       if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING') {
         return res.status(400).json({ error: 'Only draft documents can be cancelled' });
       }
+      await dropDocReservationLinks(id);
       await releaseReservedSerials(id);
       await dropDocLots(id);
       await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['CANCELLED', new Date().toISOString(), id]);
@@ -177,6 +245,7 @@ export function documentsRoutes(ctx: StockContext) {
       }
       await beginStockTransaction(db);
       try {
+        await dropDocReservationLinks(id);
         await releaseReservedSerials(id);
         await dropDocLots(id);
         await db.run('DELETE FROM stock_document_lines WHERE documentId = ?', [id]);
@@ -269,11 +338,9 @@ export function documentsRoutes(ctx: StockContext) {
              WHERE l.documentId = ?`,
             [id]
           ).catch(() => undefined);
-          const previousLines = await db.all('SELECT productId, locationId, serialRequired FROM stock_document_lines WHERE documentId = ?', [id]);
+          await dropDocReservationLinks(id);
           await db.run('DELETE FROM stock_document_lines WHERE documentId = ?', [id]);
-          const trackMap = await productTrackings(body.lines.map((l: any) => l.productId));
-          const serialRequiredByKey = new Map((previousLines || []).map((l: any) => [`${l.productId}|${l.locationId || ''}`, Number(l.serialRequired) === 1]));
-          const newLineIds: { id: string; productId: string; locationId: string }[] = [];
+          const newLineIds: { id: string; productId: string; locationId: string; quantity: number }[] = [];
           for (const line of body.lines) {
             const q = Number(line.quantity) || 0;
             const p = Number(line.unitPrice) || 0;
@@ -283,16 +350,12 @@ export function documentsRoutes(ctx: StockContext) {
             const lineTotal = canEditFinancials && line.totalAmount !== undefined ? Number(line.totalAmount) : (linePreTax + lineVat);
             computedPreTax += linePreTax;
             computedVat += lineVat;
-            // Giữ trạng thái xử lý theo text serialLot (bulk edit không làm mất tiến độ).
-            const tracking = trackMap.get(line.productId);
-            const serialRequired = serialRequiredByKey.get(`${line.productId}|${line.locationId || ''}`) ?? false;
+            // Mọi dòng hàng đều truy vết bằng Serial, kể cả phiếu cũ được sửa lại.
+            const serialRequired = true;
             const codes = parseSerials(line.serialLot);
-            const st = serialRequired ? (codes.length === q ? 'COMPLETED' : codes.length > 0 ? 'PARTIAL' : 'PENDING')
-              : tracking === 'QUANTITY' ? 'PENDING'
-              : (codes.length === q || (codes.length === 1 && q > 1)) ? 'COMPLETED'
-              : codes.length > 0 ? 'PARTIAL' : 'PENDING';
+            const st = codes.length === q ? 'COMPLETED' : codes.length > 0 ? 'PARTIAL' : 'PENDING';
             const newId = randomUUID();
-            newLineIds.push({ id: newId, productId: line.productId, locationId: line.locationId || '' });
+            newLineIds.push({ id: newId, productId: line.productId, locationId: line.locationId || '', quantity: q });
             await db.run(
               `INSERT INTO stock_document_lines (
                 id, documentId, productId, quantity, unitPrice, locationId, note,
@@ -319,17 +382,8 @@ export function documentsRoutes(ctx: StockContext) {
               await db.run('UPDATE stock_lots SET receiptLineId = ? WHERE id = ?', [target.id, (lot as any).id]);
             }
           }
-          // LOT phủ đủ số lượng sau khi nối lại -> COMPLETED.
-          for (const nl of newLineIds) {
-            if (trackMap.get(nl.productId) !== 'LOT') continue;
-            const covered = await db.all(
-              'SELECT COALESCE(SUM(initialQty), 0) AS covered FROM stock_lots WHERE receiptDocumentId = ? AND receiptLineId = ?',
-              [id, nl.id]
-            ).catch(() => []);
-            const need = Number(body.lines.find((l: any) => l.productId === nl.productId && (l.locationId || '') === nl.locationId)?.quantity || 0);
-            if (Number(covered?.[0]?.covered ?? 0) >= need && need > 0) {
-              await db.run(`UPDATE stock_document_lines SET processingStatus = 'COMPLETED' WHERE id = ?`, [nl.id]);
-            }
+          if (doc.docType === 'ISSUE') {
+            await syncDocumentReservationLinks(lineWh, body.lines, newLineIds);
           }
           totalPreTax = computedPreTax;
           vatAmount = computedVat;
@@ -412,6 +466,7 @@ export function documentsRoutes(ctx: StockContext) {
     costItem: z.string().max(100).nullable().optional(),
     serialLot: z.string().max(191).nullable().optional(),
     costObjectId: z.string().max(191).nullable().optional(),
+    reservationIds: z.array(z.string().trim().min(1).max(191)).max(100).optional(),
   });
   const ReceiptSchema = z.object({
     code: z.string().trim().max(100).optional(),
@@ -476,6 +531,19 @@ export function documentsRoutes(ctx: StockContext) {
     const shippingFee = canEditFinancials ? Number(body.shippingFee) || 0 : 0;
     const attachmentsStr = typeof body.attachments === 'string' ? body.attachments : (Array.isArray(body.attachments) ? JSON.stringify(body.attachments) : null);
 
+    // Phiếu trả không yêu cầu người dùng chọn PXK từ lúc tạo. PXK và đơn vị
+    // trả được xác định tự động khi quét Serial đầu tiên, để hỗ trợ trả lẻ
+    // (ví dụ đã xuất 5 thiết bị nhưng chỉ nhận trả 1 thiết bị).
+    if (docType === 'RETURN') {
+      if (!String(body.notes || '').trim()) {
+        throw Object.assign(new Error('Phiếu trả cần nhập lý do trả hàng.'), { status: 400 });
+      }
+      // Không nhận tham chiếu do client gửi lên: nguồn trả chỉ được tin từ
+      // stock_serials sau khi kiểm tra Serial đang OUT.
+      body.referenceId = null;
+      body.referenceType = null;
+    }
+
     await beginStockTransaction(db);
     let attempts = 0;
     for (;;) {
@@ -506,6 +574,7 @@ export function documentsRoutes(ctx: StockContext) {
           user.id, now, now
         ]
       );
+      const savedLines: { id: string; productId: string; locationId: string; quantity: number }[] = [];
       for (const line of body.lines) {
         const q = Number(line.quantity) || 0;
         const p = Number(line.unitPrice) || 0;
@@ -513,19 +582,28 @@ export function documentsRoutes(ctx: StockContext) {
         const linePreTax = q * p;
         const lineVat = canEditFinancials && line.vatAmount !== undefined ? Number(line.vatAmount) : (linePreTax * rate / 100);
         const lineTotal = canEditFinancials && line.totalAmount !== undefined ? Number(line.totalAmount) : (linePreTax + lineVat);
+        const lineId = randomUUID();
+        savedLines.push({ id: lineId, productId: line.productId, locationId: line.locationId || '', quantity: q });
         await db.run(
           `INSERT INTO stock_document_lines (
             id, documentId, productId, quantity, unitPrice, locationId, note,
             accountDebit, accountCredit, vatRate, vatAmount, totalAmount, projectId, costItem, serialLot, costObjectId, serialRequired
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            randomUUID(), id, line.productId, q, p, line.locationId ?? null, line.note ?? null,
+            lineId, id, line.productId, q, p, line.locationId ?? null, line.note ?? null,
             (requireWarehouseManager(user) ? line.accountDebit : null) || (await resolveAccountingDefaults(line.productId, body.partnerCode || body.partnerName, line.projectId)).accountDebit,
             (requireWarehouseManager(user) ? line.accountCredit : null) || (await resolveAccountingDefaults(line.productId, body.partnerCode || body.partnerName, line.projectId)).accountCredit,
             rate, lineVat, lineTotal, line.projectId ?? null,
             requireWarehouseManager(user) ? line.costItem ?? null : null,
             line.serialLot ?? null, requireWarehouseManager(user) ? line.costObjectId ?? null : null, 1
           ]
+        );
+      }
+      if (docType === 'ISSUE') {
+        await syncDocumentReservationLinks(
+          warehouses.warehouseId || warehouses.sourceWarehouseId || '',
+          body.lines,
+          savedLines
         );
       }
       await recordWarehouseActivity(db.run.bind(db), {
@@ -649,7 +727,9 @@ export function documentsRoutes(ctx: StockContext) {
   async function validateLines(lines: any[], warehouseId: string): Promise<string | null> {
     if (lines.length === 0) return 'Phiếu chưa có dòng hàng để xử lý.';
     for (const line of lines) {
-      if (!Number.isFinite(Number(line.quantity)) || !(Number(line.quantity) > 0)) return `Số lượng của sản phẩm ${line.productId} phải lớn hơn 0.`;
+      const quantity = Number(line.quantity);
+      if (!Number.isFinite(quantity) || !(quantity > 0)) return `Số lượng của sản phẩm ${line.productId} phải lớn hơn 0.`;
+      if (!Number.isInteger(quantity)) return `Số lượng của sản phẩm ${line.productId} phải là số nguyên vì mỗi đơn vị cần quét một Serial riêng.`;
     }
     const productIds = [...new Set(lines.map((l: any) => l.productId))];
     const foundProducts = await db.all(
@@ -758,48 +838,61 @@ export function documentsRoutes(ctx: StockContext) {
     return new Map((rows || []).map((r: any) => [r.id, resolveTracking(r.tracking)]));
   }
 
-  /** Chốt hoàn tất theo từng dòng, tính lại từ DB (không tin client):
-   * SERIAL phải đủ serial; LOT đủ khi text hợp lệ hoặc lô đã đăng ký phủ đủ SL;
-   * QUANTITY qua (số trên dòng là xác nhận, confirm-qty là tường minh thêm). */
-  async function canComplete(doc: any, lines: any[]): Promise<{ ok: boolean; message?: string }> {
-    const trackings = await productTrackings(lines.map((l: any) => l.productId));
+  /** Dòng có bắt buộc quản lý theo Serial? (tracking SERIAL hoặc cờ legacy serialRequired) */
+  function requiresSerial(line: any, tracking: string): boolean {
+    return Number(line?.serialRequired) === 1 || tracking === 'SERIAL';
+  }
+
+  /** Số lượng đã đăng ký (nhập) hoặc phân bổ (xuất/điều chuyển) theo Lô của dòng. */
+  async function lotCoverage(doc: any, line: any): Promise<number> {
+    if (doc.docType === 'RECEIPT') {
+      const row = await db.get(
+        `SELECT COALESCE(SUM(initialQty), 0) AS total FROM stock_lots
+         WHERE receiptDocumentId = ? AND receiptLineId = ?`,
+        [doc.id, line.id]
+      ).catch(() => undefined);
+      return Number(row?.total || 0);
+    }
+    const row = await db.get(
+      `SELECT COALESCE(SUM(quantity), 0) AS total FROM stock_document_line_lots
+       WHERE documentLineId = ?`,
+      [line.id]
+    ).catch(() => undefined);
+    return Number(row?.total || 0);
+  }
+
+  /** Chốt hoàn tất theo từng dòng, tính lại từ DB (không tin client).
+   * SERIAL: đủ serial từng chiếc; LOT: đủ số lượng đã đăng ký/phân bổ lô;
+   * QUANTITY: chỉ kiểm tra tồn khi xuất. */
+  async function canComplete(doc: any, lines: any[], reservationCredit?: Map<string, number>): Promise<{ ok: boolean; message?: string }> {
+    const trackings = await productTrackings(lines.map((line) => line.productId));
     for (const line of lines) {
-      const serialRequired = Number(line.serialRequired) === 1;
-      if (serialRequired && Number(line.serialSkipped) === 1) {
-        if (line.processingStatus === 'COMPLETED') continue;
-        return { ok: false, message: `Dòng ${line.productId}: chưa xác nhận số lượng không có Serial` };
-      }
-      const tracking = serialRequired ? 'SERIAL' : trackings.get(line.productId);
-      if (tracking !== 'SERIAL' && tracking !== 'LOT') continue;
-      const serials = parseSerials(line.serialLot);
+      const tracking = trackings.get(line.productId) || 'QUANTITY';
       const qty = Number(line.quantity);
       const label = line.productId;
-      if (tracking === 'LOT') {
-        const covered = doc.docType === 'ISSUE' || doc.docType === 'TRANSFER'
-          ? await db.get(
-            `SELECT COALESCE(SUM(a.quantity), 0) AS covered
-             FROM stock_document_line_lots a WHERE a.documentLineId = ?`,
-            [line.id]
-          ).catch(() => undefined)
-          : (await db.all(
-            'SELECT COALESCE(SUM(initialQty), 0) AS covered FROM stock_lots WHERE receiptDocumentId = ? AND receiptLineId = ?',
-            [doc.id, line.id]
-          ).catch(() => []))[0];
-        if (Number(covered?.covered ?? 0) >= qty) continue;
-        return { ok: false, message: `Chưa đủ Lô: ${label} — đăng ký lô/cuộn cho đủ ${qty}` };
+      if (requiresSerial(line, tracking) && Number(line.serialSkipped) !== 1) {
+        const serials = parseSerials(line.serialLot);
+        if (serials.length !== qty) {
+          if (serials.length === 0) {
+            return { ok: false, message: `Chưa đủ Serial: dòng ${label} mới có 0/${qty}. Vui lòng mở Xử lý hàng hóa và quét đủ Serial trước khi hoàn tất.` };
+          }
+          return { ok: false, message: `Chưa đủ Serial: dòng ${label} mới có ${serials.length}/${qty}. Vui lòng tiếp tục xử lý hàng hóa để quét đủ Serial.` };
+        }
+        continue;
       }
-      const textOk = serials.length === qty;
-      if (textOk) continue;
-      if (serials.length === 0) {
-        return { ok: false, message: `Chưa đủ Serial: dòng ${label} mới có 0/${qty}. Vui lòng mở Xử lý hàng hóa và quét đủ Serial trước khi hoàn tất.` };
+      if (tracking === 'LOT' && doc.docType !== 'RETURN') {
+        const covered = await lotCoverage(doc, line);
+        if (covered < qty) {
+          return { ok: false, message: `Chưa đủ Lô: dòng ${label} mới phân bổ ${covered}/${qty}. Vui lòng chọn đủ lô trước khi hoàn tất.` };
+        }
       }
-      return { ok: false, message: `Chưa đủ Serial: dòng ${label} mới có ${serials.length}/${qty}. Vui lòng tiếp tục xử lý hàng hóa để quét đủ Serial.` };
     }
     if (doc.docType === 'ISSUE') {
       const aggregate = aggregateLines(lines);
       const available = await availableMap(doc.warehouseId, aggregate.map((line) => ({ productId: line.productId, locationId: line.locationId || '' })));
       for (const line of aggregate) {
-        const current = available.get(`${line.productId}|${line.locationId || ''}`) ?? 0;
+        const key = `${line.productId}|${line.locationId || ''}`;
+        const current = (available.get(key) ?? 0) + (reservationCredit?.get(key) ?? 0);
         if (current < Number(line.quantity)) {
           return { ok: false, message: await insufficientStockMessage(doc.warehouseId, line, current) };
         }
@@ -808,9 +901,17 @@ export function documentsRoutes(ctx: StockContext) {
     return { ok: true };
   }
 
-  async function assertProcessable(doc: any, lines: any[]): Promise<void> {
-    const r = await canComplete(doc, lines);
+  async function assertProcessable(doc: any, lines: any[], reservationCredit?: Map<string, number>): Promise<void> {
+    const r = await canComplete(doc, lines, reservationCredit);
     if (!r.ok) throw Object.assign(new Error(r.message), { status: 400 });
+  }
+
+  /** Kiểm tra điều kiện ghi sổ theo đúng thứ tự ưu tiên: kho đang kiểm kê (409)
+   * phải được báo trước mọi lỗi chi tiết dòng hàng (thiếu Serial, thiếu tồn...).
+   * `warehouseId` là kho thực sự bị ghi sổ ở bước này (ship = nguồn, receive = đích). */
+  async function preflightPosting(doc: any, lines: any[], warehouseId: string, reservationCredit?: Map<string, number>): Promise<void> {
+    if (warehouseId) await assertNotCounting(warehouseId);
+    await assertProcessable(doc, lines, reservationCredit);
   }
 
   /** Phiếu đã bắt đầu xử lý Serial/Lot? (serial đã gắn hoặc dòng đã PARTIAL/COMPLETED) */
@@ -827,17 +928,23 @@ export function documentsRoutes(ctx: StockContext) {
     return !!l;
   }
 
-  /** Reset xử lý để sửa lại dòng: chỉ xóa serial chưa từng xuất (IN_STOCK/RESERVED,
-   * chưa gắn phiếu xuất). Serial đã OUT thì chặn reset. Xóa cả lô/cuộn của phiếu. */
+  /** Reset xử lý nhưng không phá lịch sử Serial của hàng xuất/điều chuyển.
+   * Phiếu nhập nháp chỉ được xóa Serial do chính nó tạo; phiếu xuất/điều chuyển
+   * chỉ nhả RESERVED về IN_STOCK. */
   async function resetDocProcessing(documentId: string): Promise<void> {
+    const doc = await db.get('SELECT docType FROM stock_documents WHERE id = ?', [documentId]);
     const issued = await db.get(
-      `SELECT id FROM stock_serials WHERE (receiptDocumentId = ? OR issueDocumentId = ?) AND stockStatus = 'OUT' LIMIT 1`,
-      [documentId, documentId]
+      `SELECT id FROM stock_serials WHERE receiptDocumentId = ? AND stockStatus = 'OUT' LIMIT 1`,
+      [documentId]
     ).catch(() => undefined);
     if (issued) {
       throw Object.assign(new Error('Serial của phiếu đã xuất kho, không thể reset xử lý. Hãy dùng phiếu điều chỉnh/trả hàng.'), { status: 409 });
     }
-    await db.run(`DELETE FROM stock_serials WHERE receiptDocumentId = ? OR issueDocumentId = ?`, [documentId, documentId]);
+    if (doc?.docType === 'RECEIPT') {
+      await db.run(`DELETE FROM stock_serials WHERE receiptDocumentId = ? AND stockStatus IN ('IN_STOCK', 'RESERVED')`, [documentId]);
+    } else {
+      await releaseReservedSerials(documentId);
+    }
     await db.run(`DELETE FROM stock_lot_movements WHERE referenceId = ?`, [documentId]);
     await db.run(`DELETE FROM stock_lots WHERE receiptDocumentId = ?`, [documentId]);
     await db.run(
@@ -872,6 +979,135 @@ export function documentsRoutes(ctx: StockContext) {
     ).catch(() => undefined);
   }
 
+  /** Bỏ liên kết giữ hàng của phiếu nhưng KHÔNG nhả reservation.
+   * Reservation vẫn HELD để người dùng có thể gắn cho phiếu xuất khác. */
+  async function dropDocReservationLinks(documentId: string): Promise<void> {
+    await db.run(
+      `DELETE rl FROM stock_document_line_reservations rl
+       INNER JOIN stock_document_lines l ON l.id = rl.documentLineId
+       WHERE l.documentId = ?`,
+      [documentId]
+    ).catch(() => undefined);
+  }
+
+  /** Liên kết giữ hàng còn hiệu lực của một phiếu xuất, kèm dữ liệu reservation. */
+  async function loadIssueReservationLinks(documentId: string): Promise<any[]> {
+    return db.all(
+      `SELECT rl.id AS linkId, rl.documentLineId, rl.reservationId,
+              rl.quantity AS allocatedQuantity,
+              r.productId, r.warehouseId, r.locationId, r.quantity, r.consumedQuantity, r.status
+       FROM stock_document_line_reservations rl
+       INNER JOIN reservations r ON r.id = rl.reservationId
+       INNER JOIN stock_document_lines l ON l.id = rl.documentLineId
+       WHERE l.documentId = ? AND r.status = 'HELD'`,
+      [documentId]
+    ).catch(() => []);
+  }
+
+  /** Lượng đang giữ cho chính phiếu xuất này; được cộng lại khi kiểm tra khả dụng
+   * vì stock_balances.reserved đã trừ phần đó. */
+  function reservationCreditFromLinks(links: any[]): Map<string, number> {
+    const credit = new Map<string, number>();
+    for (const link of links || []) {
+      const remaining = Math.max(0, Number(link.quantity || 0) - Number(link.consumedQuantity || 0));
+      const quantity = Math.min(Number(link.allocatedQuantity || 0), remaining);
+      if (!(quantity > 0)) continue;
+      const key = `${link.productId}|${link.locationId || ''}`;
+      credit.set(key, (credit.get(key) || 0) + quantity);
+    }
+    return credit;
+  }
+
+  /** Ghi liên kết reservation cho các dòng vừa lưu. Mỗi reservation chỉ được
+   * gắn cho một dòng; số lượng link không vượt quá phần còn giữ của reservation
+   * và không vượt quá số lượng dòng. */
+  async function syncDocumentReservationLinks(
+    warehouseId: string,
+    lines: any[],
+    savedLines: { id: string; productId: string; locationId: string; quantity: number }[]
+  ): Promise<void> {
+    const selections = lines
+      .map((line, index) => ({ line, target: savedLines[index] }))
+      .filter((entry) => entry.target && Array.isArray(entry.line?.reservationIds));
+    if (selections.length === 0) return;
+
+    const reservationIds = [...new Set(selections.flatMap(({ line }) =>
+      (line.reservationIds as string[]).map((id: string) => String(id).trim()).filter(Boolean)
+    ))];
+    if (reservationIds.length === 0) return;
+
+    const rows = await db.all(
+      `SELECT * FROM reservations WHERE id IN (${reservationIds.map(() => '?').join(', ')}) FOR UPDATE`,
+      reservationIds
+    );
+    const byId = new Map((rows || []).map((row: any) => [row.id, row]));
+    const now = new Date().toISOString();
+
+    for (const { line, target } of selections) {
+      const ids = [...new Set((line.reservationIds as string[]).map((id: string) => String(id).trim()).filter(Boolean))];
+      if (ids.length === 0) continue;
+      let lineRemaining = Number(target.quantity || 0);
+      for (const reservationId of ids) {
+        const reservation: any = byId.get(reservationId);
+        if (!reservation) {
+          throw Object.assign(new Error(`Không tìm thấy giữ hàng ${reservationId}.`), { status: 400 });
+        }
+        if (reservation.status !== 'HELD') {
+          throw Object.assign(new Error(`Giữ hàng ${reservationId} không còn ở trạng thái đang giữ.`), { status: 400 });
+        }
+        if (reservation.productId !== target.productId
+          || reservation.warehouseId !== warehouseId
+          || (reservation.locationId || '') !== (target.locationId || '')) {
+          throw Object.assign(new Error(`Giữ hàng ${reservationId} không khớp sản phẩm/kho/vị trí của dòng.`), { status: 400 });
+        }
+        const reservedRemaining = Math.max(0, Number(reservation.quantity || 0) - Number(reservation.consumedQuantity || 0));
+        const quantity = Math.min(lineRemaining, reservedRemaining);
+        if (!(quantity > 0)) {
+          throw Object.assign(new Error(`Giữ hàng ${reservationId} không còn đủ số lượng cho dòng.`), { status: 400 });
+        }
+        try {
+          await db.run(
+            `INSERT INTO stock_document_line_reservations
+             (id, documentLineId, reservationId, quantity, createdAt)
+             VALUES (?, ?, ?, ?, ?)`,
+            [randomUUID(), target.id, reservationId, quantity, now]
+          );
+        } catch (e: any) {
+          if (e?.message?.includes('Duplicate')) {
+            throw Object.assign(new Error(`Giữ hàng ${reservationId} đang được gắn cho phiếu khác.`), { status: 409 });
+          }
+          throw e;
+        }
+        lineRemaining -= quantity;
+      }
+    }
+  }
+
+  /** Tiêu thụ phần reservation đã gắn cho phiếu xuất. Chỉ giảm reserved,
+   * không tạo thêm stock_move vì move của phiếu đã trừ onHand. */
+  async function consumeIssueReservationLinks(doc: any, links: any[]): Promise<void> {
+    if (!links || links.length === 0) return;
+    const now = new Date().toISOString();
+    for (const link of links) {
+      const reservationQuantity = Number(link.quantity || 0);
+      const alreadyConsumed = Number(link.consumedQuantity || 0);
+      const remaining = Math.max(0, reservationQuantity - alreadyConsumed);
+      const quantity = Math.min(Number(link.allocatedQuantity || 0), remaining);
+      if (!(quantity > 0)) continue;
+      const nextConsumed = alreadyConsumed + quantity;
+      const nextStatus = nextConsumed >= reservationQuantity ? 'CONSUMED' : 'HELD';
+      await db.run(
+        'UPDATE reservations SET consumedQuantity = ?, status = ? WHERE id = ?',
+        [nextConsumed, nextStatus, link.reservationId]
+      );
+      await db.run(
+        'UPDATE stock_balances SET reserved = GREATEST(0, reserved - ?), updatedAt = ? WHERE productId = ? AND warehouseId = ? AND locationId = ?',
+        [quantity, now, link.productId, link.warehouseId, link.locationId || '']
+      );
+    }
+    await dropDocReservationLinks(doc.id);
+  }
+
   // Chốt bước kiểm tra hàng hóa, chưa ghi nhận nhập/xuất kho.
   // Bước ghi sổ thực tế vẫn nằm ở /receipts/:id/complete,
   // /issues/:id/complete hoặc /transfers/:id/ship.
@@ -891,8 +1127,20 @@ export function documentsRoutes(ctx: StockContext) {
       transactionOpen = true;
       const loaded = await loadDocument(String(req.params.id), true);
       if (!loaded) { await db.run('ROLLBACK'); transactionOpen = false; return res.status(404).json({ error: 'Document not found' }); }
-      const check = await canComplete(loaded.doc, loaded.lines);
-      if (!check.ok) { await db.run('ROLLBACK'); transactionOpen = false; return res.status(400).json({ error: check.message }); }
+      try {
+        const reservationCredit = loaded.doc.docType === 'ISSUE'
+          ? reservationCreditFromLinks(await loadIssueReservationLinks(loaded.doc.id))
+          : undefined;
+        await preflightPosting(
+          loaded.doc,
+          loaded.lines,
+          loaded.doc.warehouseId || loaded.doc.sourceWarehouseId,
+          reservationCredit
+        );
+      } catch (e: any) {
+        await db.run('ROLLBACK'); transactionOpen = false;
+        return res.status(e.status || 400).json({ error: e.message });
+      }
       await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['READY', new Date().toISOString(), loaded.doc.id]);
       await recordWarehouseActivity(db.run.bind(db), {
         actionType: 'PROCESSING_COMPLETED',
@@ -919,7 +1167,10 @@ export function documentsRoutes(ctx: StockContext) {
    * 1 mã cho cả dòng SL>1 -> lưu dạng lô; nhiều mã -> mỗi mã 1 serial và
    * số lượng mã phải khớp số lượng (khi đã nhập). */
   async function registerReceiptSerials(doc: any, lines: any[], user: any): Promise<void> {
-    const withSerials = lines.filter((l) => Number(l.serialSkipped) !== 1 && parseSerials(l.serialLot).length > 0);
+    const trackings = await productTrackings(lines.map((l) => l.productId));
+    const withSerials = lines.filter(
+      (l) => requiresSerial(l, trackings.get(l.productId) || 'QUANTITY') && parseSerials(l.serialLot).length > 0
+    );
     if (withSerials.length === 0) return;
     const productIds = [...new Set(withSerials.map((l) => l.productId))];
     const products = await db.all(
@@ -929,46 +1180,63 @@ export function documentsRoutes(ctx: StockContext) {
     const warrantyByProduct = new Map((products || []).map((p: any) => [p.id, Math.max(0, Number(p.warrantyMonths) || 0)]));
     const warrantyStart = String(doc.postingDate || doc.docDate || new Date().toISOString()).slice(0, 10);
     const now = new Date().toISOString();
+    const serialRows: { line: any; serial: string }[] = [];
     for (const line of withSerials) {
-      // Dòng đã đăng ký entity LOT riêng thì không persist đè sang stock_serials.
-      const lotRows = await db.all(
-        'SELECT id FROM stock_lots WHERE receiptDocumentId = ? AND receiptLineId = ? LIMIT 1',
-        [doc.id, line.id]
-      ).catch(() => []);
-      if (lotRows.length > 0) continue;
       const serials = parseSerials(line.serialLot);
       const qty = Number(line.quantity);
-      if (Number(line.serialRequired) !== 1 && serials.length === 1 && qty > 1) {
-        await db.run(
-          `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt, receiptDocumentId, receiptLineId, stockStatus, receivedAt)
-           VALUES (?, ?, NULL, ?, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, 'IN_STOCK', ?)`,
-          [randomUUID(), line.productId, serials[0], doc.warehouseId, line.locationId || null,
-            doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now,
-            doc.id, line.id, now]
-        );
-        continue;
-      }
       if (serials.length !== qty) {
         throw serialError(`Dòng ${line.productId}: đã nhập ${serials.length} serial nhưng số lượng ${qty} — quét đủ serial từng chiếc`, 400);
       }
-      const dupes = await db.all(
-        `SELECT serialNumber FROM stock_serials WHERE serialNumber IN (${serials.map(() => '?').join(', ')})`,
-        serials
-      ).catch(() => []);
-      if (dupes.length > 0) {
-        throw serialError(`Serial ${(dupes[0] as any).serialNumber} đã được ghi nhận trước đó. Hãy kiểm tra phiếu nhập cũ hoặc nhập một Serial khác.`, 409);
+      for (const serial of serials) serialRows.push({ line, serial });
+    }
+
+    const allSerials = serialRows.map((row) => row.serial);
+    const dupes = await db.all(
+      `SELECT serialNumber FROM stock_serials WHERE serialNumber IN (${allSerials.map(() => '?').join(', ')})`,
+      allSerials
+    ).catch(() => []);
+    if ((dupes || []).length > 0) {
+      throw serialError(`Serial ${(dupes[0] as any).serialNumber} đã được ghi nhận trước đó. Hãy kiểm tra phiếu nhập cũ hoặc nhập một Serial khác.`, 409);
+    }
+
+    // Phiếu nhập lớn ghi theo lô; phiếu nhỏ giữ từng insert để không đổi hành vi cũ.
+    if (serialRows.length > 20) {
+      const CHUNK = 200;
+      for (let offset = 0; offset < serialRows.length; offset += CHUNK) {
+        const chunk = serialRows.slice(offset, offset + CHUNK);
+        const placeholders = chunk.map(() => `(?, ?, ?, NULL, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, 'IN_STOCK', ?)`).join(', ');
+        const params = chunk.flatMap(({ line, serial }) => [
+          randomUUID(), line.productId, serial, doc.warehouseId, line.locationId || null,
+          doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0,
+          user.id, now, now, doc.id, line.id, now,
+        ]);
+        try {
+          await db.run(
+            `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt, receiptDocumentId, receiptLineId, stockStatus, receivedAt)
+             VALUES ${placeholders}`,
+            params
+          );
+        } catch (e: any) {
+          if (e.message?.includes('Duplicate')) {
+            throw serialError(`Một Serial trong phiếu đã được ghi nhận trước đó. Hãy kiểm tra phiếu nhập cũ hoặc nhập Serial khác.`, 409);
+          }
+          throw e;
+        }
       }
-      for (const sn of serials) {
+    } else {
+      for (const { line, serial } of serialRows) {
         try {
           await db.run(
             `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt, receiptDocumentId, receiptLineId, stockStatus, receivedAt)
              VALUES (?, ?, ?, NULL, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, 'IN_STOCK', ?)`,
-            [randomUUID(), line.productId, sn, doc.warehouseId, line.locationId || null,
-              doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now,
-              doc.id, line.id, now]
+            [randomUUID(), line.productId, serial, doc.warehouseId, line.locationId || null,
+              doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0,
+              user.id, now, now, doc.id, line.id, now]
           );
         } catch (e: any) {
-          if (e.message?.includes('Duplicate')) throw serialError(`Serial ${sn} đã được ghi nhận trước đó. Hãy kiểm tra phiếu nhập cũ hoặc nhập một Serial khác.`, 409);
+          if (e.message?.includes('Duplicate')) {
+            throw serialError(`Serial ${serial} đã được ghi nhận trước đó. Hãy kiểm tra phiếu nhập cũ hoặc nhập một Serial khác.`, 409);
+          }
           throw e;
         }
       }
@@ -978,23 +1246,16 @@ export function documentsRoutes(ctx: StockContext) {
   /** Trừ số lượng LOT đã phân bổ cho dòng xuất và ghi audit movement.
    * Khóa từng lô trong cùng transaction với chứng từ để hai PXK không thể
    * cùng tiêu vượt remainingQty. */
-  async function consumeIssueLots(doc: any, lines: any[], user: any): Promise<void> {
+  async function consumeIssueLots(doc: any, lines: any[], user: any): Promise<Map<string, any[]>> {
     const productIds = [...new Set(lines.map((l) => l.productId))];
     const trackings = await productTrackings(productIds);
-    for (const line of lines) {
-      if (Number(line.serialRequired) === 1 || trackings.get(line.productId) !== 'LOT') continue;
-      const allocations = await db.all(
-        `SELECT a.lotId, a.quantity, s.lotCode
-         FROM stock_document_line_lots a
-         INNER JOIN stock_lots s ON s.id = a.lotId
-         WHERE a.documentLineId = ? ORDER BY s.createdAt ASC, s.id ASC`,
-        [line.id]
-      );
-      const allocated = (allocations || []).reduce((sum: number, row: any) => sum + Number(row.quantity || 0), 0);
-      if (allocated < Number(line.quantity)) {
-        throw serialError(`Dòng ${line.productId}: đã phân bổ ${allocated}/${Number(line.quantity)} theo lô`, 400);
-      }
-      for (const allocation of allocations || []) {
+    const candidates = lines.filter((line) => Number(line.serialRequired) !== 1);
+    const isLotTracked = (line: any) => trackings.get(line.productId) === 'LOT';
+    const postingsByLine = new Map<string, any[]>();
+    if (candidates.length === 0) return postingsByLine;
+
+    const consumeAllocations = async (line: any, allocations: any[]) => {
+      for (const allocation of allocations) {
         const lot = await db.get(
           `SELECT id, productId, warehouseId, lotCode, remainingQty, status
            FROM stock_lots WHERE id = ? FOR UPDATE`,
@@ -1021,33 +1282,128 @@ export function documentsRoutes(ctx: StockContext) {
           [randomUUID(), lot.id, line.productId, doc.warehouseId, -quantity, doc.id, line.id, user.id, now]
         );
       }
+    };
+
+    // Một dòng LOT giữ nguyên truy vấn cũ (tương thích mock/legacy).
+    if (candidates.length === 1) {
+      const line = candidates[0];
+      if (!isLotTracked(line)) return postingsByLine;
+      const allocations = await db.all(
+        `SELECT a.lotId, a.quantity, s.lotCode
+         FROM stock_document_line_lots a
+         INNER JOIN stock_lots s ON s.id = a.lotId
+         WHERE a.documentLineId = ? ORDER BY s.createdAt ASC, s.id ASC`,
+        [line.id]
+      );
+      const rows = allocations || [];
+      const allocated = rows.reduce((sum: number, row: any) => sum + Number(row.quantity || 0), 0);
+      if (allocated < Number(line.quantity)) {
+        throw serialError(`Dòng ${line.productId}: đã phân bổ ${allocated}/${Number(line.quantity)} theo lô`, 400);
+      }
+      postingsByLine.set(line.id, rows);
+      await consumeAllocations(line, rows);
+      return postingsByLine;
     }
+
+    // Nhiều dòng: gom coverage + allocation thành hai truy vấn. Dòng QUANTITY
+    // không có phân bổ lô vẫn đi tiếp như hàng số lượng.
+    const lineIds = candidates.map((line) => line.id);
+    const coverageRows = await db.all(
+      `SELECT a.documentLineId, COALESCE(SUM(quantity), 0) AS covered
+       FROM stock_document_line_lots a
+       WHERE a.documentLineId IN (${lineIds.map(() => '?').join(', ')})
+       GROUP BY a.documentLineId`,
+      lineIds
+    );
+    const coverage = new Map<string, number>();
+    for (const row of coverageRows || []) {
+      const covered = row.covered !== undefined && row.covered !== null
+        ? Number(row.covered || 0)
+        : Number(row.quantity || 0);
+      coverage.set(row.documentLineId, (coverage.get(row.documentLineId) || 0) + covered);
+    }
+
+    const allocationRows = await db.all(
+      `SELECT a.documentLineId, a.lotId, a.quantity, s.lotCode
+       FROM stock_document_line_lots a
+       INNER JOIN stock_lots s ON s.id = a.lotId
+       WHERE a.documentLineId IN (${lineIds.map(() => '?').join(', ')})
+       ORDER BY s.createdAt ASC, s.id ASC`,
+      lineIds
+    );
+    for (const line of candidates) {
+      const allocations = (allocationRows || []).filter((row: any) => row.documentLineId === line.id);
+      const allocated = coverage.get(line.id) ?? 0;
+      if (!isLotTracked(line) && allocated <= 0) continue;
+      postingsByLine.set(line.id, allocations);
+      if (allocated < Number(line.quantity)) {
+        throw serialError(`Dòng ${line.productId}: đã phân bổ ${allocated}/${Number(line.quantity)} theo lô`, 400);
+      }
+      await consumeAllocations(line, allocations);
+    }
+    return postingsByLine;
   }
 
   /** Trừ serial khi hoàn tất XUẤT: serial đã nhập phải tồn tại (IN_STOCK,
    * đúng kho) và đủ số lượng dòng -> đánh dấu SOLD + khách hàng. */
   async function consumeIssueSerials(doc: any, lines: any[], user: any): Promise<void> {
-    const productIds = [...new Set(lines.map((l) => l.productId))];
-    const trackings = await productTrackings(productIds);
-    // Legacy phiếu chưa có tracking trên product nhưng đã lưu serialLot vẫn
-    // phải hoàn tất được; LOT mới đã được xử lý riêng ở consumeIssueLots.
-    const withSerials = lines.filter((l) => Number(l.serialSkipped) !== 1 && (Number(l.serialRequired) === 1 || trackings.get(l.productId) !== 'LOT') && parseSerials(l.serialLot).length > 0);
+    const trackings = await productTrackings(lines.map((l) => l.productId));
+    const withSerials = lines.filter(
+      (l) => requiresSerial(l, trackings.get(l.productId) || 'QUANTITY') && parseSerials(l.serialLot).length > 0
+    );
     if (withSerials.length === 0) return;
     const warrantyStartType = await getWarrantyStartType(db);
     for (const line of withSerials) {
       const serials = parseSerials(line.serialLot);
       const qty = Number(line.quantity);
-      if (Number(line.serialRequired) !== 1 && trackings.get(line.productId) !== 'SERIAL' && serials.length === 1 && qty > 1) {
-        const lot = await db.get(
-          `SELECT id FROM stock_serials WHERE lotCode = ? AND productId = ? AND warehouseId = ? AND status = 'SALEABLE' LIMIT 1`,
-          [serials[0], line.productId, doc.warehouseId]
-        );
-        if (!lot) throw serialError(`Dòng ${line.productId}: lô ${serials[0]} không có trong tồn bán được`, 400);
-        continue;
-      }
       if (serials.length !== qty) {
         throw serialError(`Dòng ${line.productId}: đã nhập ${serials.length} serial nhưng số lượng ${qty} — chọn đúng từng chiếc xuất`, 400);
       }
+      const nowOut = new Date().toISOString();
+      const warrantyStartFor = (row: any) => resolveWarrantyStart({
+        startType: warrantyStartType,
+        outboundDate: nowOut,
+        deliveryDate: doc.deliveryDate,
+        installationDate: doc.installationDate,
+        acceptanceDate: doc.acceptanceDate,
+        fallbackDate: row?.warrantyStart,
+      });
+
+      if (serials.length > 20) {
+        const rows = await db.all(
+          `SELECT id, serialNumber, stockStatus, issueDocumentId, issueLineId, warrantyStart
+           FROM stock_serials
+           WHERE serialNumber IN (${serials.map(() => '?').join(', ')})
+             AND productId = ? AND warehouseId = ? AND status = 'SALEABLE'
+             AND (stockStatus IS NULL OR stockStatus = 'IN_STOCK'
+               OR (stockStatus = 'RESERVED' AND issueDocumentId = ? AND issueLineId = ?))
+           FOR UPDATE`,
+          [...serials, line.productId, doc.warehouseId, doc.id, line.id]
+        );
+        const bySerial = new Map((rows || []).map((row: any) => [row.serialNumber, row]));
+        const ordered = serials.map((sn) => {
+          const row: any = bySerial.get(sn);
+          if (!row) throw serialError(`Serial ${sn} không có trong tồn bán được của kho`, 400);
+          if (row.issueDocumentId && row.issueDocumentId !== doc.id) {
+            throw serialError(`Serial ${sn} đang được giữ cho phiếu khác`, 400);
+          }
+          return row;
+        });
+        const cases = ordered.map(() => 'WHEN ? THEN ?').join(' ');
+        const ids = ordered.map((row) => row.id);
+        await db.run(
+          `UPDATE stock_serials
+           SET status = 'SOLD', stockStatus = 'OUT',
+               outDate = CASE id ${cases} END, customerName = ?,
+               issueDocumentId = ?, issueLineId = ?,
+               warrantyStart = COALESCE(CASE id ${cases} END, warrantyStart), updatedAt = ?
+           WHERE id IN (${ids.map(() => '?').join(', ')})`,
+          [...ordered.flatMap((row) => [row.id, nowOut]), doc.partnerName ?? null, doc.id, line.id,
+            ...ordered.flatMap((row) => [row.id, warrantyStartFor(row)]), nowOut, ...ids]
+        );
+        continue;
+      }
+
       for (const sn of serials) {
         const row = await db.get(
           `SELECT id, stockStatus, issueDocumentId, issueLineId FROM stock_serials WHERE serialNumber = ? AND productId = ? AND warehouseId = ? AND status = 'SALEABLE'
@@ -1059,15 +1415,7 @@ export function documentsRoutes(ctx: StockContext) {
         if (row.issueDocumentId && row.issueDocumentId !== doc.id) {
           throw serialError(`Serial ${sn} đang được giữ cho phiếu khác`, 400);
         }
-        const nowOut = new Date().toISOString();
-        const wStart = resolveWarrantyStart({
-          startType: warrantyStartType,
-          outboundDate: nowOut,
-          deliveryDate: doc.deliveryDate,
-          installationDate: doc.installationDate,
-          acceptanceDate: doc.acceptanceDate,
-          fallbackDate: row.warrantyStart,
-        });
+        const wStart = warrantyStartFor(row);
         await db.run(
           `UPDATE stock_serials SET status = 'SOLD', stockStatus = 'OUT', outDate = ?, customerName = ?, issueDocumentId = ?, issueLineId = ?, warrantyStart = COALESCE(?, warrantyStart), updatedAt = ? WHERE id = ?`,
           [nowOut, doc.partnerName ?? null, doc.id, line.id, wStart, nowOut, (row as any).id]
@@ -1081,21 +1429,27 @@ export function documentsRoutes(ctx: StockContext) {
    * rằng toàn bộ serial của dòng vẫn còn đúng kho nguồn. */
   async function assertTransferSerialsReady(doc: any, lines: any[]): Promise<void> {
     const trackings = await productTrackings(lines.map((l) => l.productId));
-    for (const line of lines) {
-      if (Number(line.serialRequired) !== 1 && trackings.get(line.productId) !== 'SERIAL') continue;
+    const serialLines = lines.filter((line) => requiresSerial(line, trackings.get(line.productId) || 'QUANTITY'));
+    if (serialLines.length === 0) return;
+    const rows = await db.all(
+      `SELECT id, productId, serialNumber, issueLineId
+       FROM stock_serials
+       WHERE issueDocumentId = ? AND warehouseId = ? AND stockStatus = 'RESERVED'
+       FOR UPDATE`,
+      [doc.id, doc.sourceWarehouseId]
+    );
+    const bySerial = new Map((rows || []).map((row: any) => [row.serialNumber, row]));
+    for (const line of serialLines) {
       const serials = parseSerials(line.serialLot);
       if (serials.length !== Number(line.quantity)) {
         throw serialError(`Dòng ${line.productId}: chưa đủ Serial (${serials.length}/${Number(line.quantity)})`, 400);
       }
       for (const serial of serials) {
-        const row = await db.get(
-          `SELECT id FROM stock_serials
-           WHERE serialNumber = ? AND productId = ? AND warehouseId = ?
-             AND stockStatus = 'RESERVED' AND issueDocumentId = ? AND issueLineId = ?
-           LIMIT 1 FOR UPDATE`,
-          [serial, line.productId, doc.sourceWarehouseId, doc.id, line.id]
-        );
-        if (!row) throw serialError(`Serial ${serial} chưa được giữ cho phiếu điều chuyển`, 400);
+        const row: any = bySerial.get(serial);
+        if (!row || row.issueLineId !== line.id
+          || (row.productId && row.productId !== line.productId)) {
+          throw serialError(`Serial ${serial} chưa được giữ cho phiếu điều chuyển`, 400);
+        }
       }
     }
   }
@@ -1221,65 +1575,208 @@ export function documentsRoutes(ctx: StockContext) {
     return handledLines;
   }
 
-  /** Ghi stock_moves theo từng LOT để timeline có thể truy ngược đúng cuộn/lô.
-   * Với dữ liệu cũ chưa có allocation, vẫn fallback một move theo dòng. */
-  async function postDocumentMoves(doc: any, lines: any[], moveType: string, direction: 1 | -1, user: any): Promise<void> {
+  /** Ghi stock_moves theo đơn vị quản lý của từng dòng:
+   * SERIAL = 1 move/chiếc, LOT = 1 move/lô đã đăng ký hoặc phân bổ,
+   * QUANTITY = 1 move/dòng (theo số lượng thực tế đã xác nhận). */
+  async function postDocumentMoves(
+    doc: any,
+    lines: any[],
+    moveType: string,
+    direction: 1 | -1,
+    user: any,
+    lotPostings?: Map<string, { lotId: string; quantity: number }[]>
+  ): Promise<void> {
     const trackings = await productTrackings(lines.map((l) => l.productId));
+    const moves: any[] = [];
+    const serialLines = lines.filter((line) => {
+      const tracking = trackings.get(line.productId) || 'QUANTITY';
+      return requiresSerial(line, tracking) && Number(line.serialSkipped) !== 1;
+    });
+
+    // Một query cho mọi serial của chứng từ, tránh N+1 khi nhập/xuất hàng loạt.
+    const serialByKey = new Map<string, any>();
+    if (serialLines.length > 0) {
+      const serials = serialLines.flatMap((line) => parseSerials(line.serialLot));
+      if (serials.length > 0) {
+        const rows = await db.all(
+          `SELECT id, productId, serialNumber FROM stock_serials
+           WHERE serialNumber IN (${serials.map(() => '?').join(', ')})
+             AND (receiptDocumentId = ? OR issueDocumentId = ?)`,
+          [...serials, doc.id, doc.id]
+        ).catch(() => []);
+        for (const row of rows || []) {
+          serialByKey.set(`${row.productId}|${row.serialNumber}`, row);
+        }
+      }
+    }
+
+    const lotLines = lines.filter((line) => (trackings.get(line.productId) || 'QUANTITY') === 'LOT' || !!lotPostings?.has(line.id));
+    const lotRowsByLine = new Map<string, any[]>();
+    if (lotLines.length > 0) {
+      if (doc.docType === 'RECEIPT') {
+        if (lotLines.length === 1) {
+          const line = lotLines[0];
+          const rows = await db.all(
+            `SELECT id AS lotId, initialQty AS quantity FROM stock_lots
+             WHERE receiptDocumentId = ? AND receiptLineId = ?`,
+            [doc.id, line.id]
+          ).catch(() => []);
+          lotRowsByLine.set(line.id, rows || []);
+        } else {
+          const rows = await db.all(
+            `SELECT receiptLineId AS documentLineId, id AS lotId, initialQty AS quantity
+             FROM stock_lots WHERE receiptDocumentId = ?`,
+            [doc.id]
+          ).catch(() => []);
+          for (const row of rows || []) {
+            const key = row.documentLineId;
+            if (!lotRowsByLine.has(key)) lotRowsByLine.set(key, []);
+            lotRowsByLine.get(key)!.push(row);
+          }
+        }
+      } else if (doc.docType === 'RETURN') {
+        for (const line of lotLines) lotRowsByLine.set(line.id, lotPostings?.get(line.id) || []);
+      } else if (lotPostings) {
+        for (const line of lotLines) lotRowsByLine.set(line.id, lotPostings.get(line.id) || []);
+      } else {
+        const lineIds = lotLines.map((line) => line.id);
+        const rows = await db.all(
+          `SELECT documentLineId, lotId, quantity FROM stock_document_line_lots
+           WHERE documentLineId IN (${lineIds.map(() => '?').join(', ')})`,
+          lineIds
+        ).catch(() => []);
+        for (const row of rows || []) {
+          if (!lotRowsByLine.has(row.documentLineId)) lotRowsByLine.set(row.documentLineId, []);
+          lotRowsByLine.get(row.documentLineId)!.push(row);
+        }
+      }
+    }
+
     for (const line of lines) {
-      if ((Number(line.serialRequired) === 1 && Number(line.serialSkipped) !== 1) || trackings.get(line.productId) === 'SERIAL') {
-        const serials = parseSerials(line.serialLot);
-        for (const serial of serials) {
-          const serialRow = await db.get(
-            `SELECT id FROM stock_serials
-             WHERE serialNumber = ? AND productId = ?
-               AND (receiptDocumentId = ? OR issueDocumentId = ?)
-             LIMIT 1`,
-            [serial, line.productId, doc.id, doc.id]
-          ).catch(() => undefined);
-          await postMove(db.run.bind(db), {
+      const tracking = trackings.get(line.productId) || 'QUANTITY';
+      if (requiresSerial(line, tracking) && Number(line.serialSkipped) !== 1) {
+        for (const serial of parseSerials(line.serialLot)) {
+          const serialRow = serialByKey.get(`${line.productId}|${serial}`);
+          moves.push({
             productId: line.productId, warehouseId: doc.warehouseId, locationId: line.locationId || '',
             quantity: direction, moveType, referenceType: doc.docType, referenceId: doc.id,
             documentLineId: line.id, serialId: serialRow?.id ?? null, createdBy: user.id,
           });
         }
-        if (serials.length > 0) continue;
+        continue;
       }
-      if (Number(line.serialRequired) !== 1 && trackings.get(line.productId) === 'LOT') {
-        const rows = doc.docType === 'ISSUE'
-          ? await db.all(
-            'SELECT lotId, quantity FROM stock_document_line_lots WHERE documentLineId = ?',
-            [line.id]
-          ).catch(() => [])
-          : await db.all(
-            'SELECT id AS lotId, initialQty AS quantity FROM stock_lots WHERE receiptDocumentId = ? AND receiptLineId = ?',
-            [doc.id, line.id]
-          ).catch(() => []);
-        if ((rows || []).length > 0) {
-          for (const row of rows || []) {
-            await postMove(db.run.bind(db), {
-              productId: line.productId, warehouseId: doc.warehouseId, locationId: line.locationId || '',
-              quantity: direction * Number(row.quantity), moveType,
-              referenceType: doc.docType, referenceId: doc.id,
-              documentLineId: line.id, lotId: row.lotId, createdBy: user.id,
-            });
-          }
-          continue;
+      if (tracking === 'LOT' || lotPostings?.has(line.id)) {
+        const postings = lotRowsByLine.get(line.id) || [];
+        for (const posting of postings) {
+          const quantity = Number(posting.quantity || 0);
+          if (!(quantity > 0)) continue;
+          moves.push({
+            productId: line.productId, warehouseId: doc.warehouseId, locationId: line.locationId || '',
+            quantity: direction * quantity, moveType, referenceType: doc.docType, referenceId: doc.id,
+            documentLineId: line.id, lotId: (posting as any).lotId ?? null, createdBy: user.id,
+          });
         }
+        continue;
       }
-      await postMove(db.run.bind(db), {
+      moves.push({
         productId: line.productId, warehouseId: doc.warehouseId, locationId: line.locationId || '',
-        quantity: direction * effectiveLineQuantity(line), moveType,
-        referenceType: doc.docType, referenceId: doc.id,
-        documentLineId: line.id, createdBy: user.id,
+        quantity: direction * effectiveLineQuantity(line), moveType, referenceType: doc.docType, referenceId: doc.id,
+        documentLineId: line.id, serialId: null, createdBy: user.id,
       });
     }
+    await postMoves(db.run.bind(db), moves, { skipCountingCheck: true });
+  }
+
+  /** Ghi stock_moves cho điều chuyển theo tracking.
+   * OUT lấy lô nguồn đã phân bổ; IN lấy lô đích đã tạo (destLotId). */
+  async function postTransferMoves(
+    doc: any,
+    lines: any[],
+    direction: 'OUT' | 'IN',
+    destinationLocation: string,
+    user: any
+  ): Promise<void> {
+    const isOut = direction === 'OUT';
+    const warehouseId = isOut ? doc.sourceWarehouseId : doc.destWarehouseId;
+    const moveType = isOut ? 'TRANSFER_OUT' : 'TRANSFER_IN';
+    const trackings = await productTrackings(lines.map((l) => l.productId));
+    const moves: any[] = [];
+    const serialLines = lines.filter((line) => {
+      const tracking = trackings.get(line.productId) || 'QUANTITY';
+      return requiresSerial(line, tracking) && Number(line.serialSkipped) !== 1;
+    });
+    const serialByKey = new Map<string, any>();
+    if (serialLines.length > 0) {
+      const serials = serialLines.flatMap((line) => parseSerials(line.serialLot));
+      if (serials.length > 0) {
+        const rows = await db.all(
+          isOut
+            ? `SELECT id, productId, serialNumber FROM stock_serials
+               WHERE serialNumber IN (${serials.map(() => '?').join(', ')})
+                 AND warehouseId = ? AND stockStatus = 'RESERVED' AND issueDocumentId = ?`
+            : `SELECT id, productId, serialNumber FROM stock_serials
+               WHERE serialNumber IN (${serials.map(() => '?').join(', ')})
+                 AND warehouseId = ?`,
+          isOut ? [...serials, warehouseId, doc.id] : [...serials, warehouseId]
+        ).catch(() => []);
+        for (const row of rows || []) serialByKey.set(`${row.productId}|${row.serialNumber}`, row);
+      }
+    }
+
+    for (const line of lines) {
+      const tracking = trackings.get(line.productId) || 'QUANTITY';
+      const locationId = isOut ? (line.locationId || '') : (destinationLocation || '');
+      if (requiresSerial(line, tracking) && Number(line.serialSkipped) !== 1) {
+        for (const serial of parseSerials(line.serialLot)) {
+          const serialRow = serialByKey.get(`${line.productId}|${serial}`);
+          moves.push({
+            productId: line.productId, warehouseId, locationId,
+            quantity: isOut ? -1 : 1, moveType, referenceType: 'TRANSFER', referenceId: doc.id,
+            documentLineId: line.id, serialId: serialRow?.id ?? null, createdBy: user.id,
+          });
+        }
+        continue;
+      }
+      if (tracking === 'LOT') {
+        const postings = isOut
+          ? await db.all(
+              `SELECT lotId, quantity FROM stock_document_line_lots WHERE documentLineId = ?`,
+              [line.id]
+            )
+          : await db.all(
+              `SELECT destLotId AS lotId, quantity FROM stock_transfer_line_lots
+               WHERE documentLineId = ? AND destLotId IS NOT NULL`,
+              [line.id]
+            );
+        for (const posting of postings || []) {
+          const quantity = Number(posting.quantity || 0);
+          if (!(quantity > 0)) continue;
+          moves.push({
+            productId: line.productId, warehouseId, locationId,
+            quantity: isOut ? -quantity : quantity, moveType, referenceType: 'TRANSFER', referenceId: doc.id,
+            documentLineId: line.id, lotId: (posting as any).lotId ?? null, createdBy: user.id,
+          });
+        }
+        continue;
+      }
+      moves.push({
+        productId: line.productId, warehouseId, locationId,
+        quantity: (isOut ? -1 : 1) * effectiveLineQuantity(line), moveType,
+        referenceType: 'TRANSFER', referenceId: doc.id,
+        documentLineId: line.id, serialId: null, createdBy: user.id,
+      });
+    }
+    await postMoves(db.run.bind(db), moves, { skipCountingCheck: true });
   }
 
   /** Nhận lại serial khi hoàn tất TRẢ HÀNG: serial đã từng xuất (SOLD) được
    * đưa về SALEABLE tại vị trí trả + xóa khách; serial chưa từng đăng ký thì
    * ghi mới như nhập (giữ vết bảo hành theo sản phẩm). */
   async function registerReturnSerials(doc: any, lines: any[], user: any): Promise<void> {
-    const withSerials = lines.filter((l) => Number(l.serialSkipped) !== 1 && parseSerials(l.serialLot).length > 0);
+    const trackings = await productTrackings(lines.map((l) => l.productId));
+    const withSerials = lines.filter(
+      (l) => requiresSerial(l, trackings.get(l.productId) || 'QUANTITY') && parseSerials(l.serialLot).length > 0
+    );
     if (withSerials.length === 0) return;
     const productIds = [...new Set(withSerials.map((l) => l.productId))];
     const products = await db.all(
@@ -1290,52 +1787,79 @@ export function documentsRoutes(ctx: StockContext) {
     const warrantyStart = String(doc.postingDate || doc.docDate || new Date().toISOString()).slice(0, 10);
     const now = new Date().toISOString();
     for (const line of withSerials) {
-      // Dòng đã đăng ký entity LOT riêng thì không persist đè sang stock_serials.
-      const lotRows = await db.all(
-        'SELECT id FROM stock_lots WHERE receiptDocumentId = ? AND receiptLineId = ? LIMIT 1',
-        [doc.id, line.id]
-      ).catch(() => []);
-      if (lotRows.length > 0) continue;
       const serials = parseSerials(line.serialLot);
       const qty = Number(line.quantity);
-      if (Number(line.serialRequired) !== 1 && serials.length === 1 && qty > 1) {
-        await db.run(
-          `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt, receiptDocumentId, receiptLineId, stockStatus, receivedAt)
-           VALUES (?, ?, NULL, ?, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, 'IN_STOCK', ?)`,
-          [randomUUID(), line.productId, serials[0], doc.warehouseId, line.locationId || null,
-            doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now,
-            doc.id, line.id, now]
-        );
-        continue;
-      }
       if (serials.length !== qty) {
         throw serialError(`Dòng ${line.productId}: đã nhập ${serials.length} serial nhưng số lượng ${qty} — quét đủ serial từng chiếc`, 400);
       }
       for (const sn of serials) {
         const row = await db.get(
-          `SELECT id, stockStatus FROM stock_serials WHERE serialNumber = ? AND productId = ? LIMIT 1 FOR UPDATE`,
+          `SELECT id, stockStatus, issueDocumentId FROM stock_serials WHERE serialNumber = ? AND productId = ? LIMIT 1 FOR UPDATE`,
           [sn, line.productId]
         );
-        if (row) {
-          await db.run(
-            `UPDATE stock_serials SET status = 'SALEABLE', stockStatus = 'IN_STOCK',
-             warehouseId = ?, locationId = ?, receiptId = ?, receiptDocumentId = ?, receiptLineId = ?,
-             issueDocumentId = NULL, issueLineId = NULL, customerName = NULL, receivedAt = ?,
-             warrantyStart = ?, warrantyMonths = ?, updatedAt = ? WHERE id = ?`,
-            [doc.warehouseId, line.locationId || null, doc.id, doc.id, line.id, now,
-              warrantyStart, warrantyByProduct.get(line.productId) ?? 0, now, (row as any).id]
-          );
-        } else {
-          await db.run(
-            `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt, receiptDocumentId, receiptLineId, stockStatus, receivedAt)
-             VALUES (?, ?, ?, NULL, ?, ?, 'SALEABLE', ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, 'IN_STOCK', ?)`,
-            [randomUUID(), line.productId, sn, doc.warehouseId, line.locationId || null,
-              doc.partnerName ?? null, doc.id, warrantyStart, warrantyByProduct.get(line.productId) ?? 0, user.id, now, now,
-              doc.id, line.id, now]
-          );
+        if (!row || (row as any).stockStatus !== 'OUT' || (row as any).issueDocumentId !== doc.referenceId) {
+          throw serialError(`Serial ${sn} không còn ở trạng thái đã xuất của phiếu gốc; không thể hoàn tất phiếu trả.`, 409);
         }
+        await db.run(
+          `UPDATE stock_serials SET status = 'SALEABLE', stockStatus = 'IN_STOCK',
+           warehouseId = ?, locationId = ?, receiptId = ?, receiptDocumentId = ?, receiptLineId = ?,
+           issueDocumentId = NULL, issueLineId = NULL, customerName = NULL, receivedAt = ?,
+           warrantyStart = ?, warrantyMonths = ?, updatedAt = ? WHERE id = ?`,
+          [doc.warehouseId, line.locationId || null, doc.id, doc.id, line.id, now,
+            warrantyStart, warrantyByProduct.get(line.productId) ?? 0, now, (row as any).id]
+        );
       }
     }
+  }
+
+  /** Nhận lại hàng theo Lô khi hoàn tất TRẢ HÀNG: cộng/tạo lô ở kho trả,
+   * ghi audit movement và trả về postings để ghi stock_moves đúng từng lô. */
+  async function registerReturnLots(
+    doc: any,
+    lines: any[],
+    user: any
+  ): Promise<Map<string, { lotId: string; quantity: number }[]>> {
+    const postings = new Map<string, { lotId: string; quantity: number }[]>();
+    const trackings = await productTrackings(lines.map((l) => l.productId));
+    for (const line of lines) {
+      const tracking = trackings.get(line.productId) || 'QUANTITY';
+      if (tracking !== 'LOT' || Number(line.serialRequired) === 1) continue;
+      const quantity = effectiveLineQuantity(line);
+      if (!(quantity > 0)) continue;
+      const lotCode = parseSerials(line.serialLot)[0] || `RET-${doc.code || doc.id.slice(0, 8)}`;
+      const now = new Date().toISOString();
+      let lot = await db.get(
+        `SELECT id FROM stock_lots
+         WHERE productId = ? AND warehouseId = ? AND lotCode = ? LIMIT 1 FOR UPDATE`,
+        [line.productId, doc.warehouseId, lotCode]
+      );
+      if (lot) {
+        await db.run(
+          `UPDATE stock_lots SET initialQty = initialQty + ?, remainingQty = remainingQty + ?,
+           status = 'ACTIVE', locationId = ?, updatedAt = ? WHERE id = ?`,
+          [quantity, quantity, line.locationId || null, now, lot.id]
+        );
+      } else {
+        const lotId = randomUUID();
+        await db.run(
+          `INSERT INTO stock_lots
+           (id, productId, lotCode, coilCode, warehouseId, locationId, initialQty, remainingQty, unit,
+            manufacturedAt, supplier, receiptDocumentId, receiptLineId, status, createdBy, createdAt, updatedAt)
+           VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, 'ACTIVE', ?, ?, ?)`,
+          [lotId, line.productId, lotCode, doc.warehouseId, line.locationId || null,
+            quantity, quantity, doc.id, line.id, user.id, now, now]
+        );
+        lot = { id: lotId };
+      }
+      await db.run(
+        `INSERT INTO stock_lot_movements
+         (id, lotId, productId, warehouseId, quantity, moveType, referenceType, referenceId, documentLineId, createdBy, createdAt)
+         VALUES (?, ?, ?, ?, ?, 'RETURN', 'RETURN', ?, ?, ?, ?)`,
+        [randomUUID(), lot.id, line.productId, doc.warehouseId, quantity, doc.id, line.id, user.id, now]
+      );
+      postings.set(line.id, [{ lotId: lot.id, quantity }]);
+    }
+    return postings;
   }
 
   router.post('/receipts/:id/complete', async (req, res) => {
@@ -1356,7 +1880,7 @@ export function documentsRoutes(ctx: StockContext) {
       const err = await validateLines(loaded.lines, loaded.doc.warehouseId);
       if (err) return res.status(400).json({ error: err });
       try {
-        await assertProcessable(loaded.doc, loaded.lines);
+        await preflightPosting(loaded.doc, loaded.lines, loaded.doc.warehouseId);
       } catch (e: any) {
         return res.status(e.status || 400).json({ error: e.message });
       }
@@ -1393,11 +1917,14 @@ export function documentsRoutes(ctx: StockContext) {
       if (loaded.doc.status !== 'READY') return res.status(400).json({ error: 'Phiếu xuất chưa qua bước xử lý hàng hóa. Vui lòng chuyển phiếu sang Sẵn sàng hoàn tất trước.' });
       const err = await validateLines(loaded.lines, loaded.doc.warehouseId);
       if (err) return res.status(400).json({ error: err });
+      const reservationLinks = await loadIssueReservationLinks(loaded.doc.id);
+      const reservedForIssue = reservationCreditFromLinks(reservationLinks);
       try {
-        await assertProcessable(loaded.doc, loaded.lines);
+        await preflightPosting(loaded.doc, loaded.lines, loaded.doc.warehouseId, reservedForIssue);
       } catch (e: any) {
         return res.status(e.status || 400).json({ error: e.message });
       }
+
       const agg = aggregateLines(loaded.lines);
       const saleable = await saleableLocationSet(loaded.doc.warehouseId, agg.map((l) => l.locationId || ''));
       for (const line of agg) {
@@ -1405,15 +1932,18 @@ export function documentsRoutes(ctx: StockContext) {
       }
       const avail = await availableMap(loaded.doc.warehouseId, agg.map((l) => ({ productId: l.productId, locationId: l.locationId || '' })));
       for (const line of agg) {
-        if ((avail.get(`${line.productId}|${line.locationId || ''}`) ?? 0) < Number(line.quantity)) {
-          return res.status(400).json({ error: await insufficientStockMessage(loaded.doc.warehouseId, line, avail.get(`${line.productId}|${line.locationId || ''}`) ?? 0) });
+        const key = `${line.productId}|${line.locationId || ''}`;
+        const availableHere = (avail.get(key) ?? 0) + (reservedForIssue.get(key) ?? 0);
+        if (availableHere < Number(line.quantity)) {
+          return res.status(400).json({ error: await insufficientStockMessage(loaded.doc.warehouseId, line, availableHere) });
         }
       }
 
       try {
-        await consumeIssueLots(loaded.doc, loaded.lines, user);
+        const lotPostings = await consumeIssueLots(loaded.doc, loaded.lines, user);
         await consumeIssueSerials(loaded.doc, loaded.lines, user);
-        await postDocumentMoves(loaded.doc, loaded.lines, 'ISSUE', -1, user);
+        await consumeIssueReservationLinks(loaded.doc, reservationLinks);
+        await postDocumentMoves(loaded.doc, loaded.lines, 'ISSUE', -1, user, lotPostings);
         await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['DONE', new Date().toISOString(), loaded.doc.id]);
         await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
@@ -1444,14 +1974,15 @@ export function documentsRoutes(ctx: StockContext) {
       const err = await validateLines(loaded.lines, loaded.doc.warehouseId);
       if (err) return res.status(400).json({ error: err });
       try {
-        await assertProcessable(loaded.doc, loaded.lines);
+        await preflightPosting(loaded.doc, loaded.lines, loaded.doc.warehouseId);
       } catch (e: any) {
         return res.status(e.status || 400).json({ error: e.message });
       }
 
       try {
         await registerReturnSerials(loaded.doc, loaded.lines, user);
-        await postDocumentMoves(loaded.doc, loaded.lines, 'RETURN', 1, user);
+        const returnLots = await registerReturnLots(loaded.doc, loaded.lines, user);
+        await postDocumentMoves(loaded.doc, loaded.lines, 'RETURN', 1, user, returnLots);
         await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['DONE', new Date().toISOString(), loaded.doc.id]);
         await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
@@ -1483,7 +2014,7 @@ export function documentsRoutes(ctx: StockContext) {
       const err = await validateLines(loaded.lines, loaded.doc.sourceWarehouseId);
       if (err) return res.status(400).json({ error: err });
       try {
-        await assertProcessable(loaded.doc, loaded.lines);
+        await preflightPosting(loaded.doc, loaded.lines, loaded.doc.sourceWarehouseId);
         await assertTransferSerialsReady(loaded.doc, loaded.lines);
       } catch (e: any) {
         return res.status(e.status || 400).json({ error: e.message });
@@ -1497,36 +2028,8 @@ export function documentsRoutes(ctx: StockContext) {
       }
 
       try {
-        const trackings = await productTrackings(loaded.lines.map((l: any) => l.productId));
         await consumeTransferLotsOnShip(loaded.doc, loaded.lines, user);
-        for (const line of loaded.lines) {
-          if (Number(line.serialRequired) !== 1 && trackings.get(line.productId) === 'LOT') {
-            const lotRows = await db.all('SELECT lotId, quantity FROM stock_document_line_lots WHERE documentLineId = ?', [line.id]);
-            for (const lotRow of lotRows || []) {
-              await postMove(db.run.bind(db), {
-                productId: line.productId, warehouseId: loaded.doc.sourceWarehouseId, locationId: line.locationId || '',
-                quantity: -Number(lotRow.quantity), moveType: 'TRANSFER_OUT', referenceType: 'TRANSFER', referenceId: loaded.doc.id,
-                documentLineId: line.id, lotId: lotRow.lotId, createdBy: user.id,
-              });
-            }
-          } else if ((Number(line.serialRequired) === 1 && Number(line.serialSkipped) !== 1) || trackings.get(line.productId) === 'SERIAL') {
-            for (const serial of parseSerials(line.serialLot)) {
-              const serialRow = await db.get('SELECT id FROM stock_serials WHERE serialNumber = ? AND issueDocumentId = ? LIMIT 1', [serial, loaded.doc.id]);
-              await postMove(db.run.bind(db), {
-                productId: line.productId, warehouseId: loaded.doc.sourceWarehouseId, locationId: line.locationId || '',
-                quantity: -1, moveType: 'TRANSFER_OUT', referenceType: 'TRANSFER', referenceId: loaded.doc.id,
-                documentLineId: line.id, serialId: serialRow?.id ?? null, createdBy: user.id,
-              });
-            }
-          } else {
-            await postMove(db.run.bind(db), {
-              productId: line.productId, warehouseId: loaded.doc.sourceWarehouseId, locationId: line.locationId || '',
-              quantity: -effectiveLineQuantity(line), moveType: 'TRANSFER_OUT',
-              referenceType: 'TRANSFER', referenceId: loaded.doc.id,
-              documentLineId: line.id, createdBy: user.id,
-            });
-          }
-        }
+        await postTransferMoves(loaded.doc, loaded.lines, 'OUT', '', user);
         await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['IN_TRANSIT', new Date().toISOString(), loaded.doc.id]);
         await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
@@ -1557,49 +2060,15 @@ export function documentsRoutes(ctx: StockContext) {
       if (loaded.doc.status !== 'IN_TRANSIT') return res.status(400).json({ error: 'Only in-transit transfers can be received' });
       if (!(await assertLocation(loaded.doc.destWarehouseId, destinationLocation))) return res.status(400).json({ error: 'Invalid destination location' });
       try {
-        await assertProcessable(loaded.doc, loaded.lines);
+        await preflightPosting(loaded.doc, loaded.lines, loaded.doc.destWarehouseId);
       } catch (e: any) {
         return res.status(e.status || 400).json({ error: e.message });
       }
 
       try {
-        const trackings = await productTrackings(loaded.lines.map((l: any) => l.productId));
-        const transferSerialRows = await db.all(
-          `SELECT id, productId, issueLineId FROM stock_serials
-           WHERE issueDocumentId = ? AND stockStatus = 'RESERVED' FOR UPDATE`,
-          [loaded.doc.id]
-        ).catch(() => []);
-        await receiveTransferLots(loaded.doc, loaded.lines, destinationLocation, user);
         await receiveTransferSerials(loaded.doc, destinationLocation);
-        for (const line of loaded.lines) {
-          if (Number(line.serialRequired) !== 1 && trackings.get(line.productId) === 'LOT') {
-            const lotRows = await db.all('SELECT destLotId, quantity FROM stock_transfer_line_lots WHERE documentLineId = ?', [line.id]);
-            for (const lotRow of lotRows || []) {
-              if (!lotRow.destLotId) continue;
-              await postMove(db.run.bind(db), {
-                productId: line.productId, warehouseId: loaded.doc.destWarehouseId, locationId: destinationLocation,
-                quantity: Number(lotRow.quantity), moveType: 'TRANSFER_IN', referenceType: 'TRANSFER', referenceId: loaded.doc.id,
-                documentLineId: line.id, lotId: lotRow.destLotId, createdBy: user.id,
-              });
-            }
-          } else if ((Number(line.serialRequired) === 1 && Number(line.serialSkipped) !== 1) || trackings.get(line.productId) === 'SERIAL') {
-            const serialRows = (transferSerialRows || []).filter((row: any) => row.issueLineId === line.id);
-            for (const serialRow of serialRows || []) {
-              await postMove(db.run.bind(db), {
-                productId: line.productId, warehouseId: loaded.doc.destWarehouseId, locationId: destinationLocation,
-                quantity: 1, moveType: 'TRANSFER_IN', referenceType: 'TRANSFER', referenceId: loaded.doc.id,
-                documentLineId: line.id, serialId: serialRow.id, createdBy: user.id,
-              });
-            }
-          } else {
-            await postMove(db.run.bind(db), {
-              productId: line.productId, warehouseId: loaded.doc.destWarehouseId, locationId: destinationLocation,
-              quantity: effectiveLineQuantity(line), moveType: 'TRANSFER_IN',
-              referenceType: 'TRANSFER', referenceId: loaded.doc.id,
-              documentLineId: line.id, createdBy: user.id,
-            });
-          }
-        }
+        await receiveTransferLots(loaded.doc, loaded.lines, destinationLocation, user);
+        await postTransferMoves(loaded.doc, loaded.lines, 'IN', destinationLocation, user);
         await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['DONE', new Date().toISOString(), loaded.doc.id]);
         await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
@@ -1764,6 +2233,14 @@ export function documentsRoutes(ctx: StockContext) {
         } else {
           await db.run(`UPDATE stock_serials SET stockStatus = 'IN_STOCK', issueDocumentId = NULL, issueLineId = NULL, updatedAt = ? WHERE id = ?`, [new Date().toISOString(), oldRow.id]);
         }
+      } else if (doc.docType === 'RETURN' && next) {
+        const returnedRow = await db.get(
+          `SELECT id FROM stock_serials
+           WHERE serialNumber = ? AND productId = ? AND stockStatus = 'OUT' AND issueDocumentId = ?
+           LIMIT 1 FOR UPDATE`,
+          [next, line.productId, doc.referenceId]
+        );
+        if (!returnedRow) { await db.run('ROLLBACK'); transactionOpen = false; return res.status(400).json({ error: `Serial ${next} không thuộc phiếu xuất gốc hoặc đã được trả trước đó` }); }
       } else if (next) {
         const exists = await db.get('SELECT id FROM stock_serials WHERE serialNumber = ? LIMIT 1', [next]);
         if (exists) { await db.run('ROLLBACK'); transactionOpen = false; return res.status(409).json({ error: `Serial ${next} đã tồn tại trong hệ thống` }); }
@@ -1807,6 +2284,26 @@ export function documentsRoutes(ctx: StockContext) {
     await db.run(`UPDATE stock_documents SET status = 'PROCESSING', updatedAt = ? WHERE id = ? AND status IN ('DRAFT', 'READY')`, [new Date().toISOString(), docId]);
   }
 
+  /** Tự đóng bước xử lý hàng hóa khi toàn bộ dòng đã quét đủ Serial.
+   * READY chỉ xác nhận xử lý, chưa tạo stock_move hay thay đổi tồn kho. */
+  async function refreshProcessingAfterSerialScan(docId: string): Promise<boolean> {
+    const pending = await db.get(
+      `SELECT COUNT(*) AS incomplete FROM stock_document_lines
+       WHERE documentId = ? AND processingStatus <> 'COMPLETED'`,
+      [docId]
+    );
+    if (Number(pending?.incomplete || 0) > 0) {
+      await touchProcessing(docId);
+      return false;
+    }
+    await db.run(
+      `UPDATE stock_documents SET status = ?, updatedAt = ?
+       WHERE id = ? AND status IN ('DRAFT', 'PROCESSING')`,
+      ['READY', new Date().toISOString(), docId]
+    );
+    return true;
+  }
+
   router.post('/serials/scan', validate(ScanSchema), async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
@@ -1815,15 +2312,11 @@ export function documentsRoutes(ctx: StockContext) {
       const { documentId, documentLineId, serial } = req.body;
       const code = String(serial).trim();
       const doc = await db.get('SELECT * FROM stock_documents WHERE id = ?', [documentId]);
-      if (!doc || (doc.docType !== 'RECEIPT' && doc.docType !== 'RETURN')) return res.status(404).json({ error: 'Receipt or return not found' });
+      if (!doc || doc.docType !== 'RECEIPT') return res.status(404).json({ error: 'Receipt not found' });
       if (!(await canWriteDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
-      if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING') return res.status(400).json({ error: 'Only draft receipts/returns can be processed' });
+      if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING') return res.status(400).json({ error: 'Only draft receipts can be processed' });
       const line = await db.get('SELECT * FROM stock_document_lines WHERE id = ? AND documentId = ?', [documentLineId, documentId]);
       if (!line) return res.status(404).json({ error: 'Document line not found' });
-      const trackings = await productTrackings([line.productId]);
-      if (Number(line.serialRequired) !== 1 && trackings.get(line.productId) !== 'SERIAL') {
-        return res.status(400).json({ error: 'Sản phẩm không quản lý theo Serial' });
-      }
       const qty = Number(line.quantity);
       const current = parseSerials(line.serialLot);
       if (current.some((s) => s.toLowerCase() === code.toLowerCase())) {
@@ -1855,20 +2348,97 @@ export function documentsRoutes(ctx: StockContext) {
           return res.status(409).json({ error: `Serial ${code} vừa được ghi nhận bởi người khác. Vui lòng quét lại mã khác.` });
         }
         const result = await appendLineSerial(fresh, code, true);
-        await touchProcessing(documentId);
+        const processingCompleted = await refreshProcessingAfterSerialScan(documentId);
         await recordWarehouseActivity(db.run.bind(db), {
           actionType: 'SERIAL_SCANNED_IN', entityType: 'SERIAL', documentId, entityId: code,
           productId: fresh.productId, warehouseId: doc.warehouseId, quantity: 1, userId: user.id,
           metadata: { documentLineId, serial: code, processingCount: result.count },
         });
         await db.run('COMMIT'); transactionOpen = false;
-        res.status(201).json({ serial: code, count: result.count, required: qty, completed: result.completed });
+        res.status(201).json({ serial: code, count: result.count, required: qty, completed: result.completed, processingCompleted });
       } catch (e) {
         await db.run('ROLLBACK'); transactionOpen = false;
         throw e;
       }
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to scan serial' }); } finally {
       if (transactionOpen) await db.run('ROLLBACK');
+    }
+  });
+
+  /** Quét Serial cho phiếu trả. Serial phải là thiết bị đã xuất đúng theo
+   * phiếu xuất gốc; vì vậy không áp dụng kiểm tra "Serial đã tồn tại" của
+   * phiếu nhập mới. */
+  router.post('/serials/scan-return', validate(ScanSchema), async (req, res) => {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    let transactionOpen = false;
+    try {
+      const { documentId, documentLineId, serial } = req.body;
+      const code = String(serial).trim();
+      const doc = await db.get('SELECT * FROM stock_documents WHERE id = ?', [documentId]);
+      if (!doc || doc.docType !== 'RETURN') return res.status(404).json({ error: 'Return document not found' });
+      if (!(await canWriteDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING') return res.status(400).json({ error: 'Only draft returns can be processed' });
+      const line = await db.get('SELECT * FROM stock_document_lines WHERE id = ? AND documentId = ?', [documentLineId, documentId]);
+      if (!line) return res.status(404).json({ error: 'Document line not found' });
+      const current = parseSerials(line.serialLot);
+      if (current.some((s) => s.toLowerCase() === code.toLowerCase())) return res.status(400).json({ error: 'Serial này đã được thêm vào phiếu trả' });
+      if (current.length >= Number(line.quantity)) return res.status(400).json({ error: `Phiếu yêu cầu ${line.quantity} thiết bị, đã đủ ${current.length}/${line.quantity}` });
+
+      const found = await db.get('SELECT * FROM stock_serials WHERE serialNumber = ? LIMIT 1', [code]);
+      if (!found) return res.status(404).json({ error: `Không tìm thấy Serial ${code} trong lịch sử xuất kho.` });
+      if (found.productId !== line.productId) return res.status(400).json({ error: `Serial này thuộc sản phẩm ${found.productId}, không phải sản phẩm ${line.productId} trên phiếu trả.` });
+      if (found.stockStatus !== 'OUT') return res.status(409).json({ error: found.stockStatus === 'IN_STOCK' ? `Serial ${code} đã được trả về kho trước đó.` : `Serial ${code} chưa ở trạng thái đã xuất nên không thể nhận trả.` });
+      const sourceIssue = await db.get(
+        `SELECT id, code, partnerCode, partnerName, partnerAddress, deliverer
+         FROM stock_documents WHERE id = ? AND docType = 'ISSUE' AND status = 'DONE' LIMIT 1`,
+        [found.issueDocumentId]
+      );
+      if (!sourceIssue) return res.status(409).json({ error: `Serial ${code} không có phiếu xuất gốc hợp lệ để nhận trả.` });
+      const referenceId = String(doc.referenceId || '').trim();
+      if (referenceId && referenceId !== sourceIssue.id) {
+        return res.status(400).json({ error: `Serial ${code} thuộc ${sourceIssue.code || 'một phiếu xuất khác'}. Mỗi phiếu trả chỉ xử lý Serial của một phiếu xuất gốc.` });
+      }
+
+      await beginStockTransaction(db, [doc.warehouseId]);
+      transactionOpen = true;
+      const locked = await db.get('SELECT * FROM stock_serials WHERE serialNumber = ? LIMIT 1 FOR UPDATE', [code]);
+      if (!locked || locked.productId !== line.productId || locked.stockStatus !== 'OUT' || locked.issueDocumentId !== sourceIssue.id) {
+        await db.run('ROLLBACK'); transactionOpen = false;
+        return res.status(409).json({ error: `Serial ${code} vừa thay đổi trạng thái hoặc không còn hợp lệ để trả.` });
+      }
+      const fresh = await db.get('SELECT * FROM stock_document_lines WHERE id = ? FOR UPDATE', [documentLineId]);
+      if (!fresh) { await db.run('ROLLBACK'); transactionOpen = false; return res.status(404).json({ error: 'Document line not found' }); }
+      const freshSerials = parseSerials(fresh.serialLot);
+      if (freshSerials.some((s) => s.toLowerCase() === code.toLowerCase()) || freshSerials.length >= Number(fresh.quantity)) {
+        await db.run('ROLLBACK'); transactionOpen = false;
+        return res.status(400).json({ error: 'Serial đã được thêm hoặc dòng đã đủ số lượng' });
+      }
+      const result = await appendLineSerial(fresh, code, true);
+      if (!referenceId) {
+        await db.run(
+          `UPDATE stock_documents
+           SET referenceType = 'ISSUE', referenceId = ?, partnerCode = ?, partnerName = ?,
+               partnerAddress = ?, deliverer = ?, updatedAt = ? WHERE id = ?`,
+          [sourceIssue.id, sourceIssue.partnerCode || null, sourceIssue.partnerName || null,
+            sourceIssue.partnerAddress || null, sourceIssue.deliverer || null, new Date().toISOString(), documentId]
+        );
+      }
+      const processingCompleted = await refreshProcessingAfterSerialScan(documentId);
+      await recordWarehouseActivity(db.run.bind(db), {
+        actionType: 'SERIAL_SCANNED_RETURN', entityType: 'SERIAL', entityId: locked.id,
+        documentId, documentCode: doc.code, productId: fresh.productId, serialId: locked.id,
+        warehouseId: doc.warehouseId, quantity: 1, userId: user.id,
+        metadata: { documentLineId, serial: code, sourceIssueDocumentId: sourceIssue.id, sourceIssueCode: sourceIssue.code, processingCount: result.count },
+      });
+      await db.run('COMMIT'); transactionOpen = false;
+      return res.status(201).json({
+        serial: code, count: result.count, required: Number(fresh.quantity), completed: result.completed, processingCompleted,
+        sourceIssue: { id: sourceIssue.id, code: sourceIssue.code, partnerName: sourceIssue.partnerName || null },
+      });
+    } catch (e: any) {
+      if (transactionOpen) await db.run('ROLLBACK');
+      return res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to scan return serial' });
     }
   });
 
@@ -1912,10 +2482,6 @@ export function documentsRoutes(ctx: StockContext) {
       if (row.warehouseId !== sourceWarehouseId) {
         return res.status(400).json({ error: `Serial hiện không nằm tại kho đang xuất (kho hiện tại: ${row.warehouseId}, kho xuất: ${sourceWarehouseId}).` });
       }
-      const trackings = await productTrackings([line0.productId]);
-      if (Number(line0.serialRequired) !== 1 && trackings.get(line0.productId) !== 'SERIAL') {
-        return res.status(400).json({ error: 'Sản phẩm không quản lý theo Serial' });
-      }
       const qty = Number(line0.quantity);
       const current = parseSerials(line0.serialLot);
       if (current.some((s) => s.toLowerCase() === code.toLowerCase())) {
@@ -1950,7 +2516,7 @@ export function documentsRoutes(ctx: StockContext) {
           [documentId, documentLineId, new Date().toISOString(), locked.id]
         );
         const result = await appendLineSerial(fresh, code, true);
-        await touchProcessing(documentId);
+        const processingCompleted = await refreshProcessingAfterSerialScan(documentId);
         await recordWarehouseActivity(db.run.bind(db), {
           actionType: 'SERIAL_SCANNED_OUT', entityType: 'SERIAL', documentId, entityId: locked.id,
           productId: fresh.productId, serialId: locked.id, warehouseId: sourceWarehouseId,
@@ -1958,7 +2524,7 @@ export function documentsRoutes(ctx: StockContext) {
           metadata: { documentLineId, serial: code, processingCount: result.count },
         });
         await db.run('COMMIT'); transactionOpen = false;
-        res.status(201).json({ serial: code, count: result.count, required: qty, completed: result.completed });
+        res.status(201).json({ serial: code, count: result.count, required: qty, completed: result.completed, processingCompleted });
       } catch (e) {
         await db.run('ROLLBACK'); transactionOpen = false;
         throw e;
@@ -1985,42 +2551,13 @@ export function documentsRoutes(ctx: StockContext) {
       );
       const out = [];
       for (const line of lines || []) {
-        const serialRequired = Number(line.serialRequired) === 1;
-        const serialSkipped = Number(line.serialSkipped) === 1;
-        const tracking = serialSkipped ? 'QUANTITY' : serialRequired ? 'SERIAL' : resolveTracking((line as any).tracking);
+        const serialRequired = true;
+        const serialSkipped = false;
+        const tracking = 'SERIAL';
         const required = Number(line.quantity);
-        let processed = 0;
-        let lots: any[] = [];
-        if (tracking === 'SERIAL' || tracking === 'LOT') {
-          const serials = parseSerials(line.serialLot);
-          processed = serials.length;
-          if (tracking === 'LOT') {
-            if (doc.docType === 'ISSUE' || doc.docType === 'TRANSFER') {
-              lots = await db.all(
-                `SELECT s.id, s.lotCode, s.coilCode, s.initialQty, s.remainingQty, s.unit, s.status, a.quantity AS allocatedQty
-                 FROM stock_document_line_lots a INNER JOIN stock_lots s ON s.id = a.lotId
-                 WHERE a.documentLineId = ? ORDER BY s.createdAt ASC, s.id ASC`,
-                [line.id]
-              ).catch(() => []);
-              const covered = (lots || []).reduce((s: number, r: any) => s + Number(r.allocatedQty || 0), 0);
-              processed = covered;
-            } else {
-              lots = await db.all(
-                'SELECT id, lotCode, coilCode, initialQty, remainingQty, unit, status FROM stock_lots WHERE receiptDocumentId = ? AND receiptLineId = ? ORDER BY createdAt ASC',
-                [id, line.id]
-              ).catch(() => []);
-              const covered = (lots || []).reduce((s: number, r: any) => s + Number(r.initialQty || 0), 0);
-              processed = Math.min(covered, required);
-            }
-          }
-        } else {
-          processed = line.actualQty === null || line.actualQty === undefined ? 0 : Number(line.actualQty);
-        }
-        const completed = tracking === 'QUANTITY'
-          ? (line.processingStatus === 'COMPLETED')
-          : tracking === 'LOT'
-            ? (processed >= required)
-            : processed === required;
+        const processed = parseSerials(line.serialLot).length;
+        const lots: any[] = [];
+        const completed = processed === required;
         let availability: any = null;
         if (doc.docType === 'ISSUE') {
           availability = await db.get(
@@ -2029,19 +2566,19 @@ export function documentsRoutes(ctx: StockContext) {
              FROM stock_balances WHERE productId = ? AND warehouseId = ? AND locationId = ?`,
             [line.productId, doc.warehouseId, line.locationId || '']
           ).catch(() => ({ onHand: 0, reserved: 0, available: 0 }));
-          const issueQty = tracking === 'QUANTITY' && line.actualQty !== null && line.actualQty !== undefined
-            ? Number(line.actualQty) : required;
-          availability = { ...availability, afterIssue: Number(availability.available || 0) - issueQty };
+          availability = { ...availability, afterIssue: Number(availability.available || 0) - required };
         }
         out.push({
           lineId: line.id, productId: line.productId,
           productName: (line as any).productName || line.productId,
           required, processed, tracking, lots,
-          serials: (tracking === 'SERIAL' || tracking === 'LOT') ? parseSerials(line.serialLot) : [],
+          serials: parseSerials(line.serialLot),
           serialSkipped,
-          quantityConfirmed: tracking === 'SERIAL'
-            ? (line.processingStatus !== 'PENDING' || parseSerials(line.serialLot).length > 0)
-            : tracking === 'QUANTITY' ? line.processingStatus === 'COMPLETED' : false,
+          canEnableSerial: !serialRequired
+            && !serialSkipped
+            && line.processingStatus === 'PENDING'
+            && parseSerials(line.serialLot).length === 0,
+          quantityConfirmed: line.processingStatus !== 'PENDING' || parseSerials(line.serialLot).length > 0,
           actualQty: line.actualQty ?? null, varianceQty: line.varianceQty ?? null,
           availability,
           status: completed ? 'COMPLETED' : (processed > 0 ? 'PARTIAL' : 'PENDING'),
@@ -2052,6 +2589,52 @@ export function documentsRoutes(ctx: StockContext) {
         lines: out, allCompleted: out.length > 0 && out.every((l: any) => l.status === 'COMPLETED'),
       });
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch processing progress' }); }
+  });
+
+  /**
+   * Chuyển một dòng xuất/điều chuyển cũ sang quy trình Serial chuẩn.
+   * Phiếu mới đã lưu serialRequired = 1 từ lúc tạo; endpoint này chỉ là
+   * đường nâng cấp có kiểm soát cho các phiếu còn ở trạng thái chưa xử lý.
+   */
+  router.post('/lines/:id/enable-serial', async (req, res) => {
+    const user = req.user;
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    let transactionOpen = false;
+    try {
+      const line = await db.get('SELECT * FROM stock_document_lines WHERE id = ?', [String(req.params.id)]);
+      if (!line) return res.status(404).json({ error: 'Document line not found' });
+      const doc = await db.get('SELECT * FROM stock_documents WHERE id = ?', [line.documentId]);
+      if (!doc) return res.status(404).json({ error: 'Document not found' });
+      if (!(await canWriteDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING') {
+        return res.status(400).json({ error: 'Phiếu không còn ở bước xử lý hàng hóa' });
+      }
+      if (Number(line.serialRequired) === 1) return res.json({ success: true, serialRequired: true });
+      if (Number(line.serialSkipped) === 1 || line.processingStatus !== 'PENDING' || parseSerials(line.serialLot).length > 0) {
+        return res.status(400).json({ error: 'Dòng hàng đã được xử lý. Hãy đặt lại xử lý trước khi chuyển sang quét Serial.' });
+      }
+
+      await beginStockTransaction(db, [doc.warehouseId || doc.sourceWarehouseId].filter(Boolean) as string[]);
+      transactionOpen = true;
+      await db.run(
+        `UPDATE stock_document_lines
+         SET serialRequired = 1, serialSkipped = 0, actualQty = NULL, varianceQty = NULL,
+             varianceReason = NULL, processingStatus = 'PENDING'
+         WHERE id = ?`,
+        [line.id]
+      );
+      await recordWarehouseActivity(db.run.bind(db), {
+        actionType: 'SERIAL_TRACKING_ENABLED', entityType: 'DOCUMENT_LINE', entityId: line.id,
+        documentId: doc.id, documentCode: doc.code, productId: line.productId,
+        warehouseId: doc.warehouseId || doc.sourceWarehouseId, quantity: Number(line.quantity), userId: user.id,
+        metadata: { source: 'legacy_document_line' },
+      });
+      await db.run('COMMIT'); transactionOpen = false;
+      return res.json({ success: true, serialRequired: true });
+    } catch (e: any) {
+      if (transactionOpen) await db.run('ROLLBACK');
+      return res.status(e.status || 500).json({ error: e.status ? e.message : 'Không thể chuyển dòng hàng sang quét Serial' });
+    }
   });
 
   router.post('/lines/:id/confirm-qty', validate(z.object({
@@ -2068,60 +2651,28 @@ export function documentsRoutes(ctx: StockContext) {
       if (!doc) return res.status(404).json({ error: 'Document not found' });
       if (!(await canWriteDocument(user, doc))) return res.status(403).json({ error: 'Warehouse outside your scope' });
       if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING') return res.status(400).json({ error: 'Only draft documents can be processed' });
-      const trackings = await productTrackings([line.productId]);
-      const tracking = trackings.get(line.productId);
-      if (Number(line.serialRequired) === 1 || tracking === 'SERIAL') {
-        const expected = Number(line.quantity);
-        const actual = Number(req.body.actualQty);
-        if (actual !== expected) {
-          return res.status(400).json({ error: `Hàng quản lý theo Serial phải xác nhận đủ ${expected} sản phẩm trước khi quét Serial.` });
-        }
-        await beginStockTransaction(db, [doc.warehouseId || doc.sourceWarehouseId].filter(Boolean) as string[]);
-        transactionOpen = true;
-        try {
-          await db.run(
-            `UPDATE stock_document_lines SET actualQty = NULL, varianceQty = NULL, varianceReason = NULL,
-             processingStatus = CASE WHEN processingStatus = 'COMPLETED' THEN 'COMPLETED' ELSE 'PARTIAL' END WHERE id = ?`,
-            [line.id]
-          );
-          await touchProcessing(doc.id);
-          await recordWarehouseActivity(db.run.bind(db), {
-            actionType: 'QUANTITY_CONFIRMED', entityType: 'DOCUMENT_LINE', entityId: line.id,
-            documentId: doc.id, documentCode: doc.code, productId: line.productId,
-            warehouseId: doc.warehouseId || doc.sourceWarehouseId, quantity: expected, userId: user.id,
-            metadata: { tracking, serialRequired: true, actualQty: expected },
-          });
-          await db.run('COMMIT'); transactionOpen = false;
-          return res.json({ quantityConfirmed: true, requiredQty: expected });
-        } catch (e) {
-          await db.run('ROLLBACK'); transactionOpen = false;
-          throw e;
-        }
-      }
-      if (tracking !== 'QUANTITY') {
-        return res.status(400).json({ error: 'Chỉ hàng quản lý theo số lượng mới xác nhận tay (SERIAL/LOT phải quét/đăng ký)' });
-      }
+      const expected = Number(line.quantity);
       const actual = Number(req.body.actualQty);
-      const variance = actual - Number(line.quantity);
-      if (variance !== 0 && !req.body.varianceReason?.trim()) {
-        return res.status(400).json({ error: 'Số thực nhận lệch chứng từ — vui lòng nhập lý do chênh lệch' });
+      if (actual !== expected) {
+        return res.status(400).json({ error: `Mọi dòng hàng phải xác nhận đủ ${expected} sản phẩm rồi quét đủ ${expected} Serial.` });
       }
       await beginStockTransaction(db, [doc.warehouseId || doc.sourceWarehouseId].filter(Boolean) as string[]);
       transactionOpen = true;
       try {
         await db.run(
-          `UPDATE stock_document_lines SET actualQty = ?, varianceQty = ?, varianceReason = ?, processingStatus = 'COMPLETED' WHERE id = ?`,
-          [actual, variance, req.body.varianceReason?.trim() || null, line.id]
+          `UPDATE stock_document_lines SET actualQty = NULL, varianceQty = NULL, varianceReason = NULL,
+           processingStatus = CASE WHEN processingStatus = 'COMPLETED' THEN 'COMPLETED' ELSE 'PARTIAL' END WHERE id = ?`,
+          [line.id]
         );
         await touchProcessing(doc.id);
         await recordWarehouseActivity(db.run.bind(db), {
           actionType: 'QUANTITY_CONFIRMED', entityType: 'DOCUMENT_LINE', entityId: line.id,
           documentId: doc.id, documentCode: doc.code, productId: line.productId,
-          warehouseId: doc.warehouseId || doc.sourceWarehouseId, quantity: actual, userId: user.id,
-          metadata: { tracking, expectedQty: Number(line.quantity), actualQty: actual, variance, varianceReason: req.body.varianceReason?.trim() || null },
+          warehouseId: doc.warehouseId || doc.sourceWarehouseId, quantity: expected, userId: user.id,
+          metadata: { tracking: 'SERIAL', serialRequired: true, actualQty: expected },
         });
         await db.run('COMMIT'); transactionOpen = false;
-        res.json({ actualQty: actual, varianceQty: variance });
+        return res.json({ quantityConfirmed: true, requiredQty: expected });
       } catch (e) {
         await db.run('ROLLBACK'); transactionOpen = false;
         throw e;
@@ -2137,6 +2688,8 @@ export function documentsRoutes(ctx: StockContext) {
   })), async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    return res.status(400).json({ error: 'Mọi dòng hàng phải quét đủ Serial. Không còn hỗ trợ hoàn tất phiếu bằng lựa chọn “Không có Serial”.' });
+    /* Legacy implementation retained temporarily for migration context.
     let transactionOpen = false;
     try {
       const line = await db.get('SELECT * FROM stock_document_lines WHERE id = ?', [String(req.params.id)]);
@@ -2169,7 +2722,7 @@ export function documentsRoutes(ctx: StockContext) {
     } catch (e: any) {
       if (transactionOpen) await db.run('ROLLBACK');
       return res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to confirm line without serial' });
-    }
+    } */
   });
 
   router.post('/lots/allocate', validate(z.object({

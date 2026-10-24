@@ -22,7 +22,7 @@ export function balancesRoutes(ctx: StockContext) {
       }
       let query = `SELECT b.productId, b.warehouseId, b.locationId, b.onHand, b.reserved,
           CASE WHEN b.locationId = '' OR (l.isActive = 1 AND l.purpose = 'SALEABLE') THEN b.onHand - b.reserved ELSE 0 END AS available,
-          p.name AS productName, w.code AS warehouseCode, w.name AS warehouseName,
+          p.name AS productName, p.importCode AS productCode, w.code AS warehouseCode, w.name AS warehouseName,
           l.code AS locationCode, l.purpose AS locationPurpose
         FROM stock_balances b
         LEFT JOIN products p ON p.id = b.productId
@@ -32,7 +32,7 @@ export function balancesRoutes(ctx: StockContext) {
       const params: any[] = [];
       if (warehouseId) { query += ' AND b.warehouseId = ?'; params.push(warehouseId); }
       else if (!isDirector(user)) { query += ` AND b.warehouseId IN (${scope.map(() => '?').join(', ')})`; params.push(...scope); }
-      if (q?.trim()) { query += ' AND (p.name LIKE ? OR b.productId LIKE ?)'; params.push(`%${q.trim()}%`, `%${q.trim()}%`); }
+      if (q?.trim()) { query += ' AND (p.name LIKE ? OR b.productId LIKE ? OR p.importCode LIKE ?)'; params.push(`%${q.trim()}%`, `%${q.trim()}%`, `%${q.trim()}%`); }
       if (purpose?.trim()) { query += ' AND l.purpose = ?'; params.push(purpose.trim()); }
       query += ' ORDER BY w.name ASC, p.name ASC';
       const page = paginationOf(req.query as Record<string, string | undefined>);
@@ -58,7 +58,7 @@ export function balancesRoutes(ctx: StockContext) {
           SUM(b.onHand) AS onHand, SUM(b.reserved) AS reserved,
           SUM(CASE WHEN b.locationId = '' OR (l.isActive = 1 AND l.purpose = 'SALEABLE')
             THEN b.onHand - b.reserved ELSE 0 END) AS available,
-          p.name AS productName, p.unit, p.category, p.origin, p.tracking,
+          p.name AS productName, p.importCode AS productCode, p.unit, p.category, p.origin, p.tracking,
           w.code AS warehouseCode, w.name AS warehouseName
         FROM stock_balances b
         LEFT JOIN products p ON p.id = b.productId
@@ -71,11 +71,11 @@ export function balancesRoutes(ctx: StockContext) {
       if (tracking?.trim()) { query += ' AND p.tracking = ?'; params.push(tracking.trim().toUpperCase()); }
       if (q?.trim()) {
         const term = `%${q.trim()}%`;
-        query += ` AND (p.name LIKE ? OR p.id LIKE ? OR p.origin LIKE ? OR p.category LIKE ?
+        query += ` AND (p.name LIKE ? OR p.id LIKE ? OR p.importCode LIKE ? OR p.origin LIKE ? OR p.category LIKE ?
           OR EXISTS (SELECT 1 FROM stock_serials ss WHERE ss.productId = b.productId AND ss.warehouseId = b.warehouseId AND ss.serialNumber LIKE ?))`;
-        params.push(term, term, term, term, term);
+        params.push(term, term, term, term, term, term);
       }
-      const groupBy = ' GROUP BY b.productId, b.warehouseId, p.name, p.unit, p.category, p.origin, p.tracking, w.code, w.name';
+      const groupBy = ' GROUP BY b.productId, b.warehouseId, p.name, p.importCode, p.unit, p.category, p.origin, p.tracking, w.code, w.name';
       query += groupBy;
       if (onlyAvailable !== 'false') query += ' HAVING available > 0';
       const totalRows = await db.get(`SELECT COUNT(*) AS total FROM (${query}) AS inventory_rows`, params);
@@ -95,7 +95,7 @@ export function balancesRoutes(ctx: StockContext) {
       const warehouseId = String(req.params.warehouseId);
       const scope = await listScope(user);
       if (!isDirector(user) && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
-      const product = await db.get('SELECT id, name, unit, category, origin, tracking FROM products WHERE id = ?', [productId]);
+      const product = await db.get('SELECT id, name, importCode, unit, category, origin, tracking FROM products WHERE id = ?', [productId]);
       const warehouse = await db.get('SELECT id, code, name FROM warehouses WHERE id = ?', [warehouseId]);
       if (!product || !warehouse) return res.status(404).json({ error: 'Không tìm thấy sản phẩm hoặc kho' });
       const summary = await db.get(

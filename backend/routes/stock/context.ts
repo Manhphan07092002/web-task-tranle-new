@@ -95,12 +95,67 @@ export function createStockContext(db: any) {
     if (active) throw Object.assign(new Error('Kho đang kiểm kê; hoàn tất kiểm kê trước khi ghi sổ.'), { status: 409 });
   }
 
-  async function postMove(run: (sql: string, params?: any[]) => Promise<unknown>, args: {
+  type MoveInput = {
     productId: string; warehouseId: string; locationId: string; quantity: number;
     moveType: string; referenceType: string | null; referenceId: string;
     documentLineId: string | null; lotId?: string | null; serialId?: string | null; createdBy: string;
-  }): Promise<void> {
-    await assertNotCounting(args.warehouseId);
+  };
+  type ActivityInput = {
+    actionType: string; entityType: string; entityId?: string | null; documentId?: string | null;
+    documentCode?: string | null; productId?: string | null; serialId?: string | null; lotId?: string | null;
+    warehouseId?: string | null; fromWarehouseId?: string | null; toWarehouseId?: string | null;
+    quantity?: number | null; unit?: string | null; userId?: string | null;
+    oldData?: unknown; newData?: unknown; metadata?: unknown; createdAt?: string;
+  };
+
+  const activityByMove: Record<string, string> = {
+    RECEIPT: 'RECEIPT_COMPLETED', RETURN: 'RETURN_COMPLETED', ISSUE: 'ISSUE_COMPLETED',
+    TRANSFER_IN: 'TRANSFER_RECEIVED', TRANSFER_OUT: 'TRANSFER_SHIPPED',
+    ADJUSTMENT: 'STOCK_ADJUSTMENT_CREATED', RECOUNT_ADJUSTMENT: 'STOCK_ADJUSTMENT_CREATED',
+    KIT_IN: 'KIT_ASSEMBLED', KIT_OUT: 'KIT_DISASSEMBLED', INTERNAL_MOVE: 'INTERNAL_MOVE',
+  };
+  const jsonValue = (value: unknown) => value === undefined || value === null ? null : JSON.stringify(value);
+
+  async function recordWarehouseActivities(
+    run: (sql: string, params?: any[]) => Promise<unknown>,
+    argsList: ActivityInput[]
+  ): Promise<void> {
+    const CHUNK = 200;
+    for (let offset = 0; offset < argsList.length; offset += CHUNK) {
+      const chunk = argsList.slice(offset, offset + CHUNK);
+      const placeholders = chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+      const params = chunk.flatMap((args) => [
+        randomUUID(), args.actionType, args.entityType, args.entityId ?? null, args.documentId ?? null,
+        args.documentCode ?? null, args.productId ?? null, args.serialId ?? null, args.lotId ?? null,
+        args.warehouseId ?? null, args.fromWarehouseId ?? null, args.toWarehouseId ?? null,
+        args.quantity ?? null, args.unit ?? null, args.userId ?? null, jsonValue(args.oldData), jsonValue(args.newData),
+        jsonValue(args.metadata), args.createdAt || new Date().toISOString(),
+      ]);
+      await run(
+        `INSERT INTO warehouse_activity_logs
+         (id, actionType, entityType, entityId, documentId, documentCode, productId, serialId, lotId,
+          warehouseId, fromWarehouseId, toWarehouseId, quantity, unit, userId, oldData, newData, metadata, createdAt)
+         VALUES ${placeholders}`,
+        params
+      );
+    }
+  }
+
+  async function recordWarehouseActivity(
+    run: (sql: string, params?: any[]) => Promise<unknown>,
+    args: ActivityInput
+  ): Promise<void> {
+    await recordWarehouseActivities(run, [args]);
+  }
+
+  async function postMove(
+    run: (sql: string, params?: any[]) => Promise<unknown>,
+    args: MoveInput,
+    opts?: { skipCountingCheck?: boolean }
+  ): Promise<void> {
+    // Luồng chứng từ đã gọi assertNotCounting trong preflightPosting (cùng
+    // transaction) nên không cần kiểm tra lại cho từng move/chiếc.
+    if (!opts?.skipCountingCheck) await assertNotCounting(args.warehouseId);
     const now = new Date().toISOString();
     const moveId = randomUUID();
     await run(
@@ -114,41 +169,85 @@ export function createStockContext(db: any) {
        ON DUPLICATE KEY UPDATE onHand = onHand + VALUES(onHand), updatedAt = VALUES(updatedAt)`,
       [args.productId, args.warehouseId, args.locationId, args.quantity, now]
     );
-    const activityByMove: Record<string, string> = {
-      RECEIPT: 'RECEIPT_COMPLETED', RETURN: 'RETURN_COMPLETED', ISSUE: 'ISSUE_COMPLETED',
-      TRANSFER_IN: 'TRANSFER_RECEIVED', TRANSFER_OUT: 'TRANSFER_SHIPPED',
-      ADJUSTMENT: 'STOCK_ADJUSTMENT_CREATED', RECOUNT_ADJUSTMENT: 'STOCK_ADJUSTMENT_CREATED',
-      KIT_IN: 'KIT_ASSEMBLED', KIT_OUT: 'KIT_DISASSEMBLED', INTERNAL_MOVE: 'INTERNAL_MOVE',
-    };
-    await recordWarehouseActivity(run, {
+    await recordWarehouseActivities(run, [{
       actionType: activityByMove[args.moveType] || `STOCK_MOVE_${args.moveType}`,
       entityType: 'STOCK_MOVE', entityId: moveId, documentId: args.referenceId,
       productId: args.productId, serialId: args.serialId ?? null, lotId: args.lotId ?? null,
       warehouseId: args.warehouseId, quantity: args.quantity, userId: args.createdBy,
       metadata: { moveType: args.moveType, referenceType: args.referenceType, documentLineId: args.documentLineId },
       createdAt: now,
-    });
+    }]);
   }
 
-  async function recordWarehouseActivity(run: (sql: string, params?: any[]) => Promise<unknown>, args: {
-    actionType: string; entityType: string; entityId?: string | null; documentId?: string | null;
-    documentCode?: string | null; productId?: string | null; serialId?: string | null; lotId?: string | null;
-    warehouseId?: string | null; fromWarehouseId?: string | null; toWarehouseId?: string | null;
-    quantity?: number | null; unit?: string | null; userId?: string | null;
-    oldData?: unknown; newData?: unknown; metadata?: unknown; createdAt?: string;
-  }): Promise<void> {
-    const json = (value: unknown) => value === undefined || value === null ? null : JSON.stringify(value);
-    await run(
-      `INSERT INTO warehouse_activity_logs
-       (id, actionType, entityType, entityId, documentId, documentCode, productId, serialId, lotId,
-        warehouseId, fromWarehouseId, toWarehouseId, quantity, unit, userId, oldData, newData, metadata, createdAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [randomUUID(), args.actionType, args.entityType, args.entityId ?? null, args.documentId ?? null,
-        args.documentCode ?? null, args.productId ?? null, args.serialId ?? null, args.lotId ?? null,
-        args.warehouseId ?? null, args.fromWarehouseId ?? null, args.toWarehouseId ?? null,
-        args.quantity ?? null, args.unit ?? null, args.userId ?? null, json(args.oldData), json(args.newData),
-        json(args.metadata), args.createdAt || new Date().toISOString()]
-    );
+  /** Ghi nhiều move trong ít round-trip. Phiếu nhỏ vẫn đi qua postMove để giữ
+   * nguyên audit/error chi tiết; phiếu lớn gộp insert moves, upsert balances
+   * và activity logs theo lô. */
+  async function postMoves(
+    run: (sql: string, params?: any[]) => Promise<unknown>,
+    moves: MoveInput[],
+    opts?: { skipCountingCheck?: boolean }
+  ): Promise<void> {
+    if (moves.length === 0) return;
+    const BATCH_THRESHOLD = 20;
+    if (moves.length <= BATCH_THRESHOLD) {
+      for (const move of moves) await postMove(run, move, opts);
+      return;
+    }
+    if (!opts?.skipCountingCheck) {
+      for (const warehouseId of new Set(moves.map((move) => move.warehouseId))) {
+        await assertNotCounting(warehouseId);
+      }
+    }
+    const now = new Date().toISOString();
+    const rows = moves.map((move) => ({ ...move, id: randomUUID() }));
+    const CHUNK = 200;
+    for (let offset = 0; offset < rows.length; offset += CHUNK) {
+      const chunk = rows.slice(offset, offset + CHUNK);
+      const placeholders = chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+      const params = chunk.flatMap((move) => [
+        move.id, move.productId, move.warehouseId, move.locationId || null, move.quantity,
+        move.moveType, move.referenceType, move.referenceId, move.documentLineId,
+        move.serialId ?? null, move.lotId ?? null, move.createdBy, now,
+      ]);
+      await run(
+        `INSERT INTO stock_moves (id, productId, warehouseId, locationId, quantity, moveType, referenceType, referenceId, documentLineId, serialId, lotId, createdBy, createdAt)
+         VALUES ${placeholders}`,
+        params
+      );
+    }
+
+    // Cộng dồn theo cùng product/kho/vị trí rồi upsert một lần cho mỗi khóa.
+    const balances = new Map<string, { productId: string; warehouseId: string; locationId: string; quantity: number }>();
+    for (const move of moves) {
+      const locationId = move.locationId || '';
+      const key = JSON.stringify([move.productId, move.warehouseId, locationId]);
+      const previous = balances.get(key);
+      if (previous) previous.quantity += move.quantity;
+      else balances.set(key, { productId: move.productId, warehouseId: move.warehouseId, locationId, quantity: move.quantity });
+    }
+    const balanceRows = [...balances.values()];
+    for (let offset = 0; offset < balanceRows.length; offset += CHUNK) {
+      const chunk = balanceRows.slice(offset, offset + CHUNK);
+      const placeholders = chunk.map(() => '(?, ?, ?, ?, 0, ?)').join(', ');
+      const params = chunk.flatMap((balance) => [
+        balance.productId, balance.warehouseId, balance.locationId, balance.quantity, now,
+      ]);
+      await run(
+        `INSERT INTO stock_balances (productId, warehouseId, locationId, onHand, reserved, updatedAt)
+         VALUES ${placeholders}
+         ON DUPLICATE KEY UPDATE onHand = onHand + VALUES(onHand), updatedAt = VALUES(updatedAt)`,
+        params
+      );
+    }
+
+    await recordWarehouseActivities(run, rows.map((move) => ({
+      actionType: activityByMove[move.moveType] || `STOCK_MOVE_${move.moveType}`,
+      entityType: 'STOCK_MOVE', entityId: move.id, documentId: move.referenceId,
+      productId: move.productId, serialId: move.serialId ?? null, lotId: move.lotId ?? null,
+      warehouseId: move.warehouseId, quantity: move.quantity, userId: move.createdBy,
+      metadata: { moveType: move.moveType, referenceType: move.referenceType, documentLineId: move.documentLineId },
+      createdAt: now,
+    })));
   }
 
   /** Mapping kế toán/MISA là cấu hình, không suy diễn bằng mã tài khoản cố định. */
@@ -177,14 +276,21 @@ export function createStockContext(db: any) {
 
   /** Mã phiếu đơn giản PREFIX-YY-NNNN (VD: PNK-26-0001): số thứ tự theo
    * từng loại phiếu + năm, lấy MAX hiện có rồi +1. Va chạm concurrent
-   * (2 phiếu cùng số) được đỡ bởi UNIQUE + vòng retry ở createDocument. */
+   * (2 phiếu cùng số) được đỡ bởi UNIQUE + vòng retry ở createDocument.
+   * Chỉ lấy 1 dòng lớn nhất theo số thứ tự (không theo chuỗi) để tránh quét
+   * tối đa 5000 mã mỗi lần sinh số; REGEXP loại mã legacy khác định dạng. */
   async function nextDocCode(prefix: string): Promise<string> {
     const yy = String(new Date().getFullYear()).slice(2);
+    const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const numberStart = `${prefix}-${yy}-`.length + 1;
     const rows = await db.all(
-      'SELECT code FROM stock_documents WHERE code LIKE ? LIMIT 5000',
-      [`${prefix}-${yy}-%`]
+      `SELECT code FROM stock_documents
+        WHERE code LIKE ? AND code REGEXP ?
+        ORDER BY CAST(SUBSTRING(code, ${numberStart}) AS UNSIGNED) DESC
+        LIMIT 1`,
+      [`${prefix}-${yy}-%`, `^${escapedPrefix}-${yy}-[0-9]+$`]
     ).catch(() => []);
-    const re = new RegExp(`^${prefix}-${yy}-(\\d+)$`);
+    const re = new RegExp(`^${escapedPrefix}-${yy}-(\\d+)$`);
     let max = 0;
     for (const r of rows || []) {
       const m = String(r?.code || '').match(re);
@@ -217,7 +323,7 @@ export function createStockContext(db: any) {
     return level >= MANAGEMENT_LEVELS.MANAGER && level !== MANAGEMENT_LEVELS.ADMIN;
   }
   return {
-    db, scopeOf, listScope, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, isSaleableLocation, availableOf, saleableLocationSet, saleableAvailableOf, assertNotCounting, postMove, recordWarehouseActivity, resolveAccountingDefaults, docCode, nextDocCode, paginationOf,
+    db, scopeOf, listScope, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, isSaleableLocation, availableOf, saleableLocationSet, saleableAvailableOf, assertNotCounting, postMove, postMoves, recordWarehouseActivity, resolveAccountingDefaults, docCode, nextDocCode, paginationOf,
   };
 }
 

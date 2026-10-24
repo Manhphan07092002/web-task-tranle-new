@@ -77,7 +77,7 @@ export default function WarehouseReportsPage({ deptKey }: { deptKey: DeptKey }) 
             {[['Nhập trong kỳ', summary.totals.inbound.toLocaleString('vi-VN'), 'text-emerald-700'], ['Xuất trong kỳ', summary.totals.outbound.toLocaleString('vi-VN'), 'text-rose-700'], ['Giá trị tồn', `${summary.totals.stockValue.toLocaleString('vi-VN')} đ`, 'text-blue-700'], ['Tồn lâu >90 ngày', summary.totals.slowCount.toLocaleString('vi-VN'), 'text-amber-700']].map(([label, value, cls]) => <Card key={label} className="p-4"><div className="text-xs text-gray-400 font-bold uppercase">{label}</div><div className={`text-xl font-black mt-1 ${cls}`}>{value}</div></Card>)}
           </div>}
           <Card className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="wh-table w-full text-sm">
               <thead><tr className="text-left bg-gray-50">
                 {['Kho', 'Hàng hóa', 'ĐVT', 'Tồn đầu', 'Nhập', 'Xuất', 'Điều chỉnh / Bộ', 'Tồn cuối'].map(label => <th key={label} className="p-3 whitespace-nowrap">{label}</th>)}
               </tr></thead>

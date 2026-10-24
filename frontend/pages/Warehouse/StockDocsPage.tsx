@@ -61,6 +61,7 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
   const [pageSize, setPageSize] = useState(10);
   const [hasMore, setHasMore] = useState(false);
   const [datePreset, setDatePreset] = useState<'ALL' | 'TODAY' | 'MONTH' | 'YEAR'>('ALL');
+  const [dateSortOrder, setDateSortOrder] = useState<'asc' | 'desc'>('desc');
   const { users } = useData();
   const { user } = useAuth();
   // Đồng bộ với requireWarehouseManager ở backend: Admin không thực hiện
@@ -89,7 +90,7 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
     setLoading(true); setError(null);
     try {
       const [d, w, s] = await Promise.all([
-        getStockDocuments({ docType: kind, ...dateRange(), limit: pageSize + 1, offset: (page - 1) * pageSize }),
+        getStockDocuments({ docType: kind, ...dateRange(), sortOrder: dateSortOrder, limit: pageSize + 1, offset: (page - 1) * pageSize }),
         getWarehouses().catch(() => [] as Warehouse[]),
         getProcessingSummary({ docType: kind }).catch(() => ({}) as ProcessingSummary),
       ]);
@@ -102,7 +103,7 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
     }
   };
 
-  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [kind, page, pageSize, datePreset]);
+  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [kind, page, pageSize, datePreset, dateSortOrder]);
   useEffect(() => { setPage(1); }, [kind]);
   const visibleDocs = docs;
 
@@ -283,6 +284,19 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
             {label}
           </button>
         ))}
+        <label className="ml-0 sm:ml-2 flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-600">
+          <Calendar size={14} className="text-gray-400" />
+          <span>Sắp xếp ngày:</span>
+          <select
+            value={dateSortOrder}
+            onChange={(event) => { setDateSortOrder(event.target.value as 'asc' | 'desc'); setPage(1); }}
+            className="bg-transparent text-xs font-bold text-gray-700 outline-none cursor-pointer"
+            aria-label="Sắp xếp chứng từ theo ngày tạo"
+          >
+            <option value="desc">Mới nhất</option>
+            <option value="asc">Cũ nhất</option>
+          </select>
+        </label>
       </div>
 
       {error && (
@@ -304,7 +318,7 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
       ) : (
         <Card className="overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="wh-table w-full text-sm">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
                   <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Mã phiếu</th>
@@ -658,7 +672,7 @@ function AvailableInventoryPanel({
         <div className="py-8 text-center text-sm text-gray-400">Không có tồn kho phù hợp với bộ lọc.</div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="wh-table w-full text-sm">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
                 <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Mã SP / Sản phẩm</th>
@@ -674,7 +688,7 @@ function AvailableInventoryPanel({
               {rows.map((row) => (
                 <tr key={`${row.productId}:${row.warehouseId}`} className="hover:bg-emerald-50/40">
                   <td className="py-2.5 px-4">
-                    <div className="font-mono text-xs font-bold text-gray-700">{row.productId}</div>
+                    <div className="font-mono text-xs font-bold text-gray-700" title={row.productId}>{row.productCode || row.productId}</div>
                     <div className="text-xs text-gray-600 mt-0.5">{row.productName || '—'}</div>
                   </td>
                   <td className="py-2.5 px-3 text-xs text-gray-600">{row.warehouseName || row.warehouseId}</td>
@@ -707,7 +721,10 @@ function AvailableInventoryPanel({
 
 function InventoryDetailsModal({ details, onClose }: { details: InventoryDetails; onClose: () => void }) {
   const formatDate = (value?: string | null) => value ? new Date(value).toLocaleDateString('vi-VN') : '—';
-  const isSerial = details.product.tracking === 'SERIAL';
+  // Từ khi áp dụng quy trình quét Serial bắt buộc, một sản phẩm legacy có thể
+  // vẫn mang tracking = QUANTITY/LOT nhưng các đơn vị tồn thực tế đã được lưu
+  // trong stock_serials. Ưu tiên dữ liệu nghiệp vụ thực tế để không hiện bảng Lô rỗng.
+  const showSerials = details.serials.length > 0 || details.product.tracking === 'SERIAL';
   return (
     <div className="fixed inset-0 z-[75] bg-slate-900/45 backdrop-blur-[2px] p-3 sm:p-6 flex items-center justify-center" role="dialog" aria-modal="true">
       <div className="w-full max-w-6xl max-h-[92vh] overflow-y-auto rounded-3xl bg-white shadow-2xl">
@@ -721,10 +738,10 @@ function InventoryDetailsModal({ details, onClose }: { details: InventoryDetails
             <div className="rounded-xl bg-amber-50 p-3"><p className="text-xs text-amber-700">Đang giữ</p><b className="text-lg text-amber-800">{Number(details.summary.reserved).toLocaleString('vi-VN')} {details.product.unit || ''}</b></div>
             <div className="rounded-xl bg-emerald-50 p-3"><p className="text-xs text-emerald-700">Khả dụng</p><b className="text-lg text-emerald-800">{Number(details.summary.available).toLocaleString('vi-VN')} {details.product.unit || ''}</b></div>
           </div>
-          {isSerial ? (
-            <div className="overflow-x-auto border border-gray-100 rounded-xl"><table className="w-full text-sm"><thead className="bg-gray-50"><tr>{['Serial','Ngày nhập','Phiếu nhập','NCC','Trạng thái','Phiếu xuất'].map((h) => <th key={h} className="text-left px-3 py-2 text-xs font-bold text-gray-500 uppercase">{h}</th>)}</tr></thead><tbody className="divide-y divide-gray-50">{details.serials.map((serial) => <tr key={serial.id}><td className="px-3 py-2 font-mono font-bold text-xs">{serial.serialNumber || '—'}</td><td className="px-3 py-2 text-xs">{formatDate(serial.receivedAt)}</td><td className="px-3 py-2 text-xs">{serial.receiptCode || '—'}</td><td className="px-3 py-2 text-xs">{serial.supplier || serial.receiptPartnerName || '—'}</td><td className="px-3 py-2"><span className="px-2 py-0.5 rounded-full bg-gray-100 text-xs font-bold">{serial.stockStatus}</span></td><td className="px-3 py-2 text-xs">{serial.issueCode || '—'}</td></tr>)}</tbody></table></div>
+          {showSerials ? (
+            <div className="overflow-x-auto border border-gray-100 rounded-xl"><table className="wh-table wh-table-compact w-full text-sm"><thead className="bg-gray-50"><tr>{['Serial','Ngày nhập','Phiếu nhập','NCC','Trạng thái','Phiếu xuất'].map((h) => <th key={h} className="text-left px-3 py-2 text-xs font-bold text-gray-500 uppercase">{h}</th>)}</tr></thead><tbody className="divide-y divide-gray-50">{details.serials.length > 0 ? details.serials.map((serial) => <tr key={serial.id}><td className="px-3 py-2 font-mono font-bold text-xs">{serial.serialNumber || '—'}</td><td className="px-3 py-2 text-xs">{formatDate(serial.receivedAt)}</td><td className="px-3 py-2 text-xs">{serial.receiptCode || '—'}</td><td className="px-3 py-2 text-xs">{serial.supplier || serial.receiptPartnerName || '—'}</td><td className="px-3 py-2"><span className="px-2 py-0.5 rounded-full bg-gray-100 text-xs font-bold">{serial.stockStatus}</span></td><td className="px-3 py-2 text-xs">{serial.issueCode || '—'}</td></tr>) : <tr><td colSpan={6} className="px-3 py-6 text-center text-sm text-gray-400">Chưa có Serial được ghi nhận cho tồn kho này.</td></tr>}</tbody></table></div>
           ) : (
-            <div className="overflow-x-auto border border-gray-100 rounded-xl"><table className="w-full text-sm"><thead className="bg-gray-50"><tr>{['Lô / phiếu nhập','Ngày nhập','SL nhập','Còn lại','Đã xuất','NCC','Kho'].map((h) => <th key={h} className="text-left px-3 py-2 text-xs font-bold text-gray-500 uppercase">{h}</th>)}</tr></thead><tbody className="divide-y divide-gray-50">{details.lots.map((lot) => <tr key={lot.id}><td className="px-3 py-2 text-xs"><b>{lot.lotCode}</b><div className="text-gray-400">{lot.receiptCode || '—'}</div></td><td className="px-3 py-2 text-xs">{formatDate(lot.receivedAt)}</td><td className="px-3 py-2 text-xs">{Number(lot.initialQty).toLocaleString('vi-VN')} {lot.unit || details.product.unit || ''}</td><td className="px-3 py-2 text-xs font-bold text-emerald-700">{Number(lot.remainingQty).toLocaleString('vi-VN')} {lot.unit || details.product.unit || ''}</td><td className="px-3 py-2 text-xs">{Number(lot.initialQty - lot.remainingQty).toLocaleString('vi-VN')} {lot.unit || details.product.unit || ''}</td><td className="px-3 py-2 text-xs">{lot.supplier || lot.receiptPartnerName || '—'}</td><td className="px-3 py-2 text-xs">{details.warehouse.name}</td></tr>)}</tbody></table></div>
+            <div className="overflow-x-auto border border-gray-100 rounded-xl"><table className="wh-table wh-table-compact w-full text-sm"><thead className="bg-gray-50"><tr>{['Lô / phiếu nhập','Ngày nhập','SL nhập','Còn lại','Đã xuất','NCC','Kho'].map((h) => <th key={h} className="text-left px-3 py-2 text-xs font-bold text-gray-500 uppercase">{h}</th>)}</tr></thead><tbody className="divide-y divide-gray-50">{details.lots.length > 0 ? details.lots.map((lot) => <tr key={lot.id}><td className="px-3 py-2 text-xs"><b>{lot.lotCode}</b><div className="text-gray-400">{lot.receiptCode || '—'}</div></td><td className="px-3 py-2 text-xs">{formatDate(lot.receivedAt)}</td><td className="px-3 py-2 text-xs">{Number(lot.initialQty).toLocaleString('vi-VN')} {lot.unit || details.product.unit || ''}</td><td className="px-3 py-2 text-xs font-bold text-emerald-700">{Number(lot.remainingQty).toLocaleString('vi-VN')} {lot.unit || details.product.unit || ''}</td><td className="px-3 py-2 text-xs">{Number(lot.initialQty - lot.remainingQty).toLocaleString('vi-VN')} {lot.unit || details.product.unit || ''}</td><td className="px-3 py-2 text-xs">{lot.supplier || lot.receiptPartnerName || '—'}</td><td className="px-3 py-2 text-xs">{details.warehouse.name}</td></tr>) : <tr><td colSpan={7} className="px-3 py-6 text-center text-sm text-gray-400">Chưa có dữ liệu lô hoặc phiếu nhập chi tiết.</td></tr>}</tbody></table></div>
           )}
         </div>
       </div>

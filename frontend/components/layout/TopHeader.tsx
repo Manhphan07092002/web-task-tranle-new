@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Menu, Globe, Search, X, Bell, Mail, MailOpen, CheckSquare, FileText, Clock, StickyNote, CalendarDays, Send, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Menu, Globe, Search, X, Bell, Mail, MailOpen, CheckSquare, FileText, Clock, StickyNote, CalendarDays, Send, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLanguage } from '../../contexts/LanguageContext';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -49,6 +49,7 @@ const getNotifIcon = (type: string, title: string) => {
   const t = (type + title).toLowerCase();
   if (t.includes('mail_sent') || t.includes('gửi'))    return { icon: <Send size={16}/>,       bg: 'bg-green-100',  color: 'text-green-600'  };
   if (t.includes('mail') || t.includes('thư') || t.includes('email')) return { icon: <MailOpen size={16}/>, bg: 'bg-blue-100',   color: 'text-blue-600'   };
+  if (t.includes('stock_alert') || t.includes('cảnh báo tồn')) return { icon: <AlertTriangle size={16}/>, bg: 'bg-red-100', color: 'text-red-600' };
   if (t.includes('report') || t.includes('báo cáo')) return { icon: <FileText size={16}/>,    bg: 'bg-amber-100',  color: 'text-amber-600'  };
   if (t.includes('task') || t.includes('công việc')) return { icon: <CheckSquare size={16}/>, bg: 'bg-indigo-100', color: 'text-indigo-600' };
   if (t.includes('meeting') || t.includes('họp'))    return { icon: <CalendarDays size={16}/>,bg: 'bg-purple-100', color: 'text-purple-600' };
@@ -120,7 +121,10 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
     const typeLower = n.type?.toLowerCase() || '';
     const titleLower = n.title?.toLowerCase() || '';
 
-    if (typeLower.includes('mail') || titleLower.includes('email') || titleLower.includes('thư')) {
+    if (typeLower.includes('stock_alert') || titleLower.includes('cảnh báo tồn')) {
+      const warehouseId = n.relatedId?.startsWith('stock-alert:') ? n.relatedId.slice('stock-alert:'.length) : '';
+      navigate(`/dept/warehouse?m=wh_alerts${warehouseId ? `&warehouseId=${encodeURIComponent(warehouseId)}` : ''}`);
+    } else if (typeLower.includes('mail') || titleLower.includes('email') || titleLower.includes('thư')) {
       navigate(n.relatedId ? `/mail?mailId=${n.relatedId}` : '/mail');
     } else if (typeLower.includes('contract') || titleLower.includes('hợp đồng') || titleLower.includes('hop dong')) {
       navigate(n.relatedId ? `/contracts?contractId=${n.relatedId}` : '/contracts');

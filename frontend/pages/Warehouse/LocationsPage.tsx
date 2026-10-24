@@ -124,7 +124,7 @@ export default function LocationsPage({ deptKey }: { deptKey: DeptKey }) {
         <>
         <Card className="overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="wh-table w-full text-sm">
               <thead>
                 <tr className="text-left text-xs text-gray-400 uppercase">
                   <th className="py-1.5 px-5 w-12 hidden sm:table-cell">STT</th>
@@ -182,7 +182,7 @@ export default function LocationsPage({ deptKey }: { deptKey: DeptKey }) {
             <div className="px-5 py-3 bg-gray-50 border-b border-gray-100 font-bold text-gray-700 text-sm">{selected.name}</div>
           )}
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="wh-table w-full text-sm">
                 <thead>
                   <tr className="text-left text-xs text-gray-400 uppercase">
                     <th className="py-1.5 px-5">Mã / Tên</th>

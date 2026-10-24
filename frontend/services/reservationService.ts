@@ -6,6 +6,8 @@ export interface Reservation {
   warehouseId: string;
   locationId?: string | null;
   quantity: number;
+  /** Phần đã xuất kho qua phiếu xuất; phần còn lại = quantity - consumedQuantity. */
+  consumedQuantity?: number | null;
   sourceType: 'SALES_ORDER' | 'PROJECT' | 'WARRANTY' | 'INTERNAL';
   sourceId?: string | null;
   requestedBy?: string | null;

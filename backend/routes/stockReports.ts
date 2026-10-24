@@ -111,7 +111,7 @@ export function stockReportRoutes(db: any) {
           LEFT JOIN (SELECT productId, warehouseId, MAX(createdAt) AS lastMoveAt FROM stock_moves GROUP BY productId, warehouseId) m
             ON m.productId = b.productId AND m.warehouseId = b.warehouseId
           ${balanceFilter} GROUP BY b.productId, b.warehouseId
-          HAVING SUM(b.onHand) > 0 AND (lastMoveAt IS NULL OR lastMoveAt < ?)
+          HAVING SUM(b.onHand) > 0 AND (MAX(m.lastMoveAt) IS NULL OR MAX(m.lastMoveAt) < ?)
         ) slow_rows`, [...balanceParams, slowCutoff]);
       const numbers = (source: any) => Object.fromEntries(Object.entries(source || {}).map(([key, value]) => [key, Number(value) || 0]));
       res.json({ totals: { ...numbers(totals), ...numbers(inventory), slowCount: Number(slow?.count || 0) }, daily: (daily || []).map((row: any) => ({ ...row, inbound: Number(row.inbound) || 0, outbound: Number(row.outbound) || 0 })) });

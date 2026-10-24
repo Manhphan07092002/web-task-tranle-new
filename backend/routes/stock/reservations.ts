@@ -120,6 +120,11 @@ export function reservationsRoutes(ctx: StockContext) {
       const access = await requireWarehouse(user, r.warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       const now = new Date().toISOString();
+      const remaining = Math.max(0, Number(r.quantity ?? 0) - Number(r.consumedQuantity ?? 0));
+      if (remaining <= 0) {
+        await db.run('ROLLBACK'); transactionOpen = false;
+        return res.status(400).json({ error: 'Reservation has no remaining quantity' });
+      }
       try {
         if (toStatus === 'CONSUMED') {
           await assertNotCounting(r.warehouseId);
@@ -127,30 +132,34 @@ export function reservationsRoutes(ctx: StockContext) {
             'SELECT onHand FROM stock_balances WHERE productId = ? AND warehouseId = ? AND locationId = ? FOR UPDATE',
             [r.productId, r.warehouseId, r.locationId || '']
           );
-          if (Number(bal?.onHand ?? 0) < Number(r.quantity)) {
+          if (Number(bal?.onHand ?? 0) < remaining) {
             await db.run('ROLLBACK'); transactionOpen = false;
             return res.status(400).json({ error: 'Insufficient on-hand stock to consume' });
           }
           await db.run(
             `INSERT INTO stock_moves (id, productId, warehouseId, locationId, quantity, moveType, referenceType, referenceId, createdBy, createdAt)
              VALUES (?, ?, ?, ?, ?, 'ISSUE', 'RESERVATION', ?, ?, ?)`,
-            [randomUUID(), r.productId, r.warehouseId, r.locationId || '', -Number(r.quantity), r.id, user.id, now]
+            [randomUUID(), r.productId, r.warehouseId, r.locationId || '', -remaining, r.id, user.id, now]
           );
           await db.run(
             'UPDATE stock_balances SET onHand = onHand - ?, reserved = reserved - ?, updatedAt = ? WHERE productId = ? AND warehouseId = ? AND locationId = ?',
-            [Number(r.quantity), Number(r.quantity), now, r.productId, r.warehouseId, r.locationId || '']
+            [remaining, remaining, now, r.productId, r.warehouseId, r.locationId || '']
           );
         } else {
           await db.run(
             'UPDATE stock_balances SET reserved = reserved - ?, updatedAt = ? WHERE productId = ? AND warehouseId = ? AND locationId = ?',
-            [Number(r.quantity), now, r.productId, r.warehouseId, r.locationId || '']
+            [remaining, now, r.productId, r.warehouseId, r.locationId || '']
           );
         }
-        await db.run('UPDATE reservations SET status = ? WHERE id = ?', [toStatus, r.id]);
+        await db.run(
+          'UPDATE reservations SET status = ?, consumedQuantity = ? WHERE id = ?',
+          [toStatus, toStatus === 'CONSUMED' ? Number(r.quantity) : Number(r.consumedQuantity ?? 0), r.id]
+        );
+        await db.run('DELETE FROM stock_document_line_reservations WHERE reservationId = ?', [r.id]).catch(() => undefined);
         await recordWarehouseActivity(db.run.bind(db), {
           actionType: toStatus === 'CONSUMED' ? 'RESERVATION_CONSUMED' : 'RESERVATION_RELEASED',
           entityType: 'RESERVATION', entityId: r.id, productId: r.productId,
-          warehouseId: r.warehouseId, quantity: Number(r.quantity), userId: user.id,
+          warehouseId: r.warehouseId, quantity: remaining, userId: user.id,
           oldData: { status: 'HELD' }, newData: { status: toStatus },
           metadata: { locationId: r.locationId || '', sourceType: r.sourceType, sourceId: r.sourceId || null },
         });

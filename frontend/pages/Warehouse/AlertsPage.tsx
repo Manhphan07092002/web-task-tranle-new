@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Bell, RefreshCw, AlertCircle, ChevronDown, SlidersHorizontal } from 'lucide-react';
 import { Card } from '../../components/UI';
 import { Pagination } from '../../components/Pagination';
@@ -25,11 +25,12 @@ function classify(r: StockAlertRow): { label: string; cls: string }[] {
 // Trang Cảnh báo tồn kho TP (§26): hết / sắp hết / dưới Min / vượt Max,
 // drill-down đặt Min/Max/reorder ngay trên từng dòng.
 export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
+  const [searchParams] = useSearchParams();
   const [rows, setRows] = useState<StockAlertRow[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [warehouseId, setWarehouseId] = useState('');
+  const [warehouseId, setWarehouseId] = useState(() => searchParams.get('warehouseId') || '');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [hasMore, setHasMore] = useState(false);
@@ -49,6 +50,11 @@ export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    const queryWarehouseId = searchParams.get('warehouseId') || '';
+    if (queryWarehouseId) setWarehouseId(queryWarehouseId);
+  }, [searchParams]);
 
   useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [warehouseId, page, pageSize]);
   useEffect(() => { setPage(1); }, [warehouseId]);
@@ -161,7 +167,7 @@ export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
       ) : (
         <Card className="overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="wh-table w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
                   <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm / Kho</th>

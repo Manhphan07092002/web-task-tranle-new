@@ -357,6 +357,58 @@ html.dark select {
   border-color: #3a5068 !important;
 }
 
+/* Warehouse data tables — one visual contract for every table in Kho vận. */
+.wh-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.wh-table thead th {
+  padding: 0.625rem 1rem;
+  border-bottom: 1px solid #f3f4f6;
+  background-color: #f9fafb;
+  color: #6b7280;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.wh-table tbody td {
+  padding: 0.625rem 1rem;
+  border-bottom: 1px solid #f3f4f6;
+  vertical-align: middle;
+}
+
+.wh-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.wh-table tbody > tr {
+  border-top-width: 0;
+  transition: background-color 150ms ease;
+}
+
+.wh-table tbody tr:hover {
+  background-color: rgba(249, 250, 251, 0.75);
+}
+
+/* Compact variant for nested/editor tables inside modals and detail cards. */
+.wh-table-compact {
+  font-size: 0.75rem;
+}
+
+.wh-table-compact thead th {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.6875rem;
+}
+
+.wh-table-compact tbody td {
+  padding: 0.5rem 0.75rem;
+}
+
 /* Table */
 html.dark table thead {
   background-color: #1a2332 !important;
@@ -370,6 +422,15 @@ html.dark table td,
 html.dark table th {
   border-color: #3a5068 !important;
   color: #dde5ef !important;
+}
+
+html.dark .wh-table thead th {
+  background-color: #1a2332;
+  border-bottom-color: #3a5068;
+}
+
+html.dark .wh-table tbody td {
+  border-bottom-color: #3a5068;
 }
 
 /* --- Responsive & Mobile Enhancements --- */

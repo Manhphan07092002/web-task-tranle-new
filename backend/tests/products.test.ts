@@ -56,6 +56,34 @@ describe('product creation permission', () => {
     const db = mockDb({ scopes: ['wh-hn'] });
     await request(appFor(nv, db)).post('/').send({ ...validBody, salePrice: 1000 }).expect(400);
   });
+
+  it('does not write legacy remainingQuantity when creating a product', async () => {
+    const db = mockDb({ scopes: ['wh-hn'] });
+    await request(appFor(nv, db))
+      .post('/')
+      .send({ ...validBody, importQuantity: 10, remainingQuantity: 999 })
+      .expect(201);
+
+    const insert = db.run.mock.calls.find(([sql]: string[]) => String(sql).includes('INSERT INTO products')) as any;
+    expect(insert).toBeTruthy();
+    expect(String(insert?.[0])).not.toContain('remainingQuantity');
+    expect(insert?.[1]).toHaveLength(14);
+  });
+});
+
+describe('product update keeps stock authoritative', () => {
+  it('does not write legacy remainingQuantity when updating a product', async () => {
+    const db = mockDb({ perms: ['manage_warehouse'] });
+    await request(appFor({ ...nv, role: 'Manager' }, db))
+      .put('/prod-new')
+      .send({ ...validBody, importQuantity: 10, remainingQuantity: 999 })
+      .expect(200);
+
+    const update = db.run.mock.calls.find(([sql]: string[]) => String(sql).includes('UPDATE products SET')) as any;
+    expect(update).toBeTruthy();
+    expect(String(update?.[0])).not.toContain('remainingQuantity');
+    expect(update?.[1]).toHaveLength(13);
+  });
 });
 
 describe('product deletion guard', () => {

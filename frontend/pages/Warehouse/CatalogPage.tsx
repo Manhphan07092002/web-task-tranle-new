@@ -35,9 +35,9 @@ export default function CatalogPage({ deptKey }: { deptKey: DeptKey }) {
   useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [debouncedQ]);
 
   const grouped = useMemo(() => {
-    const map = new Map<string, { productId: string; productName: string; onHand: number; reserved: number; available: number; warehouses: Set<string> }>();
+    const map = new Map<string, { productId: string; productCode?: string | null; productName: string; onHand: number; reserved: number; available: number; warehouses: Set<string> }>();
     for (const r of rows) {
-      const g = map.get(r.productId) || { productId: r.productId, productName: r.productName || r.productId, onHand: 0, reserved: 0, available: 0, warehouses: new Set<string>() };
+      const g = map.get(r.productId) || { productId: r.productId, productCode: r.productCode, productName: r.productName || r.productCode || r.productId, onHand: 0, reserved: 0, available: 0, warehouses: new Set<string>() };
       g.onHand += Number(r.onHand) || 0;
       g.reserved += Number(r.reserved) || 0;
       g.available += Number(r.available) || 0;
@@ -92,7 +92,7 @@ export default function CatalogPage({ deptKey }: { deptKey: DeptKey }) {
       ) : (
         <Card className="overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="wh-table w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
                   <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Mặt hàng</th>
@@ -107,7 +107,7 @@ export default function CatalogPage({ deptKey }: { deptKey: DeptKey }) {
                   <tr key={g.productId} className="hover:bg-gray-50/70">
                     <td className="py-2 px-5">
                       <p className="font-semibold text-gray-800">{g.productName}</p>
-                      <p className="text-xs text-gray-400 font-mono">{g.productId}</p>
+                      <p className="text-xs text-gray-400 font-mono" title={g.productId}>{g.productCode || g.productId}</p>
                     </td>
                     <td className="py-2 px-4 text-xs text-gray-500">{[...g.warehouses].join(', ') || '—'}</td>
                     <td className="py-2 px-4 text-right font-black text-gray-900">{g.available.toLocaleString('vi-VN')}</td>

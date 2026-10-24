@@ -454,19 +454,24 @@ describe('scoped warehouse locks', () => {
 });
 
 describe('serial tracking on complete', () => {
-  function serialDb(opts: { docType: string; lines: any[]; status?: string; existingSerials?: string[]; stockSerials?: Record<string, any>; activeCount?: boolean }) {
+  function serialDb(opts: {
+    docType: string; lines: any[]; status?: string; tracking?: string;
+    existingSerials?: string[]; stockSerials?: Record<string, any>;
+    activeCount?: boolean; onHand?: number; lotAllocations?: Array<{ lotId: string; quantity: number }>;
+  }) {
     const calls: [string, any[]][] = [];
     const db: any = {
       calls,
       all: vi.fn(async (sql: string) => {
         if (String(sql).includes('FROM user_warehouse_scopes')) return [{ warehouseId: 'wh-hn' }];
         if (String(sql).includes('FROM stock_document_lines')) return opts.lines;
-        if (String(sql).includes('FROM products')) return opts.lines.map((l) => ({ id: l.productId, warrantyMonths: 24 }));
+        if (String(sql).includes('FROM products')) return opts.lines.map((l) => ({ id: l.productId, warrantyMonths: 24, tracking: opts.tracking || 'SERIAL' }));
         if (String(sql).includes('SELECT serialNumber FROM stock_serials')) {
           return (opts.existingSerials ?? []).map((sn) => ({ serialNumber: sn }));
         }
+        if (String(sql).includes('FROM stock_document_line_lots')) return opts.lotAllocations ?? [];
         if (String(sql).includes('FROM stock_balances')) {
-          return [{ productId: 'p1', locationId: '', onHand: 10, reserved: 0 }];
+          return [{ productId: 'p1', locationId: '', onHand: opts.onHand ?? 10, reserved: 0 }];
         }
         return [];
       }),
@@ -477,10 +482,17 @@ describe('serial tracking on complete', () => {
         if (String(sql).includes('FROM stock_counts')) return opts.activeCount ? { id: 'count-1' } : undefined;
         if (String(sql).includes('FROM products')) return { id: 'p1' };
         if (String(sql).includes('FROM stock_locations')) return { warehouseId: 'wh-hn', isActive: 1, purpose: 'SALEABLE' };
-        if (String(sql).includes('FROM stock_balances')) return { onHand: 10, reserved: 0 };
+        if (String(sql).includes('FROM stock_balances')) return { onHand: opts.onHand ?? 10, reserved: 0 };
+        if (String(sql).includes('FROM stock_lots')) {
+          return { id: params?.[0], productId: 'p1', warehouseId: 'wh-hn', lotCode: params?.[0], initialQty: 100, remainingQty: 100, status: 'ACTIVE' };
+        }
+        if (String(sql).includes('FROM stock_document_line_lots') && String(sql).includes('SUM(quantity)')) {
+          const total = (opts.lotAllocations ?? []).reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+          return { total };
+        }
         if (String(sql).includes('FROM stock_serials')) {
           const hit = (opts.stockSerials ?? {})[params?.[0]];
-          return hit ? { id: hit } : undefined;
+          return hit ? { id: hit, stockStatus: 'OUT' } : undefined;
         }
         return undefined;
       }),
@@ -510,12 +522,11 @@ describe('serial tracking on complete', () => {
     expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
   });
 
-  it('stores a single code as lot for multi-quantity receipt lines', async () => {
+  it('rejects a single code for a multi-quantity serial receipt', async () => {
     const db = serialDb({ docType: 'RECEIPT', status: 'READY', lines: [{ ...receiptLines[0], serialLot: 'LOT9' }] });
-    await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(200);
-    const inserts = db.calls.filter(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_serials'));
-    expect(inserts).toHaveLength(1);
-    expect(inserts[0][1][2]).toBe('LOT9');
+    await request(appFor(tp, db)).post('/receipts/doc1/complete').send({}).expect(400);
+    expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_serials'))).toBe(false);
+    expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
   });
 
   it('rejects duplicate serials on receipt', async () => {
@@ -537,20 +548,34 @@ describe('serial tracking on complete', () => {
     expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
   });
 
-  it('accepts a matching lot code on issue without changing its status', async () => {    const db = serialDb({ docType: 'ISSUE', status: 'READY', lines: [{ ...receiptLines[0], quantity: 3, serialLot: 'LOT9' }], stockSerials: { LOT9: 'lot1' } });
+  it('posts LOT issues per allocation without serial registration', async () => {
+    const allocations = [{ lotId: 'lotA', quantity: 10 }, { lotId: 'lotB', quantity: 40 }];
+    const db = serialDb({
+      docType: 'ISSUE', tracking: 'LOT', status: 'READY', onHand: 100,
+      lines: [{ ...receiptLines[0], quantity: 50, serialLot: '' }],
+      lotAllocations: allocations,
+    });
     await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(200);
     expect(db.calls.some(([s]: [string, any[]]) => String(s).includes("SET status = 'SOLD'"))).toBe(false);
-    expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(true);
+    const moves = db.calls.filter(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'));
+    expect(moves).toHaveLength(2);
+    expect(moves.map(([, params]: [string, any[]]) => params[4])).toEqual([-10, -40]);
+    expect(moves.map(([, params]: [string, any[]]) => params[10])).toEqual(['lotA', 'lotB']);
   });
 
-  it('rejects an unknown lot code on issue', async () => {
-    const db = serialDb({ docType: 'ISSUE', status: 'READY', lines: [{ ...receiptLines[0], quantity: 3, serialLot: 'LOT9' }], stockSerials: {} });
-    await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(400);
+  it('rejects issue when lot allocation is incomplete', async () => {
+    const db = serialDb({
+      docType: 'ISSUE', tracking: 'LOT', status: 'READY', onHand: 100,
+      lines: [{ ...receiptLines[0], quantity: 50, serialLot: '' }],
+      lotAllocations: [{ lotId: 'lotA', quantity: 10 }],
+    });
+    const response = await request(appFor(tp, db)).post('/issues/doc1/complete').send({}).expect(400);
+    expect(response.body.error).toContain('Chưa đủ Lô');
     expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(false);
   });
 
   it('completes return documents and posts inbound moves', async () => {
-    const db = serialDb({ docType: 'RETURN', status: 'READY', lines: [{ ...receiptLines[0], serialLot: '' }] });
+    const db = serialDb({ docType: 'RETURN', tracking: 'QUANTITY', status: 'READY', lines: [{ ...receiptLines[0], serialLot: '' }] });
     await request(appFor(tp, db)).post('/returns/doc1/complete').send({}).expect(200);
     expect(db.calls.some(([s]: [string, any[]]) => String(s).includes('INSERT INTO stock_moves'))).toBe(true);
   });

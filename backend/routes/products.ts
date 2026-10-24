@@ -11,7 +11,6 @@ const ProductBodySchema = z.object({
   defaultPrice: z.coerce.number().finite().min(0).max(1_000_000_000_000).optional(),
   category: z.string().max(191).optional(),
   importQuantity: z.coerce.number().finite().min(0).max(1_000_000_000).optional(),
-  remainingQuantity: z.coerce.number().finite().min(0).max(1_000_000_000).optional(),
   importPrice: z.coerce.number().finite().min(0).max(1_000_000_000_000).optional(),
   salePrice: z.coerce.number().finite().min(0).max(1_000_000_000_000).optional(),
   importCode: z.string().max(191).optional(),
@@ -181,16 +180,18 @@ export const productRoutes = (db: any) => {
       const createdAt = new Date().toISOString();
 
       for (const item of payloads) {
-        const { name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate, warrantyMonths, tracking } = item;
+        const { name, unit, origin, defaultPrice, category, importQuantity, importPrice, salePrice, importCode, invoiceDate, warrantyMonths, tracking } = item;
         const finalImportPrice = Number(importPrice) || 0;
         const finalSalePrice = Number(salePrice) || Number(defaultPrice) || 0;
         const finalWarranty = Math.min(Math.max(Number(warrantyMonths) || 0, 0), 1200);
         
         const id = 'prod-' + Math.random().toString(36).substr(2, 9);
         
+        // remainingQuantity là cột legacy, không còn là nguồn tồn (xem routes/stock/balances.ts).
+        // Chỉ ghi các trường danh mục; tồn kho thật do stock_balances quản lý.
         await db.run(
-          'INSERT INTO products (id, name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate, warrantyMonths, tracking, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [id, name, unit, origin, defaultPrice || 0, category || '', importQuantity || 0, remainingQuantity || 0, finalImportPrice, finalSalePrice, importCode || '', invoiceDate || null, finalWarranty, tracking || 'NONE', createdAt]
+          'INSERT INTO products (id, name, unit, origin, defaultPrice, category, importQuantity, importPrice, salePrice, importCode, invoiceDate, warrantyMonths, tracking, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [id, name, unit, origin, defaultPrice || 0, category || '', importQuantity || 0, finalImportPrice, finalSalePrice, importCode || '', invoiceDate || null, finalWarranty, tracking || 'NONE', createdAt]
         );
 
         const prod = await db.get('SELECT * FROM products WHERE id = ?', [id]);
@@ -219,7 +220,7 @@ export const productRoutes = (db: any) => {
   router.put('/:id', requireWarehousePerm, validate(ProductBodySchema), async (req, res) => {
     try {
       const { id } = req.params;
-      const { name, unit, origin, defaultPrice, category, importQuantity, remainingQuantity, importPrice, salePrice, importCode, invoiceDate, warrantyMonths, tracking } = req.body;
+      const { name, unit, origin, defaultPrice, category, importQuantity, importPrice, salePrice, importCode, invoiceDate, warrantyMonths, tracking } = req.body;
       
       if (!name) return res.status(400).json({ error: 'Tên sản phẩm là bắt buộc' });
 
@@ -249,9 +250,10 @@ export const productRoutes = (db: any) => {
         return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
       }
 
+      // Không ghi remainingQuantity: tồn kho chỉ được thay đổi qua stock_moves/stock_balances.
       await db.run(
-        'UPDATE products SET name = ?, unit = ?, origin = ?, defaultPrice = ?, category = ?, importQuantity = ?, remainingQuantity = ?, importPrice = ?, salePrice = ?, importCode = ?, invoiceDate = ?, warrantyMonths = ?, tracking = ? WHERE id = ?',
-        [name, unit, origin, defaultPrice || 0, category || '', importQuantity || 0, remainingQuantity || 0, finalImportPrice, finalSalePrice, importCode || '', invoiceDate || null, Math.min(Math.max(Number(warrantyMonths ?? oldProduct.warrantyMonths) || 0, 0), 1200), tracking || oldProduct.tracking || 'NONE', id]
+        'UPDATE products SET name = ?, unit = ?, origin = ?, defaultPrice = ?, category = ?, importQuantity = ?, importPrice = ?, salePrice = ?, importCode = ?, invoiceDate = ?, warrantyMonths = ?, tracking = ? WHERE id = ?',
+        [name, unit, origin, defaultPrice || 0, category || '', importQuantity || 0, finalImportPrice, finalSalePrice, importCode || '', invoiceDate || null, Math.min(Math.max(Number(warrantyMonths ?? oldProduct.warrantyMonths) || 0, 0), 1200), tracking || oldProduct.tracking || 'NONE', id]
       );
 
       // Sync to active output contracts if salePrice, name, unit, or origin changed

@@ -47,6 +47,7 @@ import { scheduleDailyTaskReminder } from './schedulers/dailyTaskReminder.js';
 import { initMailScheduler } from './schedulers/mailScheduler.js';
 import { scheduleRevenueAutoSubmit } from './schedulers/revenueAutoSubmit.js';
 import { scheduleReservationExpiry } from './schedulers/reservationExpiry.js';
+import { scheduleStockAlerts } from './schedulers/stockAlerts.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -181,6 +182,7 @@ async function startServer() {
   initMailScheduler(db);
   scheduleRevenueAutoSubmit(db);
   scheduleReservationExpiry(db);
+  scheduleStockAlerts(db);
 
   app.use('/api/upload', uploadLimiter, uploadRoutes(db));
 

@@ -135,7 +135,7 @@ function ProcessingQueueList({ deptKey, documentId }: { deptKey: DeptKey; docume
       ) : pending.length === 0 ? (
         <Card className="py-16 text-center text-gray-400"><CheckCircle2 size={36} className="mx-auto mb-3 opacity-30" /><p className="font-medium">Không có phiếu nào đang chờ xử lý</p><p className="text-sm mt-1">Phiếu mới tạo sẽ xuất hiện tại đây.</p></Card>
       ) : (
-        <Card className="overflow-hidden"><div className="overflow-x-auto"><table className="w-full text-sm">
+        <Card className="overflow-hidden"><div className="overflow-x-auto"><table className="wh-table w-full text-sm">
           <thead className="bg-gray-50 border-b border-gray-200"><tr>
             <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Phiếu</th>
             <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">Loại</th>

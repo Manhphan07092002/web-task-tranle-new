@@ -122,6 +122,19 @@ describe('warehouse stock integrity regressions', () => {
     expect(f.balance.onHand).toBe(10);
   });
 
+  it.each([
+    { name: 'receipt', path: '/receipts/d1/complete', type: 'RECEIPT', status: 'READY' },
+    { name: 'issue', path: '/issues/d1/complete', type: 'ISSUE', status: 'READY' },
+    { name: 'return', path: '/returns/d1/complete', type: 'RETURN', status: 'READY' },
+    { name: 'transfer ship', path: '/transfers/d1/ship', type: 'TRANSFER', status: 'READY' },
+    { name: 'transfer receive', path: '/transfers/d1/receive', type: 'TRANSFER', status: 'IN_TRANSIT' },
+  ])('reports open count before missing serials: $name', async ({ path, type, status }) => {
+    const f = fixture({ type, status, counting: true });
+    const res = await request(f.app).post(path).send({});
+    expect(res.status, res.body.error).toBe(409);
+    expect(f.writes.some((write) => write.sql.includes('INSERT INTO stock_moves'))).toBe(false);
+  });
+
   it('does not reserve or issue damaged stock', async () => {
     const f = fixture({ location: 'damaged' });
     await request(f.app).post('/reservations').send({ productId: 'p1', warehouseId: 'w1', locationId: 'damaged', quantity: 1 }).expect(400);

@@ -200,7 +200,7 @@ function StaffOverview({ deptKey }: { deptKey: DeptKey }) {
                 <p className="text-sm text-gray-400">Không có việc nào chờ — kho thông thoáng.</p>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
+                  <table className="wh-table w-full text-sm">
                     <thead>
                       <tr className="text-left text-xs text-gray-400 uppercase">
                         <th className="py-2 pr-2">Mã</th>
@@ -354,7 +354,7 @@ function ManagerOverview({ deptKey }: { deptKey: DeptKey }) {
           <Card className="overflow-hidden">
             <div className="px-5 py-3 bg-gray-50 border-b border-gray-100 font-bold text-gray-700 text-sm">Tình hình các kho</div>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="wh-table w-full text-sm">
                 <thead>
                   <tr className="text-left text-xs text-gray-400 uppercase">
                     <th className="py-1.5 px-5">Kho</th>
@@ -413,7 +413,7 @@ function ManagerOverview({ deptKey }: { deptKey: DeptKey }) {
               <p className="text-sm text-gray-400">Chưa có số liệu xử lý.</p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+                <table className="wh-table w-full text-sm">
                   <thead>
                     <tr className="text-left text-xs text-gray-400 uppercase">
                       <th className="py-2 pr-2">Nhân viên</th>

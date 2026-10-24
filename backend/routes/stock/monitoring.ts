@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
 import { normalizeManagementLevel, MANAGEMENT_LEVELS } from '../../middleware/auth.js';
 import { beginStockTransaction } from '../../utils/stockTransaction.js';
+import { listStockAlerts } from '../../services/stockAlerts.js';
 import type { StockContext } from './context.js';
 
 export function monitoringRoutes(ctx: StockContext) {
@@ -72,6 +73,17 @@ export function monitoringRoutes(ctx: StockContext) {
       else if (!isDirector(user)) { filters.push(`b.warehouseId IN (${scope.map(() => '?').join(',')})`); params.push(...scope); }
       if (productId?.trim()) { filters.push('b.productId = ?'); params.push(productId.trim()); }
       const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+      // Đẩy cùng bộ lọc xuống subquery stock_moves để không SUM toàn bảng
+      // ledger mỗi lần đối soát (scope kho/sản phẩm đã được kiểm tra ở trên).
+      const moveFilters: string[] = [];
+      const moveParams: any[] = [];
+      if (warehouseId) { moveFilters.push('warehouseId = ?'); moveParams.push(warehouseId); }
+      else if (!isDirector(user)) {
+        moveFilters.push(`warehouseId IN (${scope.map(() => '?').join(',')})`);
+        moveParams.push(...scope);
+      }
+      if (productId?.trim()) { moveFilters.push('productId = ?'); moveParams.push(productId.trim()); }
+      const moveWhere = moveFilters.length ? `WHERE ${moveFilters.join(' AND ')}` : '';
       const query = `SELECT b.productId, b.warehouseId, b.locationId,
           b.onHand AS balanceOnHand, COALESCE(m.ledgerQty, 0) AS ledgerQty,
           b.onHand - COALESCE(m.ledgerQty, 0) AS difference,
@@ -79,14 +91,14 @@ export function monitoringRoutes(ctx: StockContext) {
         FROM stock_balances b
         LEFT JOIN (
           SELECT productId, warehouseId, COALESCE(locationId, '') AS locationId, SUM(quantity) AS ledgerQty
-          FROM stock_moves GROUP BY productId, warehouseId, COALESCE(locationId, '')
+          FROM stock_moves ${moveWhere} GROUP BY productId, warehouseId, COALESCE(locationId, '')
         ) m ON m.productId = b.productId AND m.warehouseId = b.warehouseId AND m.locationId = COALESCE(b.locationId, '')
         LEFT JOIN products p ON p.id = b.productId
         LEFT JOIN warehouses w ON w.id = b.warehouseId
         ${where}
         HAVING ABS(difference) > 0.000001
         ORDER BY ABS(difference) DESC`;
-      const rows = await db.all(query, params);
+      const rows = await db.all(query, [...moveParams, ...params]);
       res.json({ rows, total: rows.length });
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to reconcile stock ledger' }); }
   });
@@ -103,6 +115,8 @@ export function monitoringRoutes(ctx: StockContext) {
       }
       const whClause = warehouseId ? 'AND s.warehouseId = ?' : !isDirector(user) ? `AND s.warehouseId IN (${scope.map(() => '?').join(',')})` : '';
       const whParams = warehouseId ? [warehouseId] : !isDirector(user) ? [...scope] : [];
+      const balanceFilter = warehouseId ? 'WHERE warehouseId = ?' : !isDirector(user) ? `WHERE warehouseId IN (${scope.map(() => '?').join(',')})` : '';
+      const balanceParams = warehouseId ? [warehouseId] : !isDirector(user) ? [...scope] : [];
       const rows: any[] = [];
       if (!type || type === 'SERIAL') {
         const serialRows = await db.all(`SELECT 'SERIAL_STATE' AS anomalyType, s.id, s.productId, s.serialNumber,
@@ -113,10 +127,10 @@ export function monitoringRoutes(ctx: StockContext) {
           FROM stock_serials s
           LEFT JOIN products p ON p.id = s.productId
           LEFT JOIN warehouses w ON w.id = s.warehouseId
-          LEFT JOIN (SELECT productId, warehouseId, SUM(onHand) AS onHand FROM stock_balances GROUP BY productId, warehouseId) b
+          LEFT JOIN (SELECT productId, warehouseId, SUM(onHand) AS onHand FROM stock_balances ${balanceFilter} GROUP BY productId, warehouseId) b
             ON b.productId = s.productId AND b.warehouseId = s.warehouseId
           WHERE p.tracking = 'SERIAL' AND ((s.stockStatus = 'IN_STOCK' AND COALESCE(b.onHand, 0) <= 0) OR (s.stockStatus = 'OUT' AND COALESCE(b.onHand, 0) > 0)) ${whClause}
-          ORDER BY s.updatedAt DESC`, whParams);
+          ORDER BY s.updatedAt DESC`, [...balanceParams, ...whParams]);
         rows.push(...serialRows);
       }
       if (!type || type === 'LOT') {
@@ -178,30 +192,13 @@ export function monitoringRoutes(ctx: StockContext) {
         if (warehouseId && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
         if (!warehouseId && scope.length === 0) return res.json([]);
       }
-      let query = `SELECT b.productId, b.warehouseId,
-          SUM(b.onHand) AS onHand, SUM(b.reserved) AS reserved,
-          SUM(CASE WHEN b.locationId = '' OR (l.isActive = 1 AND l.purpose = 'SALEABLE') THEN b.onHand - b.reserved ELSE 0 END) AS available,
-          p.name AS productName, w.code AS warehouseCode, w.name AS warehouseName,
-          pol.minStock, pol.maxStock, pol.reorderPoint
-        FROM stock_balances b
-        LEFT JOIN products p ON p.id = b.productId
-        LEFT JOIN warehouses w ON w.id = b.warehouseId
-        LEFT JOIN product_warehouse_policies pol ON pol.productId = b.productId AND pol.warehouseId = b.warehouseId
-        LEFT JOIN stock_locations l ON l.id = b.locationId AND l.warehouseId = b.warehouseId
-        WHERE 1=1`;
-      const params: any[] = [];
-      if (warehouseId) { query += ' AND b.warehouseId = ?'; params.push(warehouseId); }
-      else if (!isDirector(user)) { query += ` AND b.warehouseId IN (${scope.map(() => '?').join(', ')})`; params.push(...scope); }
-      query += ` GROUP BY b.productId, b.warehouseId, p.name, w.code, w.name, pol.minStock, pol.maxStock, pol.reorderPoint
-        HAVING available <= 0
-          OR (pol.reorderPoint IS NOT NULL AND pol.reorderPoint > 0 AND available < pol.reorderPoint)
-          OR (pol.minStock IS NOT NULL AND pol.minStock > 0 AND available < pol.minStock)
-          OR (pol.maxStock IS NOT NULL AND pol.maxStock > 0 AND onHand > pol.maxStock)
-        ORDER BY available ASC`;
       const page = paginationOf(req.query as Record<string, string | undefined>);
-      query += ' LIMIT ? OFFSET ?';
-      params.push(page.limit, page.offset);
-      res.json(await db.all(query, params));
+      res.json(await listStockAlerts(db, {
+        warehouseId,
+        scope: isDirector(user) ? undefined : scope,
+        limit: page.limit,
+        offset: page.offset,
+      }));
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch stock alerts' }); }
   });
 
