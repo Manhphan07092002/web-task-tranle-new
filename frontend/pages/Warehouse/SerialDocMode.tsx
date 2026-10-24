@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ScanLine, RefreshCw, AlertCircle, CheckCircle2, ArrowLeft, Boxes, Hash, Camera, Pencil, Trash2, PackageCheck } from 'lucide-react';
+import { ScanLine, RefreshCw, AlertCircle, CheckCircle2, ArrowLeft, Boxes, Hash, Camera, Pencil, Trash2, PackageCheck, X } from 'lucide-react';
 import { Card } from '../../components/UI';
 import {
   getStockDocument, getDocumentProgress, scanSerial, scanOutSerial, scanReturnSerial, editLineSerial, registerLot, allocateLot, confirmLineQty, confirmLineWithoutSerial, enableLineSerial, smartScanSerial,
@@ -116,40 +116,54 @@ export default function SerialDocMode({
   }
 
   const content = (
-    <div className="w-full max-w-[1400px] mx-auto space-y-4">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kho vận · Xử lý hàng hóa</p>
-          <h1 className="text-2xl font-bold text-gray-800 mt-1">
+    <div className="w-full max-w-[1400px] mx-auto space-y-3.5 sm:space-y-4">
+      {/* Header phiếu: Tối ưu responsive trên màn hình nhỏ & di động */}
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] sm:text-xs font-bold text-gray-400 uppercase tracking-wider">Kho vận · Xử lý hàng hóa</p>
+          <h1 className="text-xl sm:text-2xl font-bold text-gray-800 mt-0.5 sm:mt-1 truncate">
             {embedded ? 'Xử lý phiếu' : 'Đang xử lý phiếu'} {doc?.code || '…'}
           </h1>
           {doc && (
             <p className="text-xs text-gray-500 mt-1">
-              Kho: {doc.docType === 'TRANSFER' ? `${doc.sourceWarehouseName || '—'} → ${doc.destWarehouseName || '—'}` : doc.warehouseName || '—'}
+              Kho: <span className="font-semibold text-gray-700">{doc.docType === 'TRANSFER' ? `${doc.sourceWarehouseName || '—'} → ${doc.destWarehouseName || '—'}` : doc.warehouseName || '—'}</span>
               {doc.partnerName ? ` · Đối tác: ${doc.partnerName}` : ''}
             </p>
           )}
           {progress && (
-            <p className="text-gray-500 text-sm mt-1">
-              {progress.lines.filter((l) => l.status === 'COMPLETED').length}/{progress.lines.length} dòng đã đủ
-              {progress.allCompleted ? ' — ✓ Đã tự động chuyển sang sẵn sàng hoàn tất.' : ''}
-            </p>
+            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+              <span className="text-xs sm:text-sm font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                {progress.lines.filter((l) => l.status === 'COMPLETED').length}/{progress.lines.length} dòng đã đủ
+              </span>
+              {progress.allCompleted && (
+                <span className="text-xs font-bold text-emerald-800">
+                  ✓ Sẵn sàng hoàn tất
+                </span>
+              )}
+            </div>
           )}
         </div>
-        <div className="flex gap-2">
-          <button onClick={() => embedded ? onClosed?.() : navigate(backPath)}
-            className="flex items-center gap-2 px-4 py-2.5 border border-gray-200 hover:bg-gray-50 text-gray-700 rounded-xl font-bold text-sm shadow-sm">
-            <ArrowLeft size={16} /> {embedded ? 'Đóng xử lý' : 'Quay lại phiếu'}
+        <div className="flex items-center gap-2 shrink-0 self-end sm:self-start w-full sm:w-auto justify-end">
+          <button
+            onClick={() => embedded ? onClosed?.() : navigate(backPath)}
+            className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 sm:px-4 py-2 border border-gray-200 hover:bg-gray-100 active:bg-gray-200 text-gray-700 rounded-xl font-bold text-xs sm:text-sm shadow-xs transition-colors cursor-pointer min-h-[38px] sm:min-h-[42px]"
+          >
+            <ArrowLeft size={16} /> <span>{embedded ? 'Đóng xử lý' : 'Quay lại phiếu'}</span>
           </button>
-          <button onClick={fetchAll} className="p-2.5 border border-gray-200 rounded-xl hover:bg-gray-50 text-gray-500 shadow-sm" title="Tải lại">
+          <button
+            onClick={fetchAll}
+            className="p-2 sm:p-2.5 border border-gray-200 rounded-xl hover:bg-gray-100 active:bg-gray-200 text-gray-500 shadow-xs cursor-pointer min-h-[38px] sm:min-h-[42px]"
+            title="Tải lại"
+          >
             <RefreshCw size={16} />
           </button>
         </div>
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm">
-          <AlertCircle size={15} />{error}
+        <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-xs sm:text-sm">
+          <AlertCircle size={16} className="shrink-0" />
+          <span>{error}</span>
         </div>
       )}
 
@@ -161,50 +175,63 @@ export default function SerialDocMode({
       ) : progress && (
         <div className="space-y-3">
           {progress.allCompleted && (
-            <div className="flex items-center gap-2 p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-800 font-bold text-sm">
-              <CheckCircle2 size={18} /> Các dòng hàng đã đủ — phiếu đã tự chuyển sang trạng thái sẵn sàng hoàn tất. Quay lại danh sách để thực hiện bước ghi nhận kho cuối cùng.
+            <div className="flex items-center gap-2 p-3 sm:p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-800 font-bold text-xs sm:text-sm">
+              <CheckCircle2 size={18} className="shrink-0" />
+              <span>Các dòng hàng đã đủ — phiếu đã tự chuyển sang trạng thái sẵn sàng hoàn tất.</span>
             </div>
           )}
           {insufficientStock && (
-            <div className="flex items-center gap-2 p-4 bg-red-50 border border-red-200 rounded-2xl text-red-700 font-bold text-sm">
-              <AlertCircle size={18} /> Tồn khả dụng không đủ cho ít nhất một dòng hàng. Hãy giảm số lượng, đổi kho xuất hoặc bổ sung tồn trước khi hoàn tất xử lý.
+            <div className="flex items-center gap-2 p-3 sm:p-4 bg-red-50 border border-red-200 rounded-2xl text-red-700 font-bold text-xs sm:text-sm">
+              <AlertCircle size={18} className="shrink-0" />
+              <span>Tồn khả dụng không đủ cho ít nhất một dòng hàng. Hãy giảm số lượng, đổi kho xuất hoặc bổ sung tồn trước khi hoàn tất xử lý.</span>
             </div>
           )}
 
-          {/* Thanh Quét thông minh tự khớp sản phẩm */}
+          {/* Thanh Quét thông minh tự khớp sản phẩm - Thiết kế Responsive & Mobile-first */}
           {doc && (doc.status === 'DRAFT' || doc.status === 'PROCESSING' || doc.status === 'READY') && !progress.allCompleted && (
-            <Card className="p-4 bg-gradient-to-r from-emerald-50/80 via-teal-50/40 to-white border border-emerald-200/90 shadow-sm rounded-2xl">
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-sm shrink-0">
-                    <ScanLine size={20} />
+            <Card className="p-3.5 sm:p-4 bg-gradient-to-r from-emerald-50/90 via-teal-50/50 to-white border border-emerald-200 shadow-xs rounded-2xl">
+              <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 sm:gap-3">
+                  <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-xs shrink-0">
+                    <ScanLine size={18} />
                   </div>
-                  <div>
-                    <h3 className="font-bold text-gray-900 text-sm flex items-center gap-2">
-                      Quét thông minh tự khớp dòng
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-gray-900 text-xs sm:text-sm flex items-center gap-1.5 flex-wrap">
+                      <span>Quét thông minh tự khớp dòng</span>
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
                         Auto-Match
                       </span>
                     </h3>
-                    <p className="text-xs text-gray-500">
-                      Bắn hoặc quét mã bất kỳ, hệ thống sẽ tự động tìm đúng mặt hàng trên phiếu để gán Serial
+                    <p className="text-[11px] sm:text-xs text-gray-500 mt-0.5 line-clamp-1 sm:line-clamp-none">
+                      Bắn hoặc quét mã bất kỳ, hệ thống sẽ tự động tìm đúng mặt hàng để gán Serial
                     </p>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <form onSubmit={handleSmartScanSubmit} className="flex-1 sm:w-80 flex gap-1.5">
-                    <input
-                      type="text"
-                      value={smartScanInput}
-                      onChange={(e) => setSmartScanInput(e.target.value)}
-                      placeholder="Bắn súng hoặc gõ Serial rồi Enter..."
-                      className="flex-1 px-3 py-2 bg-white border border-emerald-300 rounded-xl text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm"
-                    />
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full lg:w-auto">
+                  <form onSubmit={handleSmartScanSubmit} className="flex-1 flex gap-1.5">
+                    <div className="relative flex-1 min-w-0">
+                      <input
+                        type="text"
+                        value={smartScanInput}
+                        onChange={(e) => setSmartScanInput(e.target.value)}
+                        placeholder="Bắn súng hoặc gõ Serial..."
+                        className="w-full pl-3 pr-8 py-2 sm:py-2.5 bg-white border border-emerald-300 rounded-xl text-xs sm:text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500 shadow-2xs"
+                      />
+                      {smartScanInput && (
+                        <button
+                          type="button"
+                          onClick={() => setSmartScanInput('')}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-0.5"
+                        >
+                          <X size={13} />
+                        </button>
+                      )}
+                    </div>
                     <button
                       type="submit"
                       disabled={smartScanBusy || !smartScanInput.trim()}
-                      className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shrink-0 transition-colors shadow-sm"
+                      className="px-4 py-2 sm:py-2.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-50 text-white rounded-xl text-xs sm:text-sm font-bold shrink-0 transition-all shadow-2xs cursor-pointer min-h-[38px] sm:min-h-[42px]"
                     >
                       {smartScanBusy ? '...' : 'Gán'}
                     </button>
@@ -213,18 +240,18 @@ export default function SerialDocMode({
                   <button
                     type="button"
                     onClick={() => setShowSmartScanner(true)}
-                    className="flex items-center gap-1.5 px-3.5 py-2 bg-white border border-emerald-300 hover:bg-emerald-50 text-emerald-800 rounded-xl text-xs font-bold shrink-0 transition-colors shadow-sm"
+                    className="flex items-center justify-center gap-1.5 px-3.5 py-2 sm:py-2.5 bg-white border border-emerald-300 hover:bg-emerald-50 active:bg-emerald-100 text-emerald-800 rounded-xl text-xs sm:text-sm font-bold shrink-0 transition-all shadow-2xs cursor-pointer min-h-[38px] sm:min-h-[42px]"
                   >
-                    <Camera size={14} />
-                    <span>Camera</span>
+                    <Camera size={16} className="text-emerald-600" />
+                    <span>Quét Camera</span>
                   </button>
                 </div>
               </div>
 
               {smartScanSuccess && (
-                <div className="mt-2.5 flex items-center gap-2 text-xs font-bold text-emerald-800 bg-white/95 px-3 py-2 rounded-xl border border-emerald-200 animate-in fade-in shadow-xs">
+                <div className="mt-2.5 flex items-center gap-2 text-xs font-bold text-emerald-800 bg-white/95 px-3 py-2 rounded-xl border border-emerald-200 animate-in fade-in shadow-2xs">
                   <CheckCircle2 size={15} className="text-emerald-600 shrink-0" />
-                  <span>{smartScanSuccess}</span>
+                  <span className="truncate">{smartScanSuccess}</span>
                 </div>
               )}
             </Card>
@@ -251,6 +278,20 @@ export default function SerialDocMode({
         </div>
       )}
 
+      {/* Floating Action Button (FAB) cho Mobile: Bấm quét nhanh bằng ngón cái bất cứ lúc nào */}
+      {doc && (doc.status === 'DRAFT' || doc.status === 'PROCESSING' || doc.status === 'READY') && !progress?.allCompleted && (
+        <div className="sm:hidden fixed bottom-4 right-4 z-40">
+          <button
+            type="button"
+            onClick={() => setShowSmartScanner(true)}
+            className="flex items-center gap-2 px-4 py-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 text-white rounded-full font-bold text-xs shadow-xl border-2 border-white transition-transform active:scale-95 cursor-pointer"
+          >
+            <Camera size={18} />
+            <span>Quét Camera</span>
+          </button>
+        </div>
+      )}
+
       {!embedded && (
         <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">
           ← Về tổng quan kho vận
@@ -260,8 +301,8 @@ export default function SerialDocMode({
   );
   if (!embedded) return content;
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-[2px] p-3 sm:p-6 flex items-center justify-center" role="dialog" aria-modal="true" aria-label={`Xử lý phiếu ${doc?.code || ''}`}>
-      <div className="w-full max-w-6xl max-h-[94vh] overflow-y-auto rounded-3xl bg-slate-50 shadow-2xl p-3 sm:p-6">
+    <div className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-[2px] p-2 sm:p-4 md:p-6 flex items-center justify-center" role="dialog" aria-modal="true" aria-label={`Xử lý phiếu ${doc?.code || ''}`}>
+      <div className="w-full max-w-6xl max-h-[96vh] sm:max-h-[92vh] overflow-y-auto rounded-2xl sm:rounded-3xl bg-slate-50 shadow-2xl p-3 sm:p-5 md:p-6">
         {content}
       </div>
     </div>
@@ -277,23 +318,50 @@ function statusBadge(status: string) {
 function LineCard({ line, docType, documentId, onDone, compact = false, canEdit = true }: { line: DocLineProgress; docType: string; documentId: string; onDone: () => Promise<void>; compact?: boolean; canEdit?: boolean }) {
   const isIssue = docType === 'ISSUE' || docType === 'TRANSFER';
   const tracking = resolveTracking(line.tracking);
+  const remaining = Math.max(0, line.required - line.processed);
+  const percent = line.required > 0 ? Math.min(100, Math.round((line.processed / line.required) * 100)) : 100;
+  const isDone = line.status === 'COMPLETED';
+
   return (
-    <Card className={`${compact ? 'rounded-none border-0 border-b border-gray-100 p-4 sm:p-5' : 'p-4 sm:p-5'}`}>
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div className="min-w-0">
-          <p className="font-bold text-gray-900">{line.productName}</p>
-          <p className="text-xs text-gray-400 font-mono">{line.productId}</p>
+    <Card className={`${compact ? 'rounded-xl sm:rounded-2xl border border-gray-100 p-3.5 sm:p-5 shadow-2xs mb-2.5' : 'p-3.5 sm:p-5 shadow-xs rounded-2xl mb-3'}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="font-bold text-gray-900 text-sm sm:text-base leading-snug">{line.productName}</p>
+          <p className="text-xs text-gray-400 font-mono mt-0.5">{line.productId}</p>
         </div>
-        <div className="flex items-center gap-2 text-sm">
-          <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600">{TRACK_LABEL[tracking] || tracking}</span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="px-2 py-0.5 rounded-full text-[10px] sm:text-[11px] font-bold bg-gray-100 text-gray-600">
+            {TRACK_LABEL[tracking] || tracking}
+          </span>
           {statusBadge(line.status)}
         </div>
       </div>
-      <p className="text-sm text-gray-600 mt-2">
-        Yêu cầu: <b className="font-mono">{line.required.toLocaleString('vi-VN')}</b>
-        {' · '}Đã xử lý: <b className="font-mono">{line.processed.toLocaleString('vi-VN')}</b>
-        {' · '}Còn thiếu: <b className="font-mono">{Math.max(0, line.required - line.processed).toLocaleString('vi-VN')}</b>
-      </p>
+
+      {/* Tiến độ chi tiết & thanh trực quan */}
+      <div className="mt-2.5 space-y-1.5">
+        <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap text-xs">
+          <span className="bg-slate-50 border border-slate-200/80 px-2 py-0.5 rounded-lg text-slate-700">
+            Yêu cầu: <b className="font-mono text-gray-900">{line.required.toLocaleString('vi-VN')}</b>
+          </span>
+          <span className="bg-emerald-50 border border-emerald-200/80 px-2 py-0.5 rounded-lg text-emerald-800">
+            Đã xử lý: <b className="font-mono">{line.processed.toLocaleString('vi-VN')}</b>
+          </span>
+          <span className={`px-2 py-0.5 rounded-lg border ${
+            remaining > 0 ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-gray-50 border-gray-200 text-gray-500'
+          }`}>
+            Còn thiếu: <b className="font-mono">{remaining.toLocaleString('vi-VN')}</b>
+          </span>
+        </div>
+
+        {/* Mini progress bar trực quan */}
+        <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+          <div
+            className={`h-full transition-all duration-300 ${isDone ? 'bg-emerald-500' : 'bg-amber-500'}`}
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+      </div>
+
       {isIssue && line.availability && (
         <div className={`mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2 rounded-xl border p-2.5 text-xs ${line.availability.afterIssue < 0 ? 'border-red-200 bg-red-50' : 'border-gray-100 bg-gray-50'}`}>
           <div><span className="block text-gray-500">Tồn thực tế</span><b>{Number(line.availability.onHand).toLocaleString('vi-VN')}</b></div>
@@ -497,17 +565,43 @@ function SerialBox({ line, scanMode, documentId, onDone, canEdit }: { line: DocL
       )}
       {line.status !== 'COMPLETED' && (
         <>
-          <form onSubmit={submit} className="flex gap-2">
-            <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="Quét hoặc gõ serial rồi Enter..."
-              className="flex-1 min-w-0 px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500 font-mono" />
-            <button type="button" onClick={() => { setErr(''); setOkMsg(''); setScanning(true); }}
-              className="flex items-center gap-1.5 px-4 py-2 border border-emerald-300 text-emerald-700 hover:bg-emerald-50 rounded-xl font-bold text-sm">
-              <Camera size={15} /> Quét
-            </button>
-            <button type="submit" disabled={busy || !value.trim()}
-              className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60">
-              <ScanLine size={15} /> {busy ? '...' : 'Thêm'}
-            </button>
+          <form onSubmit={submit} className="flex flex-col sm:flex-row gap-2">
+            <div className="flex-1 min-w-0 relative">
+              <input
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                placeholder="Quét hoặc gõ serial..."
+                className="w-full pl-3 pr-8 py-2.5 sm:py-2 border border-gray-200 rounded-xl bg-white text-xs sm:text-sm outline-none focus:border-emerald-500 font-mono shadow-2xs"
+              />
+              {value && (
+                <button
+                  type="button"
+                  onClick={() => setValue('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-0.5 cursor-pointer"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => { setErr(''); setOkMsg(''); setScanning(true); }}
+                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2.5 sm:py-2 border border-emerald-300 bg-white hover:bg-emerald-50 active:bg-emerald-100 text-emerald-700 rounded-xl font-bold text-xs sm:text-sm transition-colors shadow-2xs cursor-pointer min-h-[42px] sm:min-h-[38px]"
+                title="Mở camera quét serial mặt hàng này"
+              >
+                <Camera size={16} />
+                <span>Quét Camera</span>
+              </button>
+              <button
+                type="submit"
+                disabled={busy || !value.trim()}
+                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 sm:py-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl font-bold text-xs sm:text-sm disabled:opacity-50 transition-colors shadow-2xs cursor-pointer min-h-[42px] sm:min-h-[38px]"
+              >
+                <ScanLine size={16} />
+                <span>{busy ? '...' : 'Thêm'}</span>
+              </button>
+            </div>
           </form>
           {scanning && (
             <ScannerModal
@@ -583,17 +677,35 @@ function LotBox({ line, documentId, onDone }: { line: DocLineProgress; documentI
         </div>
       )}
       {line.status !== 'COMPLETED' && (
-        <form onSubmit={submit} className="flex gap-2 flex-wrap">
-          <input value={lotCode} onChange={(e) => setLotCode(e.target.value)} placeholder="Mã lô/cuộn *"
-            className="flex-1 min-w-[140px] px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500 font-mono" />
-          <input value={quantity} onChange={(e) => setQuantity(e.target.value)} placeholder="Số lượng *" inputMode="decimal"
-            className="w-28 px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none text-right tabular-nums focus:border-emerald-500" />
-          <input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="ĐVT"
-            className="w-20 px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500" />
-          <button type="submit" disabled={busy}
-            className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60">
-            <Boxes size={15} /> {busy ? '...' : 'Thêm lô'}
-          </button>
+        <form onSubmit={submit} className="flex flex-col sm:flex-row gap-2">
+          <input
+            value={lotCode}
+            onChange={(e) => setLotCode(e.target.value)}
+            placeholder="Mã lô/cuộn *"
+            className="flex-1 min-w-0 px-3 py-2.5 sm:py-2 border border-gray-200 rounded-xl bg-white text-xs sm:text-sm outline-none focus:border-emerald-500 font-mono shadow-2xs"
+          />
+          <div className="flex items-center gap-2">
+            <input
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+              placeholder="SL *"
+              inputMode="decimal"
+              className="flex-1 sm:w-28 px-3 py-2.5 sm:py-2 border border-gray-200 rounded-xl bg-white text-xs sm:text-sm outline-none text-right tabular-nums focus:border-emerald-500 shadow-2xs"
+            />
+            <input
+              value={unit}
+              onChange={(e) => setUnit(e.target.value)}
+              placeholder="ĐVT"
+              className="w-16 sm:w-20 px-2 sm:px-3 py-2.5 sm:py-2 border border-gray-200 rounded-xl bg-white text-xs sm:text-sm outline-none focus:border-emerald-500 text-center shadow-2xs"
+            />
+            <button
+              type="submit"
+              disabled={busy}
+              className="flex items-center justify-center gap-1.5 px-3.5 sm:px-4 py-2.5 sm:py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs sm:text-sm disabled:opacity-60 shrink-0 min-h-[42px] sm:min-h-[38px] shadow-2xs cursor-pointer"
+            >
+              <Boxes size={15} /> <span>{busy ? '...' : 'Thêm lô'}</span>
+            </button>
+          </div>
         </form>
       )}
       {err && <p className="text-xs text-red-600 mt-1.5 flex items-center gap-1"><AlertCircle size={12} />{err}</p>}
@@ -650,15 +762,29 @@ function LotIssueBox({ line, documentId, onDone }: { line: DocLineProgress; docu
       )}
       <p className="text-xs text-gray-500 mb-2">Đã phân bổ: <b>{allocated.toLocaleString('vi-VN')}</b> / {line.required.toLocaleString('vi-VN')}</p>
       {line.status !== 'COMPLETED' && (
-        <form onSubmit={submit} className="flex gap-2 flex-wrap">
-          <input value={lotCode} onChange={(e) => setLotCode(e.target.value)} placeholder="Mã lô/cuộn nguồn *"
-            className="flex-1 min-w-[160px] px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500 font-mono" />
-          <input value={quantity} onChange={(e) => setQuantity(e.target.value)} placeholder="Số lượng *" inputMode="decimal"
-            className="w-28 px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none text-right tabular-nums focus:border-emerald-500" />
-          <button type="submit" disabled={busy}
-            className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60">
-            <Boxes size={15} /> {busy ? '...' : 'Phân bổ lô'}
-          </button>
+        <form onSubmit={submit} className="flex flex-col sm:flex-row gap-2">
+          <input
+            value={lotCode}
+            onChange={(e) => setLotCode(e.target.value)}
+            placeholder="Mã lô/cuộn nguồn *"
+            className="flex-1 min-w-0 px-3 py-2.5 sm:py-2 border border-gray-200 rounded-xl bg-white text-xs sm:text-sm outline-none focus:border-emerald-500 font-mono shadow-2xs"
+          />
+          <div className="flex items-center gap-2">
+            <input
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+              placeholder="Số lượng *"
+              inputMode="decimal"
+              className="flex-1 sm:w-28 px-3 py-2.5 sm:py-2 border border-gray-200 rounded-xl bg-white text-xs sm:text-sm outline-none text-right tabular-nums focus:border-emerald-500 shadow-2xs"
+            />
+            <button
+              type="submit"
+              disabled={busy}
+              className="flex items-center justify-center gap-1.5 px-3.5 sm:px-4 py-2.5 sm:py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs sm:text-sm disabled:opacity-60 shrink-0 min-h-[42px] sm:min-h-[38px] shadow-2xs cursor-pointer"
+            >
+              <Boxes size={15} /> <span>{busy ? '...' : 'Phân bổ lô'}</span>
+            </button>
+          </div>
         </form>
       )}
       {err && <p className="text-xs text-red-600 mt-1.5 flex items-center gap-1"><AlertCircle size={12} />{err}</p>}
@@ -700,18 +826,31 @@ function QuantityBox({ line, onDone }: { line: DocLineProgress; onDone: () => Pr
 
   return (
     <form onSubmit={submit} className="space-y-2">
-      <div className="flex gap-2 flex-wrap items-center">
-        <label className="text-xs text-gray-500 flex items-center gap-1"><Hash size={13} /> Số thực nhận:</label>
-        <input value={actual} onChange={(e) => setActual(e.target.value)} inputMode="decimal"
-          className="w-32 px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none text-right tabular-nums focus:border-emerald-500" />
-        <button type="submit" disabled={busy}
-          className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60">
-          <PackageCheck size={15} /> {busy ? '...' : 'Xác nhận số lượng'}
-        </button>
+      <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+        <label className="text-xs text-gray-500 flex items-center gap-1 shrink-0"><Hash size={13} /> Số thực nhận:</label>
+        <div className="flex items-center gap-2 flex-1 sm:flex-none">
+          <input
+            value={actual}
+            onChange={(e) => setActual(e.target.value)}
+            inputMode="decimal"
+            className="flex-1 sm:w-32 px-3 py-2.5 sm:py-2 border border-gray-200 rounded-xl bg-white text-xs sm:text-sm outline-none text-right tabular-nums focus:border-emerald-500 shadow-2xs"
+          />
+          <button
+            type="submit"
+            disabled={busy}
+            className="flex items-center justify-center gap-1.5 px-4 py-2.5 sm:py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs sm:text-sm disabled:opacity-60 min-h-[42px] sm:min-h-[38px] shadow-2xs cursor-pointer"
+          >
+            <PackageCheck size={15} /> <span>{busy ? '...' : 'Xác nhận số lượng'}</span>
+          </button>
+        </div>
       </div>
       {needReason && (
-        <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Lý do chênh lệch so với chứng từ *"
-          className="w-full px-3 py-2 border border-amber-300 bg-amber-50/50 rounded-xl text-sm outline-none focus:border-amber-500" />
+        <input
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="Lý do chênh lệch so với chứng từ *"
+          className="w-full px-3 py-2.5 sm:py-2 border border-amber-300 bg-amber-50/50 rounded-xl text-xs sm:text-sm outline-none focus:border-amber-500 shadow-2xs"
+        />
       )}
       {err && <p className="text-xs text-red-600 flex items-center gap-1"><AlertCircle size={12} />{err}</p>}
     </form>

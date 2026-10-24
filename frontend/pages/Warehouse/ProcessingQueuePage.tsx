@@ -193,32 +193,34 @@ function ProcessingQueueList({ deptKey, documentId }: { deptKey: DeptKey; docume
             value={query}
             onChange={(event) => { setQuery(event.target.value); setPage(1); }}
             placeholder="Tìm mã phiếu, đối tác, kho..."
-            className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-xl bg-white text-sm focus:ring-2 focus:ring-emerald-200 outline-none shadow-sm"
+            className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-xl bg-white text-sm focus:ring-2 focus:ring-emerald-200 outline-none shadow-xs"
           />
         </div>
-        <select
-          aria-label="Lọc loại phiếu"
-          value={typeFilter}
-          onChange={(event) => { setTypeFilter(event.target.value); setPage(1); }}
-          className="lg:w-44 px-3 py-2.5 border border-gray-200 rounded-xl bg-white text-sm text-gray-700 outline-none shadow-sm focus:border-emerald-400 cursor-pointer"
-        >
-          <option value="ALL">Tất cả phiếu</option>
-          {TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
-        </select>
-        <select
-          aria-label="Lọc kho"
-          value={warehouseFilter}
-          onChange={(event) => { setWarehouseFilter(event.target.value); setPage(1); }}
-          className="lg:w-56 px-3 py-2.5 border border-gray-200 rounded-xl bg-white text-sm text-gray-700 outline-none shadow-sm focus:border-emerald-400 cursor-pointer"
-        >
-          <option value="ALL">Tất cả kho</option>
-          {warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
-        </select>
+        <div className="grid grid-cols-2 lg:flex lg:items-center gap-2">
+          <select
+            aria-label="Lọc loại phiếu"
+            value={typeFilter}
+            onChange={(event) => { setTypeFilter(event.target.value); setPage(1); }}
+            className="w-full lg:w-44 px-3 py-2.5 border border-gray-200 rounded-xl bg-white text-xs sm:text-sm text-gray-700 outline-none shadow-xs focus:border-emerald-400 cursor-pointer"
+          >
+            <option value="ALL">Tất cả phiếu</option>
+            {TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
+          </select>
+          <select
+            aria-label="Lọc kho"
+            value={warehouseFilter}
+            onChange={(event) => { setWarehouseFilter(event.target.value); setPage(1); }}
+            className="w-full lg:w-56 px-3 py-2.5 border border-gray-200 rounded-xl bg-white text-xs sm:text-sm text-gray-700 outline-none shadow-xs focus:border-emerald-400 cursor-pointer truncate"
+          >
+            <option value="ALL">Tất cả kho</option>
+            {warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
+          </select>
+        </div>
         {(typeFilter !== 'ALL' || warehouseFilter !== 'ALL' || query) && (
           <button
             type="button"
             onClick={() => { setQuery(''); setTypeFilter('ALL'); setWarehouseFilter('ALL'); setPage(1); }}
-            className="px-3 py-2.5 text-sm text-gray-500 hover:text-emerald-700 font-medium whitespace-nowrap cursor-pointer"
+            className="px-3 py-2 text-xs sm:text-sm text-gray-500 hover:text-emerald-700 font-medium whitespace-nowrap cursor-pointer text-center"
           >
             Xóa lọc
           </button>
@@ -232,91 +234,173 @@ function ProcessingQueueList({ deptKey, documentId }: { deptKey: DeptKey; docume
       ) : pending.length === 0 ? (
         <Card className="py-16 text-center text-gray-400"><CheckCircle2 size={36} className="mx-auto mb-3 opacity-30" /><p className="font-medium">Không có phiếu nào đang chờ xử lý</p><p className="text-sm mt-1">Phiếu mới tạo sẽ xuất hiện tại đây.</p></Card>
       ) : (
-        <Card className="overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="wh-table w-full text-sm">
-              <thead className="bg-gray-50 border-b border-gray-200">
-                <tr>
-                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Phiếu</th>
-                  <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">Loại</th>
-                  <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">Kho / Đối tác</th>
-                  <th className="text-center py-2 px-3 text-xs font-bold text-gray-500 uppercase">Tiến độ</th>
-                  <th className="text-center py-2 px-3 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
-                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Thao tác</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {visiblePending.map((doc) => {
-                  const meta = typeMeta(doc.docType);
-                  const progress = summary[doc.id];
-                  const ready = progress && progress.total > 0 && progress.done >= progress.total;
-                  return (
-                    <tr
-                      key={doc.id}
-                      onClick={() => navigateToDoc(doc)}
-                      className="hover:bg-emerald-50/50 cursor-pointer transition-colors group"
-                      title="Bấm để chuyển đến trang nghiệp vụ và mở chi tiết phiếu"
-                    >
-                      <td className="py-3 px-4">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigateToDoc(doc);
-                          }}
-                          className="font-bold text-gray-800 group-hover:text-emerald-700 font-mono text-[13px] hover:underline text-left block cursor-pointer"
-                        >
-                          {doc.code || doc.id.slice(0, 8)}
-                        </button>
-                        <p className="text-xs text-gray-400 mt-0.5">
-                          {doc.createdAt ? new Date(doc.createdAt).toLocaleString('vi-VN') : '—'}
-                        </p>
-                      </td>
-                      <td className="py-3 px-3 text-xs text-gray-600">
-                        <span className="inline-flex items-center gap-1 font-medium">
-                          <ClipboardList size={13} className="text-emerald-600" />
-                          {meta.label}
+        <div>
+          {/* Giao diện Dạng Thẻ tối ưu riêng cho Điện thoại & Màn hình di động */}
+          <div className="sm:hidden space-y-3">
+            {visiblePending.map((doc) => {
+              const meta = typeMeta(doc.docType);
+              const progress = summary[doc.id];
+              const ready = progress && progress.total > 0 && progress.done >= progress.total;
+              const percent = progress && progress.total > 0 ? Math.min(100, Math.round((progress.done / progress.total) * 100)) : 0;
+              return (
+                <div
+                  key={doc.id}
+                  onClick={() => navigateToDoc(doc)}
+                  className="bg-white rounded-2xl border border-gray-200/90 p-4 shadow-xs active:bg-emerald-50/30 transition-all cursor-pointer space-y-3"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="font-bold text-gray-900 font-mono text-base">{doc.code || doc.id.slice(0, 8)}</p>
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        {doc.createdAt ? new Date(doc.createdAt).toLocaleString('vi-VN') : '—'}
+                      </p>
+                    </div>
+                    <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                      ready ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
+                    }`}>
+                      {ready ? statusLabel('READY') : statusLabel(doc.status)}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2 text-xs text-gray-600 flex-wrap">
+                    <span className="inline-flex items-center gap-1 font-semibold px-2 py-0.5 bg-gray-100 rounded-lg text-gray-700">
+                      <ClipboardList size={12} className="text-emerald-600" />
+                      {meta.label}
+                    </span>
+                    <span className="text-gray-400">•</span>
+                    <span className="truncate font-medium">{doc.warehouseName || doc.sourceWarehouseName || doc.warehouseId || '—'}</span>
+                    {doc.partnerName && (
+                      <>
+                        <span className="text-gray-400">•</span>
+                        <span className="text-gray-500 truncate">{doc.partnerName}</span>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Tiến độ xử lý */}
+                  <div className="space-y-1.5 pt-1 border-t border-gray-100">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-gray-500 font-medium">Tiến độ xác nhận:</span>
+                      {progress ? (
+                        <span className={`font-bold font-mono ${ready ? 'text-emerald-700' : 'text-amber-700'}`}>
+                          {progress.done}/{progress.total} dòng
                         </span>
-                      </td>
-                      <td className="py-3 px-3 text-xs text-gray-600">
-                        <p className="font-medium text-gray-700">{doc.warehouseName || doc.sourceWarehouseName || doc.warehouseId || '—'}</p>
-                        <p className="text-gray-400">{doc.partnerName || (doc.destWarehouseName ? `→ ${doc.destWarehouseName}` : '—')}</p>
-                      </td>
-                      <td className="py-3 px-3 text-center text-xs">
-                        {progress ? (
-                          <span className={ready ? 'font-bold text-emerald-700' : 'text-amber-700'}>
-                            {progress.done}/{progress.total} dòng
-                          </span>
-                        ) : (
-                          <span className="text-gray-400">Chưa xử lý</span>
-                        )}
-                      </td>
-                      <td className="py-3 px-3 text-center">
-                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
-                          ready ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
-                        }`}>
-                          {ready ? statusLabel('READY') : statusLabel(doc.status)}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigateToDoc(doc);
-                          }}
-                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer"
-                        >
-                          {ready ? 'Xem chi tiết' : progress && progress.done > 0 ? 'Tiếp tục xử lý' : 'Xử lý hàng hóa'}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                      ) : (
+                        <span className="text-gray-400">Chưa xử lý</span>
+                      )}
+                    </div>
+                    {progress && progress.total > 0 && (
+                      <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-300 ${ready ? 'bg-emerald-500' : 'bg-amber-500'}`}
+                          style={{ width: `${percent}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigateToDoc(doc);
+                    }}
+                    className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs font-bold transition-colors shadow-2xs cursor-pointer flex items-center justify-center gap-1.5 min-h-[42px]"
+                  >
+                    <span>{ready ? 'Xem chi tiết phiếu' : progress && progress.done > 0 ? 'Tiếp tục xử lý hàng' : 'Bắt đầu xử lý hàng'}</span>
+                  </button>
+                </div>
+              );
+            })}
           </div>
-        </Card>
+
+          {/* Giao diện Bảng hiển thị trên Máy tính bảng & Màn hình lớn */}
+          <Card className="hidden sm:block overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="wh-table w-full text-sm">
+                <thead className="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Phiếu</th>
+                    <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">Loại</th>
+                    <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">Kho / Đối tác</th>
+                    <th className="text-center py-2 px-3 text-xs font-bold text-gray-500 uppercase">Tiến độ</th>
+                    <th className="text-center py-2 px-3 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
+                    <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {visiblePending.map((doc) => {
+                    const meta = typeMeta(doc.docType);
+                    const progress = summary[doc.id];
+                    const ready = progress && progress.total > 0 && progress.done >= progress.total;
+                    return (
+                      <tr
+                        key={doc.id}
+                        onClick={() => navigateToDoc(doc)}
+                        className="hover:bg-emerald-50/50 cursor-pointer transition-colors group"
+                        title="Bấm để chuyển đến trang nghiệp vụ và mở chi tiết phiếu"
+                      >
+                        <td className="py-3 px-4">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigateToDoc(doc);
+                            }}
+                            className="font-bold text-gray-800 group-hover:text-emerald-700 font-mono text-[13px] hover:underline text-left block cursor-pointer"
+                          >
+                            {doc.code || doc.id.slice(0, 8)}
+                          </button>
+                          <p className="text-xs text-gray-400 mt-0.5">
+                            {doc.createdAt ? new Date(doc.createdAt).toLocaleString('vi-VN') : '—'}
+                          </p>
+                        </td>
+                        <td className="py-3 px-3 text-xs text-gray-600">
+                          <span className="inline-flex items-center gap-1 font-medium">
+                            <ClipboardList size={13} className="text-emerald-600" />
+                            {meta.label}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 text-xs text-gray-600">
+                          <p className="font-medium text-gray-700">{doc.warehouseName || doc.sourceWarehouseName || doc.warehouseId || '—'}</p>
+                          <p className="text-gray-400">{doc.partnerName || (doc.destWarehouseName ? `→ ${doc.destWarehouseName}` : '—')}</p>
+                        </td>
+                        <td className="py-3 px-3 text-center text-xs">
+                          {progress ? (
+                            <span className={ready ? 'font-bold text-emerald-700' : 'text-amber-700'}>
+                              {progress.done}/{progress.total} dòng
+                            </span>
+                          ) : (
+                            <span className="text-gray-400">Chưa xử lý</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                            ready ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
+                          }`}>
+                            {ready ? statusLabel('READY') : statusLabel(doc.status)}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigateToDoc(doc);
+                            }}
+                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                          >
+                            {ready ? 'Xem chi tiết' : progress && progress.done > 0 ? 'Tiếp tục xử lý' : 'Xử lý hàng hóa'}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
       )}
       {!loading && pending.length > 0 && (
         <Pagination

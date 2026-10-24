@@ -144,44 +144,44 @@ export function DocDetailModal({
     <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-stretch justify-center p-0 overflow-y-auto">
       <div className="bg-white shadow-2xl w-full h-[100vh] h-[100dvh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
-        <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-4 border-b border-gray-100 bg-gray-50/70">
-          <div className="flex items-center gap-3">
-            <span className="px-2.5 py-1 rounded-lg text-xs font-black tracking-wider uppercase bg-emerald-100 text-emerald-800">
+        <div className="flex items-center justify-between gap-2 px-3.5 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gray-50/70">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+            <span className="px-2 sm:px-2.5 py-1 rounded-lg text-xs font-black tracking-wider uppercase bg-emerald-100 text-emerald-800 shrink-0">
               {meta.code}
             </span>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-bold text-gray-900 text-base">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                <h3 className="font-bold text-gray-900 text-sm sm:text-base truncate">
                   {meta.title} {doc?.code ? `— ${doc.code}` : ''}
                 </h3>
                 {doc && (
-                  <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border ${st.cls}`}>
+                  <span className={`px-2 py-0.5 rounded-full text-[11px] sm:text-xs font-bold border shrink-0 ${st.cls}`}>
                     {st.label}
                   </span>
                 )}
               </div>
-              <p className="text-xs text-gray-400">Mã định danh: {docId}</p>
+              <p className="text-[11px] text-gray-400 font-mono truncate">ID: {docId}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {doc && (
               <>
                 <button
                   type="button"
                   onClick={() => setShowLabelModal(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-300 hover:border-amber-500 hover:text-amber-700 text-gray-700 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                  className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 bg-white border border-gray-300 hover:border-amber-500 hover:text-amber-700 text-gray-700 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer min-h-[36px]"
                   title="In tem nhãn nhiệt mã vạch / QR cho sản phẩm & serial"
                 >
-                  <Tag size={15} />
+                  <Tag size={14} />
                   <span className="hidden sm:inline">In tem nhãn</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowPrintModal(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-300 hover:border-emerald-500 hover:text-emerald-700 text-gray-700 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                  className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 bg-white border border-gray-300 hover:border-emerald-500 hover:text-emerald-700 text-gray-700 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer min-h-[36px]"
                   title="In chứng từ theo mẫu chuẩn Bộ Tài Chính"
                 >
-                  <Printer size={15} />
+                  <Printer size={14} />
                   <span className="hidden sm:inline">In phiếu</span>
                 </button>
               </>
@@ -193,7 +193,7 @@ export function DocDetailModal({
                   onClose();
                   navigate(getDeptModulePath(deptKey, 'wh_processing'));
                 }}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-300 hover:bg-amber-100 text-amber-900 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                className="flex items-center gap-1 px-2.5 sm:px-3 py-1.5 bg-amber-50 border border-amber-300 hover:bg-amber-100 text-amber-900 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer min-h-[36px]"
                 title="Quay lại danh sách Xử lý phiếu"
               >
                 <ArrowLeft size={14} />
@@ -203,7 +203,7 @@ export function DocDetailModal({
             <button
               type="button"
               onClick={onClose}
-              className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-xl transition-colors cursor-pointer"
+              className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-xl transition-colors cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center"
             >
               <X size={18} />
             </button>
@@ -211,7 +211,7 @@ export function DocDetailModal({
         </div>
 
         {/* Body */}
-        <div className="p-6 overflow-y-auto space-y-6 flex-1 text-sm">
+        <div className="p-3.5 sm:p-6 overflow-y-auto space-y-4 sm:space-y-6 flex-1 text-sm">
           {loading ? (
             <div className="py-16 text-center text-gray-400 flex flex-col items-center gap-3">
               <RefreshCw size={24} className="animate-spin text-emerald-600" />
@@ -514,39 +514,39 @@ export function DocDetailModal({
         </div>
 
         {/* Footer Actions */}
-        <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2 px-4 sm:px-6 py-4 border-t border-gray-100 bg-gray-50/70">
-          <div>
+        <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-3 px-3.5 sm:px-6 py-3 sm:py-4 border-t border-gray-100 bg-gray-50/70">
+          <div className="w-full sm:w-auto">
             {!readOnly && doc?.status === 'DRAFT' && (
               <button
                 type="button"
                 disabled={actionLoading}
                 onClick={handleCancelDoc}
-                className="flex items-center gap-1.5 px-4 py-2 border border-red-300 text-red-600 hover:bg-red-50 rounded-xl text-xs font-bold disabled:opacity-50 transition-colors"
+                className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-4 py-2 border border-red-300 text-red-600 hover:bg-red-50 active:bg-red-100 rounded-xl text-xs font-bold disabled:opacity-50 transition-colors cursor-pointer min-h-[38px]"
               >
                 <Ban size={14} />
                 Hủy phiếu nháp
               </button>
             )}
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-2 w-full sm:w-auto">
             {doc && (
               <>
                 <button
                   type="button"
                   onClick={() => setShowLabelModal(true)}
-                  className="flex items-center gap-1.5 px-4 py-2 border border-gray-300 hover:border-amber-500 hover:bg-amber-50 text-gray-700 hover:text-amber-800 rounded-xl text-xs font-bold transition-colors shadow-sm cursor-pointer"
+                  className="flex items-center gap-1.5 px-3 py-2 border border-gray-300 hover:border-amber-500 hover:bg-amber-50 text-gray-700 hover:text-amber-800 rounded-xl text-xs font-bold transition-colors shadow-2xs cursor-pointer min-h-[38px]"
                   title="In tem nhãn nhiệt mã vạch / QR cho sản phẩm & serial"
                 >
                   <Tag size={14} />
-                  In tem nhãn
+                  <span>In tem nhãn</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowPrintModal(true)}
-                  className="flex items-center gap-1.5 px-4 py-2 border border-gray-300 hover:border-emerald-500 hover:bg-emerald-50 text-gray-700 hover:text-emerald-800 rounded-xl text-xs font-bold transition-colors shadow-sm cursor-pointer"
+                  className="flex items-center gap-1.5 px-3 py-2 border border-gray-300 hover:border-emerald-500 hover:bg-emerald-50 text-gray-700 hover:text-emerald-800 rounded-xl text-xs font-bold transition-colors shadow-2xs cursor-pointer min-h-[38px]"
                 >
                   <Printer size={14} />
-                  In phiếu
+                  <span>In phiếu</span>
                 </button>
               </>
             )}
@@ -557,16 +557,16 @@ export function DocDetailModal({
                   onClose();
                   navigate(getDeptModulePath(deptKey, 'wh_processing'));
                 }}
-                className="flex items-center gap-1.5 px-3.5 py-2 border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                className="flex items-center gap-1.5 px-3.5 py-2 border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 rounded-xl text-xs font-bold transition-colors shadow-2xs cursor-pointer min-h-[38px]"
               >
                 <ArrowLeft size={14} />
-                Quay lại Xử lý phiếu
+                <span>Quay lại Xử lý phiếu</span>
               </button>
             )}
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-200 rounded-xl transition-colors"
+              className="px-3.5 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-200 active:bg-gray-300 rounded-xl transition-colors min-h-[38px] cursor-pointer"
             >
               Đóng
             </button>
@@ -574,11 +574,11 @@ export function DocDetailModal({
               <button
                 type="button"
                 onClick={() => setShowSerialModal(true)}
-                className="flex items-center gap-1.5 px-4 py-2 border border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-xl text-xs font-bold transition-colors cursor-pointer shadow-xs"
+                className="flex items-center gap-1.5 px-4 py-2 border border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-xl text-xs font-bold transition-colors cursor-pointer shadow-xs min-h-[38px]"
                 title="Mở giao diện nhập và quét mã Serial / Lô"
               >
                 <ScanLine size={14} />
-                Quét Serial / Lô
+                <span>Quét Serial / Lô</span>
               </button>
             )}
             {!readOnly && doc?.status === 'DRAFT' && onEdit && (
@@ -586,10 +586,10 @@ export function DocDetailModal({
                 type="button"
                 disabled={actionLoading}
                 onClick={() => onEdit(doc.id)}
-                className="flex items-center gap-1.5 px-5 py-2 border border-blue-300 text-blue-700 hover:bg-blue-50 rounded-xl text-xs font-bold disabled:opacity-50 transition-colors"
+                className="flex items-center gap-1.5 px-4 py-2 border border-blue-300 text-blue-700 hover:bg-blue-50 rounded-xl text-xs font-bold disabled:opacity-50 transition-colors min-h-[38px] cursor-pointer"
               >
                 <Pencil size={14} />
-                Sửa
+                <span>Sửa</span>
               </button>
             )}
             {!readOnly && doc?.status === 'DRAFT' && (
@@ -597,14 +597,14 @@ export function DocDetailModal({
                 type="button"
                 disabled={actionLoading}
                 onClick={handleAdvanceDoc}
-                className="flex items-center gap-1.5 px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold disabled:opacity-50 transition-colors shadow-sm"
+                className="flex items-center gap-1.5 px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold disabled:opacity-50 transition-colors shadow-sm min-h-[38px] cursor-pointer"
               >
                 {actionLoading ? (
                   <RefreshCw size={14} className="animate-spin" />
                 ) : (
                   <CheckCircle2 size={14} />
                 )}
-                {meta.actionDone}
+                <span>{meta.actionDone || 'Hoàn tất'}</span>
               </button>
             )}
           </div>

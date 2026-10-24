@@ -393,12 +393,12 @@ function CountDetailModal({
     l.actualQty == null || l.expectedQty == null ? null : Number(l.actualQty) - Number(l.expectedQty);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col" style={{ maxHeight: '94vh' }}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-2 sm:p-4">
+      <div className="bg-white rounded-2xl sm:rounded-3xl shadow-2xl w-full max-w-4xl flex flex-col max-h-[96vh] sm:max-h-[94vh] overflow-hidden">
+        <div className="flex items-center justify-between px-3.5 sm:px-6 py-3 sm:py-4 border-b border-gray-100 flex-shrink-0">
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="font-bold text-gray-900 font-mono text-base">{count.code || count.id.slice(0, 8)}</h3>
+              <h3 className="font-bold text-gray-900 font-mono text-sm sm:text-base">{count.code || count.id.slice(0, 8)}</h3>
               <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
                 open ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
               }`}>
@@ -417,20 +417,20 @@ function CountDetailModal({
                   onClose();
                   navigate(getDeptModulePath(deptKey, 'wh_processing'));
                 }}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-300 hover:bg-amber-100 text-amber-900 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-300 hover:bg-amber-100 text-amber-900 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer min-h-[36px]"
                 title="Quay lại danh sách Xử lý phiếu"
               >
                 <ArrowLeft size={14} />
                 <span className="hidden sm:inline">Quay lại</span> Xử lý phiếu
               </button>
             )}
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 cursor-pointer p-1 rounded-lg">
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 cursor-pointer p-1.5 rounded-lg min-h-[36px] min-w-[36px] flex items-center justify-center">
               <X size={20} />
             </button>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto overflow-x-auto px-6 py-4 space-y-3">
+        <div className="flex-1 overflow-y-auto overflow-x-auto px-3.5 sm:px-6 py-3 sm:py-4 space-y-3">
           {err && (
             <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm">
               <AlertCircle size={15} />{err}
@@ -440,9 +440,9 @@ function CountDetailModal({
           {/* Thanh công cụ Quét kiểm kê thực địa liên tục */}
           {open && (
             <div className="p-3 bg-gradient-to-r from-emerald-50/70 via-blue-50/50 to-purple-50/40 border border-emerald-200/70 rounded-2xl shadow-2xs space-y-2">
-              <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
                 <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-bold shadow-xs">
+                  <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-bold shadow-xs shrink-0">
                     <Scan size={18} />
                   </div>
                   <div>
@@ -459,12 +459,12 @@ function CountDetailModal({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 w-full sm:w-auto justify-end sm:justify-start">
                   <div className="flex items-center bg-white border border-gray-200 rounded-xl p-0.5 shadow-2xs">
                     <button
                       type="button"
                       onClick={() => setScanMode('add')}
-                      className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer min-h-[34px] ${
                         scanMode === 'add'
                           ? 'bg-emerald-600 text-white shadow-xs'
                           : 'text-gray-600 hover:bg-gray-100'
@@ -477,7 +477,7 @@ function CountDetailModal({
                     <button
                       type="button"
                       onClick={() => setScanMode('subtract')}
-                      className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer min-h-[34px] ${
                         scanMode === 'subtract'
                           ? 'bg-amber-600 text-white shadow-xs'
                           : 'text-gray-600 hover:bg-gray-100'
@@ -492,10 +492,10 @@ function CountDetailModal({
                   <button
                     type="button"
                     onClick={() => setShowCameraScanner(true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer"
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer min-h-[36px]"
                   >
                     <Camera size={14} />
-                    Mở Camera
+                    <span>Mở Camera</span>
                   </button>
                 </div>
               </div>
