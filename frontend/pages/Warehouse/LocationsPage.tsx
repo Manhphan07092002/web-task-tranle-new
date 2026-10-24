@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { MapPin, PlusCircle, RefreshCw, AlertCircle, X, Pencil, Trash2, Copy, Warehouse as WarehouseIcon } from 'lucide-react';
+import { MapPin, PlusCircle, RefreshCw, AlertCircle, X, Pencil, Trash2, Copy, Warehouse as WarehouseIcon, Tag } from 'lucide-react';
 import { Card } from '../../components/UI';
 import { Pagination } from '../../components/Pagination';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
+import { StockLabelPrintModal } from './StockDocs/StockLabelPrintModal';
 import { getStockLocations, saveStockLocation, type StockLocation } from '../../services/locationService';
 import { getWarehouses, createWarehouse, updateWarehouse, deleteWarehouse, type Warehouse } from '../../services/stockService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
@@ -29,6 +30,7 @@ export default function LocationsPage({ deptKey }: { deptKey: DeptKey }) {
   const [editing, setEditing] = useState<StockLocation | null | undefined>(undefined);
   const [editingWh, setEditingWh] = useState<Warehouse | null | undefined>(undefined);
   const [deletingWh, setDeletingWh] = useState<Warehouse | null>(null);
+  const [printLocations, setPrintLocations] = useState<StockLocation[] | null>(null);
 
   const fetchAll = async () => {
     setLoading(true); setError(null);
@@ -179,7 +181,20 @@ export default function LocationsPage({ deptKey }: { deptKey: DeptKey }) {
 
         <Card className="overflow-hidden">
           {selected && (
-            <div className="px-5 py-3 bg-gray-50 border-b border-gray-100 font-bold text-gray-700 text-sm">{selected.name}</div>
+            <div className="px-5 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
+              <span className="font-bold text-gray-700 text-sm">Vị trí trong kho: {selected.name}</span>
+              {rows.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setPrintLocations(rows)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 hover:border-amber-500 hover:text-amber-700 text-gray-600 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                  title="In tem mã QR/Barcode kệ kho cho tất cả vị trí của kho này"
+                >
+                  <Tag size={14} className="text-amber-600" />
+                  In toàn bộ tem kệ ({rows.length})
+                </button>
+              )}
+            </div>
           )}
             <div className="overflow-x-auto">
               <table className="wh-table w-full text-sm">
@@ -189,7 +204,7 @@ export default function LocationsPage({ deptKey }: { deptKey: DeptKey }) {
                     <th className="py-1.5 px-4 hidden lg:table-cell">Loại</th>
                     <th className="py-1.5 px-4">Mục đích</th>
                     <th className="py-1.5 px-4">Trạng thái</th>
-                    <th className="py-1.5 px-5 text-right">Sửa</th>
+                    <th className="py-1.5 px-5 text-right">Thao tác</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
@@ -202,8 +217,21 @@ export default function LocationsPage({ deptKey }: { deptKey: DeptKey }) {
                       <td className="py-1.5 px-4 text-xs text-gray-500 hidden lg:table-cell">{l.type}</td>
                       <td className="py-1.5 px-4"><span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600">{l.purpose}</span></td>
                       <td className="py-1.5 px-4 text-xs">{l.isActive ? <span className="text-emerald-600 font-bold">Hoạt động</span> : <span className="text-gray-400">Ngưng</span>}</td>
-                      <td className="py-1.5 px-5 text-right">
-                        <button onClick={() => setEditing(l)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg" title="Sửa">
+                      <td className="py-1.5 px-5 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => setPrintLocations([l])}
+                          className="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors mr-1 cursor-pointer"
+                          title="In tem QR / Barcode kệ này"
+                        >
+                          <Tag size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditing(l)}
+                          className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                          title="Sửa"
+                        >
                           <Pencil size={14} />
                         </button>
                       </td>
@@ -240,6 +268,18 @@ export default function LocationsPage({ deptKey }: { deptKey: DeptKey }) {
               setError(e.message || 'Lưu kho thất bại');
             }
           }}
+        />
+      )}
+
+      {printLocations && (
+        <StockLabelPrintModal
+          locationItems={printLocations.map((l) => ({
+            id: l.id,
+            code: l.code,
+            name: l.name,
+            warehouseName: warehouses.find((w) => w.id === l.warehouseId)?.name || selected?.name || 'Kho',
+          }))}
+          onClose={() => setPrintLocations(null)}
         />
       )}
 

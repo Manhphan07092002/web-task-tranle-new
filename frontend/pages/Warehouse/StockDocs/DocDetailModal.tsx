@@ -4,9 +4,10 @@ import { apiFetch } from '../../../services/api';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useNavigate } from 'react-router-dom';
-import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, FileText, Calendar, Building2, User, Printer } from 'lucide-react';
+import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, FileText, Calendar, Building2, User, Printer, Tag } from 'lucide-react';
 import { Card } from '../../../components/UI';
 import { StockDocPrintModal } from './StockDocPrintModal';
+import { StockLabelPrintModal } from './StockLabelPrintModal';
 import { FeedbackDialog } from '../../../components/FeedbackDialog';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
@@ -46,6 +47,7 @@ export function DocDetailModal({
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [showPrintModal, setShowPrintModal] = useState(false);
+  const [showLabelModal, setShowLabelModal] = useState(false);
   const [notice, setNotice] = useState<{ title: string; message: string; docId?: string } | null>(null);
   const navigate = useNavigate();
   const closeRef = React.useRef(onClose);
@@ -159,15 +161,26 @@ export function DocDetailModal({
           </div>
           <div className="flex items-center gap-2">
             {doc && (
-              <button
-                type="button"
-                onClick={() => setShowPrintModal(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-300 hover:border-emerald-500 hover:text-emerald-700 text-gray-700 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
-                title="In chứng từ theo mẫu chuẩn Bộ Tài Chính"
-              >
-                <Printer size={15} />
-                <span className="hidden sm:inline">In phiếu</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowLabelModal(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-300 hover:border-amber-500 hover:text-amber-700 text-gray-700 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                  title="In tem nhãn nhiệt mã vạch / QR cho sản phẩm & serial"
+                >
+                  <Tag size={15} />
+                  <span className="hidden sm:inline">In tem nhãn</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowPrintModal(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-300 hover:border-emerald-500 hover:text-emerald-700 text-gray-700 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                  title="In chứng từ theo mẫu chuẩn Bộ Tài Chính"
+                >
+                  <Printer size={15} />
+                  <span className="hidden sm:inline">In phiếu</span>
+                </button>
+              </>
             )}
             <button
               type="button"
@@ -499,14 +512,25 @@ export function DocDetailModal({
           </div>
           <div className="flex items-center gap-3">
             {doc && (
-              <button
-                type="button"
-                onClick={() => setShowPrintModal(true)}
-                className="flex items-center gap-1.5 px-4 py-2 border border-gray-300 hover:border-emerald-500 hover:bg-emerald-50 text-gray-700 hover:text-emerald-800 rounded-xl text-xs font-bold transition-colors shadow-sm cursor-pointer"
-              >
-                <Printer size={14} />
-                In phiếu
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowLabelModal(true)}
+                  className="flex items-center gap-1.5 px-4 py-2 border border-gray-300 hover:border-amber-500 hover:bg-amber-50 text-gray-700 hover:text-amber-800 rounded-xl text-xs font-bold transition-colors shadow-sm cursor-pointer"
+                  title="In tem nhãn nhiệt mã vạch / QR cho sản phẩm & serial"
+                >
+                  <Tag size={14} />
+                  In tem nhãn
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowPrintModal(true)}
+                  className="flex items-center gap-1.5 px-4 py-2 border border-gray-300 hover:border-emerald-500 hover:bg-emerald-50 text-gray-700 hover:text-emerald-800 rounded-xl text-xs font-bold transition-colors shadow-sm cursor-pointer"
+                >
+                  <Printer size={14} />
+                  In phiếu
+                </button>
+              </>
             )}
             <button
               type="button"
@@ -559,6 +583,12 @@ export function DocDetailModal({
           doc={doc}
           warehouses={warehouses}
           onClose={() => setShowPrintModal(false)}
+        />
+      )}
+      {showLabelModal && doc && (
+        <StockLabelPrintModal
+          doc={doc}
+          onClose={() => setShowLabelModal(false)}
         />
       )}
     </div>

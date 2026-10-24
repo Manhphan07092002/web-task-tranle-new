@@ -4,11 +4,12 @@ import { apiFetch } from '../../services/api';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useNavigate } from 'react-router-dom';
-import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, Copy, Trash2, ListChecks, FileText, Calendar, Building2, User, Printer } from 'lucide-react';
+import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, Copy, Trash2, ListChecks, FileText, Calendar, Building2, User, Printer, Tag } from 'lucide-react';
 import { Card } from '../../components/UI';
 import { Pagination } from '../../components/Pagination';
 import { FeedbackDialog } from '../../components/FeedbackDialog';
 import { StockDocPrintModal } from './StockDocs/StockDocPrintModal';
+import { StockLabelPrintModal } from './StockDocs/StockLabelPrintModal';
 import {
   getStockDocuments, getWarehouses, getAvailableInventory, getInventoryDetails, createReceipt, createIssue, createReturn, createTransfer,
   advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, deleteStockDocument, countLinesMissingSerials, getProcessingSummary,
@@ -43,6 +44,8 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
   const [editingId, setEditingId] = useState<string | null>(null);
   const [printDoc, setPrintDoc] = useState<(StockDocument & { lines?: StockDocDetailLine[] }) | null>(null);
   const [loadingPrintDoc, setLoadingPrintDoc] = useState(false);
+  const [labelDoc, setLabelDoc] = useState<(StockDocument & { lines?: StockDocDetailLine[] }) | null>(null);
+  const [loadingLabelDoc, setLoadingLabelDoc] = useState(false);
 
   const handlePrintDoc = async (docId: string) => {
     setLoadingPrintDoc(true);
@@ -53,6 +56,18 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
       setNotice({ title: 'Không thể tải chứng từ', message: err?.message || 'Lỗi khi tải chi tiết để in' });
     } finally {
       setLoadingPrintDoc(false);
+    }
+  };
+
+  const handlePrintLabels = async (docId: string) => {
+    setLoadingLabelDoc(true);
+    try {
+      const fullDoc = await getStockDocument(docId);
+      setLabelDoc(fullDoc);
+    } catch (err: any) {
+      setNotice({ title: 'Không thể tải chi tiết để in tem', message: err?.message || 'Lỗi khi tải chi tiết để in tem' });
+    } finally {
+      setLoadingLabelDoc(false);
     }
   };
   const [notice, setNotice] = useState<{
@@ -431,6 +446,15 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                           </button>
                           <button
                             type="button"
+                            disabled={loadingLabelDoc}
+                            onClick={() => handlePrintLabels(d.id)}
+                            className="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer"
+                            title="In tem nhãn nhiệt (Mã vạch / QR)"
+                          >
+                            <Tag size={15} />
+                          </button>
+                          <button
+                            type="button"
                             disabled={loadingPrintDoc}
                             onClick={() => handlePrintDoc(d.id)}
                             className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
@@ -522,6 +546,13 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
         />
       )}
 
+      {labelDoc && (
+        <StockLabelPrintModal
+          doc={labelDoc}
+          onClose={() => setLabelDoc(null)}
+        />
+      )}
+
       {showCreate && (
         <DocCreateModal
           kind={kind} warehouses={warehouses} products={products} users={users.map((u: any) => ({ id: u.id, name: u.name }))}
@@ -600,6 +631,14 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
               className={`${itemCls} text-gray-700 hover:bg-gray-50`}
             >
               <Printer size={15} className="text-blue-500" /> In phiếu chứng từ
+            </button>
+            <button
+              type="button"
+              disabled={actingId === target.id || loadingLabelDoc}
+              onClick={() => { setMenu(null); handlePrintLabels(target.id); }}
+              className={`${itemCls} text-gray-700 hover:bg-gray-50`}
+            >
+              <Tag size={15} className="text-amber-500" /> In tem nhãn nhiệt
             </button>
             <button
               type="button"
