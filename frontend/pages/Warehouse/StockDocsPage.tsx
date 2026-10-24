@@ -4,10 +4,11 @@ import { apiFetch } from '../../services/api';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useNavigate } from 'react-router-dom';
-import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, Copy, Trash2, ListChecks, FileText, Calendar, Building2, User } from 'lucide-react';
+import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, Copy, Trash2, ListChecks, FileText, Calendar, Building2, User, Printer } from 'lucide-react';
 import { Card } from '../../components/UI';
 import { Pagination } from '../../components/Pagination';
 import { FeedbackDialog } from '../../components/FeedbackDialog';
+import { StockDocPrintModal } from './StockDocs/StockDocPrintModal';
 import {
   getStockDocuments, getWarehouses, getAvailableInventory, getInventoryDetails, createReceipt, createIssue, createReturn, createTransfer,
   advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, deleteStockDocument, countLinesMissingSerials, getProcessingSummary,
@@ -40,6 +41,20 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
   const [showCreate, setShowCreate] = useState(false);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [printDoc, setPrintDoc] = useState<(StockDocument & { lines?: StockDocDetailLine[] }) | null>(null);
+  const [loadingPrintDoc, setLoadingPrintDoc] = useState(false);
+
+  const handlePrintDoc = async (docId: string) => {
+    setLoadingPrintDoc(true);
+    try {
+      const fullDoc = await getStockDocument(docId);
+      setPrintDoc(fullDoc);
+    } catch (err: any) {
+      setNotice({ title: 'Không thể tải chứng từ', message: err?.message || 'Lỗi khi tải chi tiết để in' });
+    } finally {
+      setLoadingPrintDoc(false);
+    }
+  };
   const [notice, setNotice] = useState<{
     title: string; message: string; tone?: 'warning' | 'error' | 'success'; docId?: string;
     action?: 'processing' | 'count';
@@ -409,10 +424,19 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
                           <button
                             type="button"
                             onClick={() => setSelectedDocId(d.id)}
-                            className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                            className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
                             title="Xem chi tiết"
                           >
                             <Eye size={15} />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={loadingPrintDoc}
+                            onClick={() => handlePrintDoc(d.id)}
+                            className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                            title="In phiếu chứng từ (Mẫu chuẩn Bộ Tài Chính)"
+                          >
+                            <Printer size={15} />
                           </button>
                           {(d.status === 'DRAFT' || d.status === 'PROCESSING') && kind !== 'TRANSFER' && (() => {
                             const s = summary[d.id];
@@ -490,6 +514,14 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
         />
       )}
 
+      {printDoc && (
+        <StockDocPrintModal
+          doc={printDoc}
+          warehouses={warehouses}
+          onClose={() => setPrintDoc(null)}
+        />
+      )}
+
       {showCreate && (
         <DocCreateModal
           kind={kind} warehouses={warehouses} products={products} users={users.map((u: any) => ({ id: u.id, name: u.name }))}
@@ -560,6 +592,14 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
               className={`${itemCls} text-gray-700 hover:bg-gray-50`}
             >
               <Eye size={15} className="text-gray-400" /> Xem chi tiết
+            </button>
+            <button
+              type="button"
+              disabled={actingId === target.id || loadingPrintDoc}
+              onClick={() => { setMenu(null); handlePrintDoc(target.id); }}
+              className={`${itemCls} text-gray-700 hover:bg-gray-50`}
+            >
+              <Printer size={15} className="text-blue-500" /> In phiếu chứng từ
             </button>
             <button
               type="button"

@@ -4,8 +4,9 @@ import { apiFetch } from '../../../services/api';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useNavigate } from 'react-router-dom';
-import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, FileText, Calendar, Building2, User } from 'lucide-react';
+import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, FileText, Calendar, Building2, User, Printer } from 'lucide-react';
 import { Card } from '../../../components/UI';
+import { StockDocPrintModal } from './StockDocPrintModal';
 import { FeedbackDialog } from '../../../components/FeedbackDialog';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
@@ -44,6 +45,7 @@ export function DocDetailModal({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [showPrintModal, setShowPrintModal] = useState(false);
   const [notice, setNotice] = useState<{ title: string; message: string; docId?: string } | null>(null);
   const navigate = useNavigate();
   const closeRef = React.useRef(onClose);
@@ -155,13 +157,26 @@ export function DocDetailModal({
               <p className="text-xs text-gray-400">Mã định danh: {docId}</p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-xl transition-colors"
-          >
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-2">
+            {doc && (
+              <button
+                type="button"
+                onClick={() => setShowPrintModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-300 hover:border-emerald-500 hover:text-emerald-700 text-gray-700 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                title="In chứng từ theo mẫu chuẩn Bộ Tài Chính"
+              >
+                <Printer size={15} />
+                <span className="hidden sm:inline">In phiếu</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-xl transition-colors cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         {/* Body */}
@@ -483,6 +498,16 @@ export function DocDetailModal({
             )}
           </div>
           <div className="flex items-center gap-3">
+            {doc && (
+              <button
+                type="button"
+                onClick={() => setShowPrintModal(true)}
+                className="flex items-center gap-1.5 px-4 py-2 border border-gray-300 hover:border-emerald-500 hover:bg-emerald-50 text-gray-700 hover:text-emerald-800 rounded-xl text-xs font-bold transition-colors shadow-sm cursor-pointer"
+              >
+                <Printer size={14} />
+                In phiếu
+              </button>
+            )}
             <button
               type="button"
               onClick={onClose}
@@ -527,6 +552,13 @@ export function DocDetailModal({
           actionLabel={notice.docId ? 'Mở trang xử lý phiếu' : undefined}
           onAction={notice.docId ? () => { const id = notice.docId!; setNotice(null); onClose(); navigate(getDeptModulePath(deptKey, 'wh_processing', { documentId: id })); } : undefined}
           onClose={() => setNotice(null)}
+        />
+      )}
+      {showPrintModal && doc && (
+        <StockDocPrintModal
+          doc={doc}
+          warehouses={warehouses}
+          onClose={() => setShowPrintModal(false)}
         />
       )}
     </div>
