@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { parseBarcodeData } from '../utils/barcodeParser';
 
 interface UseBarcodeScannerOptions {
   onScan: (code: string) => void;
@@ -54,7 +55,8 @@ export function useBarcodeScanner({
               e.preventDefault();
               e.stopPropagation();
             }
-            onScanRef.current(barcode);
+            const parsed = parseBarcodeData(barcode);
+            onScanRef.current(parsed.serial || barcode);
           }
         } else {
           bufferRef.current = [];

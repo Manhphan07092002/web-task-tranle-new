@@ -656,6 +656,8 @@ export interface CountLine {
   note?: string | null;
   productName?: string | null;
   productUnit?: string | null;
+  productCode?: string | null;
+  productTracking?: string | null;
 }
 
 export interface StockCount {

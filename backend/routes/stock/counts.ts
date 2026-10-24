@@ -91,7 +91,7 @@ export function countsRoutes(ctx: StockContext) {
       const access = await requireWarehouse(user, count.warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       const lines = await db.all(
-        `SELECT l.*, p.name AS productName, p.unit AS productUnit FROM stock_count_lines l
+        `SELECT l.*, p.name AS productName, p.unit AS productUnit, p.importCode AS productCode, p.tracking AS productTracking FROM stock_count_lines l
          LEFT JOIN products p ON p.id = l.productId WHERE l.countId = ? ORDER BY p.name ASC`,
         [count.id]
       );

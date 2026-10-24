@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { X, AlertCircle, Trash2, Camera, CheckCircle2, Volume2, VolumeX, Zap } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { playSuccessBeep, playErrorBuzz, playWarningBeep } from '../../../utils/scannerFeedback';
+import { parseBarcodeData } from '../../../utils/barcodeParser';
 
 export interface ScanResult {
   code: string;
@@ -75,8 +76,10 @@ export function ScannerModal({
             aspectRatio: 1.25,
           },
           async (decodedText) => {
-            const code = String(decodedText || '').trim();
-            if (!code || processingRef.current) return;
+            const raw = String(decodedText || '').trim();
+            if (!raw || processingRef.current) return;
+            const parsed = parseBarcodeData(raw);
+            const code = parsed.serial || raw;
 
             // Debounce: bỏ qua nếu vừa quét đúng mã này trong vòng 1.5 giây
             const now = Date.now();
