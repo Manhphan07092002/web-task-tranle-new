@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useNotifications } from '../../contexts/NotificationContext';
-import { Bell, FileText, CheckCircle2, Clock, Trash2, CheckCircle, Search, LayoutList, CheckSquare, MailOpen, Send, StickyNote, CalendarDays } from 'lucide-react';
+import { Bell, FileText, CheckCircle2, Clock, Trash2, CheckCircle, Search, LayoutList, CheckSquare, MailOpen, Send, StickyNote, CalendarDays, AlertTriangle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 export default function NotificationsPage() {
@@ -16,7 +16,10 @@ export default function NotificationsPage() {
     const typeLower = n.type?.toLowerCase() || '';
     const titleLower = n.title?.toLowerCase() || '';
     
-    if (typeLower.includes('mail') || titleLower.includes('email') || titleLower.includes('thư')) {
+    if (typeLower.includes('stock_alert') || titleLower.includes('cảnh báo tồn')) {
+      const warehouseId = n.relatedId?.startsWith('stock-alert:') ? n.relatedId.slice('stock-alert:'.length) : '';
+      navigate(`/dept/warehouse?m=wh_alerts${warehouseId ? `&warehouseId=${encodeURIComponent(warehouseId)}` : ''}`);
+    } else if (typeLower.includes('mail') || titleLower.includes('email') || titleLower.includes('thư')) {
       navigate(n.relatedId ? `/mail?mailId=${n.relatedId}` : '/mail');
     } else if (typeLower.includes('contract') || titleLower.includes('hợp đồng') || titleLower.includes('hop dong')) {
       navigate(n.relatedId ? `/contracts?contractId=${n.relatedId}` : '/contracts');
@@ -55,6 +58,7 @@ export default function NotificationsPage() {
     const t = (type + title).toLowerCase();
     if (t.includes('mail_sent') || t.includes('gửi'))           return <div className="p-2.5 bg-green-100 text-green-600 rounded-xl"><Send size={20}/></div>;
     if (t.includes('mail') || t.includes('thư') || t.includes('email')) return <div className="p-2.5 bg-blue-100 text-blue-600 rounded-xl"><MailOpen size={20}/></div>;
+    if (t.includes('stock_alert') || t.includes('cảnh báo tồn')) return <div className="p-2.5 bg-red-100 text-red-600 rounded-xl"><AlertTriangle size={20}/></div>;
     if (type === 'daily_task_reminder')                          return <div className="p-2.5 bg-blue-100 text-blue-600 rounded-xl"><CheckSquare size={20}/></div>;
     if (t.includes('report') || t.includes('báo cáo'))        return <div className="p-2.5 bg-amber-100 text-amber-600 rounded-xl"><FileText size={20}/></div>;
     if (t.includes('task') || t.includes('công việc'))        return <div className="p-2.5 bg-indigo-100 text-indigo-600 rounded-xl"><CheckSquare size={20}/></div>;

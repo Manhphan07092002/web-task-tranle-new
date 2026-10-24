@@ -7,10 +7,12 @@ interface PaginationProps {
   onPageChange: (page: number) => void;
   totalItems?: number;
   itemsPerPage?: number;
+  onItemsPerPageChange?: (itemsPerPage: number) => void;
+  pageSizeOptions?: number[];
 }
 
-export function Pagination({ currentPage, totalPages, onPageChange, totalItems, itemsPerPage }: PaginationProps) {
-  if (totalPages <= 1) return null;
+export function Pagination({ currentPage, totalPages, onPageChange, totalItems, itemsPerPage, onItemsPerPageChange, pageSizeOptions = [10, 20, 50, 100] }: PaginationProps) {
+  if (totalPages <= 1 && !onItemsPerPageChange) return null;
 
   const pages = [];
   const maxVisiblePages = 5;
@@ -27,12 +29,21 @@ export function Pagination({ currentPage, totalPages, onPageChange, totalItems, 
   }
 
   return (
-    <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mt-6">
-      {totalItems !== undefined && itemsPerPage !== undefined && (
-        <div className="text-sm text-gray-500 font-medium">
-          Hiển thị <span className="font-bold text-gray-700">{Math.min((currentPage - 1) * itemsPerPage + 1, totalItems)}</span> đến <span className="font-bold text-gray-700">{Math.min(currentPage * itemsPerPage, totalItems)}</span> trong số <span className="font-bold text-gray-700">{totalItems}</span> bản ghi
-        </div>
-      )}
+    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 mt-4 px-1">
+      <div className="flex items-center gap-3 text-sm text-gray-500 font-medium">
+        {totalItems !== undefined && itemsPerPage !== undefined && totalItems > 0 && (
+          <span>Hiển thị <b className="text-gray-700">{Math.min((currentPage - 1) * itemsPerPage + 1, totalItems)}</b>–<b className="text-gray-700">{Math.min(currentPage * itemsPerPage, totalItems)}</b> / <b className="text-gray-700">{totalItems}</b></span>
+        )}
+        {onItemsPerPageChange && itemsPerPage !== undefined && (
+          <label className="inline-flex items-center gap-1.5 whitespace-nowrap">
+            <span className="text-xs text-gray-400">Hiển thị</span>
+            <select value={itemsPerPage} onChange={(e) => onItemsPerPageChange(Number(e.target.value))} className="px-2 py-1.5 rounded-lg border border-gray-200 bg-white text-sm text-gray-700 outline-none focus:border-emerald-400">
+              {pageSizeOptions.map((size) => <option key={size} value={size}>{size}</option>)}
+            </select>
+            <span className="text-xs text-gray-400">dòng</span>
+          </label>
+        )}
+      </div>
 
       <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-xl p-1 shadow-sm">
         <button

@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Bell, RefreshCw, AlertCircle, ChevronDown, SlidersHorizontal } from 'lucide-react';
 import { Card } from '../../components/UI';
+import { Pagination } from '../../components/Pagination';
 import { getStockAlerts, getWarehouses, saveStockPolicy, type StockAlertRow, type Warehouse } from '../../services/stockService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
@@ -24,21 +25,25 @@ function classify(r: StockAlertRow): { label: string; cls: string }[] {
 // Trang Cảnh báo tồn kho TP (§26): hết / sắp hết / dưới Min / vượt Max,
 // drill-down đặt Min/Max/reorder ngay trên từng dòng.
 export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
+  const [searchParams] = useSearchParams();
   const [rows, setRows] = useState<StockAlertRow[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [warehouseId, setWarehouseId] = useState('');
+  const [warehouseId, setWarehouseId] = useState(() => searchParams.get('warehouseId') || '');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [hasMore, setHasMore] = useState(false);
   const [editing, setEditing] = useState<Record<string, { minStock: string; maxStock: string; reorderPoint: string; leadTimeDays: string; saving: boolean; err: string }>>({});
 
   const fetchAll = async () => {
     setLoading(true); setError(null);
     try {
       const [a, w] = await Promise.all([
-        getStockAlerts(warehouseId || undefined),
+        getStockAlerts(warehouseId || undefined, { limit: pageSize + 1, offset: (page - 1) * pageSize }),
         getWarehouses().catch(() => [] as Warehouse[]),
       ]);
-      setRows(a); setWarehouses(w);
+      setHasMore(a.length > pageSize); setRows(a.slice(0, pageSize)); setWarehouses(w);
     } catch (e: any) {
       setError(e.message || 'Không tải được cảnh báo');
     } finally {
@@ -46,7 +51,14 @@ export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
     }
   };
 
-  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [warehouseId]);
+  useEffect(() => {
+    const queryWarehouseId = searchParams.get('warehouseId') || '';
+    if (queryWarehouseId) setWarehouseId(queryWarehouseId);
+  }, [searchParams]);
+
+  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [warehouseId, page, pageSize]);
+  useEffect(() => { setPage(1); }, [warehouseId]);
+  const visibleRows = rows;
 
   const keyOf = (r: StockAlertRow) => `${r.productId}|${r.warehouseId}`;
 
@@ -105,7 +117,7 @@ export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
   }, [rows]);
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Kho vận · Kiểm soát</p>
@@ -155,39 +167,39 @@ export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
       ) : (
         <Card className="overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="wh-table w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm / Kho</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Khả dụng</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Min / Đặt / Max</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Cảnh báo</th>
-                  <th className="text-right py-3 px-5 text-xs font-bold text-gray-500 uppercase">Chính sách</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm / Kho</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Khả dụng</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Min / Đặt / Max</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Cảnh báo</th>
+                  <th className="text-right py-2 px-5 text-xs font-bold text-gray-500 uppercase">Chính sách</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {rows.map((r) => {
+                {visibleRows.map((r) => {
                   const k = keyOf(r);
                   const ed = editing[k];
                   return (
                     <React.Fragment key={k}>
                       <tr className="hover:bg-gray-50/70">
-                        <td className="py-3 px-5">
+                        <td className="py-2 px-5">
                           <p className="font-semibold text-gray-800">{r.productName || r.productId}</p>
                           <p className="text-xs text-gray-400">{r.warehouseName || r.warehouseId}</p>
                         </td>
-                        <td className="py-3 px-4 text-right font-black text-gray-900">{Number(r.available).toLocaleString('vi-VN')}</td>
-                        <td className="py-3 px-4 text-right text-xs text-gray-500">
+                        <td className="py-2 px-4 text-right font-black text-gray-900">{Number(r.available).toLocaleString('vi-VN')}</td>
+                        <td className="py-2 px-4 text-right text-xs text-gray-500">
                           {r.minStock ?? 0} / {r.reorderPoint ?? 0} / {r.maxStock ?? 0}
                         </td>
-                        <td className="py-3 px-4">
+                        <td className="py-2 px-4">
                           <div className="flex flex-wrap gap-1">
                             {classify(r).map((t) => (
                               <span key={t.label} className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${t.cls}`}>{t.label}</span>
                             ))}
                           </div>
                         </td>
-                        <td className="py-3 px-5 text-right">
+                        <td className="py-2 px-5 text-right">
                           <button onClick={() => openEditor(r)}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-blue-600 hover:bg-blue-50 rounded-lg transition-colors">
                             <SlidersHorizontal size={13} />Đặt ngưỡng
@@ -196,7 +208,7 @@ export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
                       </tr>
                       {ed && (
                         <tr className="bg-blue-50/40">
-                          <td colSpan={5} className="px-5 py-3">
+                          <td colSpan={5} className="px-5 py-2">
                             {ed.err && <p className="text-xs text-red-600 mb-2">{ed.err}</p>}
                             <div className="flex flex-wrap items-end gap-2">
                               {([['minStock', 'Min'], ['reorderPoint', 'Điểm đặt'], ['maxStock', 'Max'], ['leadTimeDays', 'Lead (ngày)']] as const).map(([f, label]) => (
@@ -227,6 +239,7 @@ export default function AlertsPage({ deptKey }: { deptKey: DeptKey }) {
           </div>
         </Card>
       )}
+      {!loading && rows.length > 0 && <Pagination currentPage={page} totalPages={hasMore ? page + 1 : page} onPageChange={setPage} itemsPerPage={pageSize} onItemsPerPageChange={(s) => { setPageSize(s); setPage(1); }} />}
 
       <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">
         ← Về tổng quan kho vận

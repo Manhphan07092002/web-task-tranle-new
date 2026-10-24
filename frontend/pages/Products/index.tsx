@@ -31,8 +31,12 @@ export default function ProductsPage() {
     importQuantity: '',
     importPrice: '',
     salePrice: '',
-    invoiceDate: ''
+    invoiceDate: '',
+    warrantyMonths: ''
   });
+
+  // Phương thức quản lý kho cho dòng đơn (theo dõi Serial/Lô/Số lượng).
+  const [tracking, setTracking] = useState('NONE');
   
   const [batchRows, setBatchRows] = useState<Array<{
     name: string;
@@ -366,7 +370,9 @@ export default function ProductsPage() {
           importQuantity: Number(form.importQuantity.replace(/\D/g, '')) || 0,
           importPrice: importPriceNum,
           salePrice: salePriceNum,
-          invoiceDate: form.invoiceDate ? form.invoiceDate.trim() : null
+          invoiceDate: form.invoiceDate ? form.invoiceDate.trim() : null,
+          warrantyMonths: Math.min(Math.max(Number(form.warrantyMonths) || 0, 0), 1200),
+          tracking
         };
 
         await productService.updateProduct(editingId, payload as any);
@@ -437,7 +443,8 @@ export default function ProductsPage() {
 
   const openCreateModal = () => {
     setEditingId(null);
-    setForm({ name: '', category: '', importCode: '', unit: '', origin: '', importQuantity: '', importPrice: '', salePrice: '', invoiceDate: '' });
+    setTracking('NONE');
+    setForm({ name: '', category: '', importCode: '', unit: '', origin: '', importQuantity: '', importPrice: '', salePrice: '', invoiceDate: '', warrantyMonths: '' });
     setBatchRows([
       { name: '', importCode: '', unit: '', origin: '', importQuantity: '', importPrice: '', salePrice: '' }
     ]);
@@ -459,8 +466,10 @@ export default function ProductsPage() {
       importQuantity: p.importQuantity ? Number(p.importQuantity).toLocaleString('vi-VN') : '',
       importPrice: p.importPrice ? Number(p.importPrice).toLocaleString('vi-VN') : '',
       salePrice: (p.salePrice || p.defaultPrice) ? Number(p.salePrice || p.defaultPrice).toLocaleString('vi-VN') : '',
-      invoiceDate: p.invoiceDate || ''
+      invoiceDate: p.invoiceDate || '',
+      warrantyMonths: p.warrantyMonths !== undefined && p.warrantyMonths !== null ? String(p.warrantyMonths) : ''
     });
+    setTracking((p as any).tracking || 'NONE');
     setSingleCodeDbError(null);
     setBatchCodeDbErrors([null]);
     setIsModalOpen(true);
@@ -469,7 +478,8 @@ export default function ProductsPage() {
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingId(null);
-    setForm({ name: '', category: '', importCode: '', unit: '', origin: '', importQuantity: '', importPrice: '', salePrice: '', invoiceDate: '' });
+    setTracking('NONE');
+    setForm({ name: '', category: '', importCode: '', unit: '', origin: '', importQuantity: '', importPrice: '', salePrice: '', invoiceDate: '', warrantyMonths: '' });
     setSingleCodeDbError(null);
     setBatchCodeDbErrors([null]);
   };
@@ -754,6 +764,16 @@ export default function ProductsPage() {
                     <input value={form.unit} onChange={e => setForm({...form, unit: e.target.value})} placeholder="VD: Cái, Bộ"
                       className="w-full px-4 py-2.5 border border-gray-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100" />
                   </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 dark:text-slate-300 mb-1.5">PHƯƠNG THỨC QUẢN LÝ KHO</label>
+                    <select value={tracking} onChange={e => setTracking(e.target.value)}
+                      className="w-full px-4 py-2.5 border border-gray-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100 font-medium">
+                      <option value="NONE">Số lượng (mặc định)</option>
+                      <option value="SERIAL">Serial từng thiết bị</option>
+                      <option value="LOT">Lô / Cuộn</option>
+                      <option value="QUANTITY">Số lượng xác nhận</option>
+                    </select>
+                  </div>
 
                   <div>
                     <label className="block text-xs font-bold text-gray-700 dark:text-slate-300 mb-1.5">SỐ HÓA ĐƠN ĐẦU VÀO</label>
@@ -797,6 +817,16 @@ export default function ProductsPage() {
                       onChange={e => handleNumericInputChange(e, val => setForm({...form, salePrice: val}))} 
                       placeholder="1.200.000"
                       className="w-full px-4 py-2.5 border border-gray-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100 text-right font-bold text-emerald-600" 
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 dark:text-slate-300 mb-1.5">BẢO HÀNH (THÁNG)</label>
+                    <input
+                      type="number" min={0} max={1200}
+                      value={form.warrantyMonths}
+                      onChange={e => setForm({...form, warrantyMonths: e.target.value})}
+                      placeholder="VD: 24"
+                      className="w-full px-4 py-2.5 border border-gray-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100 text-right"
                     />
                   </div>
                 </div>

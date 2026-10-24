@@ -20,10 +20,21 @@ function fixture(options: { type?: string; quantities?: number[]; onHand?: numbe
       if (sql.includes('FROM stock_document_lines')) return structuredClone(lines);
       if (sql.includes('FROM reservations')) return [structuredClone(reservation)];
       if (sql.includes('FROM warehouses')) return [{ id: 'w1' }, { id: 'w2' }];
-      if (sql.includes('FROM stock_balances')) return [];
+      if (sql.includes('FROM products')) return [{ id: 'p1' }];
+      if (sql.includes('FROM stock_locations')) {
+        // Bulk saleability check params: [warehouseId, ...locationIds]. Only
+        // 'damaged' is non-saleable in this fixture (mirrors the get() mock).
+        const ids: string[] = params.filter((p: any) => typeof p === 'string' && p !== 'w1' && p !== 'w2');
+        return ids.filter((id) => id !== 'damaged').map((id) => ({ id }));
+      }
+      if (sql.includes('FROM stock_balances')) {
+        return [{ productId: 'p1', locationId: options.location || '', onHand: balance.onHand, reserved: balance.reserved }];
+      }
       return [];
     }),
     get: (sql: string, params: any[] = []) => gate.run(sql, async () => {
+      if (sql.includes('GET_LOCK')) return { acquired: 1 };
+      if (sql.includes('RELEASE_LOCK')) return { released: 1 };
       if (sql.includes('FROM stock_documents')) return structuredClone(doc);
       if (sql.includes('FROM products')) return { id: 'p1' };
       if (sql.includes('FROM stock_balances')) return { ...balance };
@@ -64,9 +75,9 @@ describe('warehouse stock integrity regressions', () => {
   });
 
   it('serializes concurrent completion and posts a document only once', async () => {
-    const f = fixture({ type: 'RECEIPT', quantities: [5] });
+    const f = fixture({ type: 'RECEIPT', quantities: [5], status: 'READY' });
     const responses = await Promise.all([1,2].map(() => request(f.app).post('/receipts/d1/complete').send({})));
-    expect(responses.map(response => response.status).sort()).toEqual([200,400]);
+    expect(responses.map(response => response.status).sort()).toEqual([200,200]);
     expect(f.balance.onHand).toBe(15);
     expect(f.writes.filter(write => write.sql.includes('INSERT INTO stock_moves'))).toHaveLength(1);
   });
@@ -87,6 +98,7 @@ describe('warehouse stock integrity regressions', () => {
 
   it('runs expiry under a real transaction context and does not repeat it', async () => {
     const f = fixture({ reserved: 4 });
+    f.reservation.expiresAt = '2020-01-01T00:00:00.000Z';
     expect(await releaseExpiredReservations(f.db)).toBe(1);
     expect(await releaseExpiredReservations(f.db)).toBe(0);
     expect(f.balance.reserved).toBe(0);
@@ -108,9 +120,22 @@ describe('warehouse stock integrity regressions', () => {
   });
 
   it('blocks stock posting while a count is open', async () => {
-    const f = fixture({ counting: true });
+    const f = fixture({ counting: true, status: 'READY' });
     await request(f.app).post('/issues/d1/complete').send({}).expect(409);
     expect(f.balance.onHand).toBe(10);
+  });
+
+  it.each([
+    { name: 'receipt', path: '/receipts/d1/complete', type: 'RECEIPT', status: 'READY' },
+    { name: 'issue', path: '/issues/d1/complete', type: 'ISSUE', status: 'READY' },
+    { name: 'return', path: '/returns/d1/complete', type: 'RETURN', status: 'READY' },
+    { name: 'transfer ship', path: '/transfers/d1/ship', type: 'TRANSFER', status: 'READY' },
+    { name: 'transfer receive', path: '/transfers/d1/receive', type: 'TRANSFER', status: 'IN_TRANSIT' },
+  ])('reports open count before missing serials: $name', async ({ path, type, status }) => {
+    const f = fixture({ type, status, counting: true });
+    const res = await request(f.app).post(path).send({});
+    expect(res.status, res.body.error).toBe(409);
+    expect(f.writes.some((write) => write.sql.includes('INSERT INTO stock_moves'))).toBe(false);
   });
 
   it('does not reserve or issue damaged stock', async () => {

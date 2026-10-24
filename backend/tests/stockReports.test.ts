@@ -8,12 +8,12 @@ import { stockReportRoutes } from '../routes/stockReports.js';
 // rows than the activity feed limit. Production MySQL integration is separate.
 function fixture(level = 20) {
   const sql = new DatabaseSync(':memory:');
-  sql.exec(`CREATE TABLE products (id TEXT, name TEXT, unit TEXT);
+  sql.exec(`CREATE TABLE products (id TEXT, name TEXT, unit TEXT, importPrice REAL);
     CREATE TABLE warehouses (id TEXT, name TEXT, isActive INTEGER);
     CREATE TABLE user_warehouse_scopes (userId TEXT, warehouseId TEXT);
     CREATE TABLE stock_balances (productId TEXT, warehouseId TEXT, onHand REAL);
     CREATE TABLE stock_moves (productId TEXT, warehouseId TEXT, quantity REAL, moveType TEXT, createdAt TEXT);
-    INSERT INTO products VALUES ('p1', 'Panel', 'Tấm');
+    INSERT INTO products VALUES ('p1', 'Panel', 'Tấm', 0);
     INSERT INTO warehouses VALUES ('w1', 'Kho 1', 1), ('w2', 'Kho 2', 1);
     INSERT INTO user_warehouse_scopes VALUES ('u1', 'w1');
     INSERT INTO stock_balances VALUES ('p1', 'w1', 692), ('p1', 'w2', 900);`);

@@ -1,30 +1,58 @@
+import React, { Suspense } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { Construction, Users, ListTodo, CircleCheck, Timer, LayoutDashboard } from 'lucide-react';
 import { Card, Avatar } from '../components/UI';
 import { DEPARTMENT_MENUS, asGroupList, deptFindItem, deptAllItems, getDeptHomePath } from '../components/layout/menus/departmentMenus';
-import InventoryPage from './Warehouse/InventoryPage';
-import StockDocsPage from './Warehouse/StockDocsPage';
-import WarehouseOverview from './Warehouse/OverviewPage';
-import AlertsPage from './Warehouse/AlertsPage';
-import ExceptionsPage from './Warehouse/ExceptionsPage';
-import SlowStockPage from './Warehouse/SlowStockPage';
-import SerialPage from './Warehouse/SerialPage';
-import ApprovalsPage from './Warehouse/ApprovalsPage';
-import BundlePage from './Warehouse/BundlePage';
-import MyWorkPage from './Warehouse/MyWorkPage';
-import CatalogPage from './Warehouse/CatalogPage';
-import InTransitPage from './Warehouse/InTransitPage';
-import WarehouseReportsPage from './Warehouse/ReportsPage';
-import MovesPage from './Warehouse/MovesPage';
-import MisaPage from './Warehouse/MisaPage';
-import MinMaxPage from './Warehouse/MinMaxPage';
-import CountPage from './Warehouse/CountPage';
-import ReservationsPage from './Warehouse/ReservationsPage';
-import LocationsPage from './Warehouse/LocationsPage';
+import { ErrorBoundary } from '../components/ErrorBoundary';
 import { CODE_MAP, ID_MAP, roleLabel } from '../components/layout/menus/resolveDepartment';
 import { DEPT_LABELS, type DeptKey } from '../components/layout/menus/menuTypes';
 import { useAuth } from '../contexts/AuthContext';
 import { useData } from '../contexts/DataContext';
+
+const InventoryPage = React.lazy(() => import('./Warehouse/InventoryPage'));
+const StockDocsPage = React.lazy(() => import('./Warehouse/StockDocsPage'));
+const WarehouseOverview = React.lazy(() => import('./Warehouse/OverviewPage'));
+const AlertsPage = React.lazy(() => import('./Warehouse/AlertsPage'));
+const ExceptionsPage = React.lazy(() => import('./Warehouse/ExceptionsPage'));
+const SlowStockPage = React.lazy(() => import('./Warehouse/SlowStockPage'));
+const SerialPage = React.lazy(() => import('./Warehouse/SerialPage'));
+const ProcessingQueuePage = React.lazy(() => import('./Warehouse/ProcessingQueuePage'));
+const ApprovalsPage = React.lazy(() => import('./Warehouse/ApprovalsPage'));
+const BundlePage = React.lazy(() => import('./Warehouse/BundlePage'));
+const MyWorkPage = React.lazy(() => import('./Warehouse/MyWorkPage'));
+const CatalogPage = React.lazy(() => import('./Warehouse/CatalogPage'));
+const InTransitPage = React.lazy(() => import('./Warehouse/InTransitPage'));
+const WarehouseReportsPage = React.lazy(() => import('./Warehouse/ReportsPage'));
+const MovesPage = React.lazy(() => import('./Warehouse/MovesPage'));
+const MisaPage = React.lazy(() => import('./Warehouse/MisaPage'));
+const AuditLogPage = React.lazy(() => import('./Warehouse/AuditLogPage'));
+const StockControlPage = React.lazy(() => import('./Warehouse/StockControlPage'));
+const MinMaxPage = React.lazy(() => import('./Warehouse/MinMaxPage'));
+const CountPage = React.lazy(() => import('./Warehouse/CountPage'));
+const CountVariancePage = React.lazy(() => import('./Warehouse/CountVariancePage'));
+const StockAdjustmentPage = React.lazy(() => import('./Warehouse/StockAdjustmentPage'));
+const WarehouseStockReportPage = React.lazy(() => import('./Warehouse/WarehouseStockReportPage'));
+const ReservationsPage = React.lazy(() => import('./Warehouse/ReservationsPage'));
+const LocationsPage = React.lazy(() => import('./Warehouse/LocationsPage'));
+
+function WarehousePageSkeleton() {
+  return <div className="animate-pulse space-y-4"><div className="h-8 w-48 rounded bg-slate-200" /><div className="h-40 rounded-xl bg-slate-100" /></div>;
+}
+
+function WarehousePageLoader({ children }: { children: React.ReactNode }) {
+  return (
+    <ErrorBoundary fallback={(_error, resetError) => (
+      <div className="max-w-lg mx-auto p-6 text-center space-y-3">
+        <p className="font-semibold text-slate-800">Không thể tải trang Kho vận.</p>
+        <button className="px-4 py-2 rounded-lg bg-emerald-600 text-white font-semibold" onClick={() => { resetError(); window.location.reload(); }}>
+          Tải lại
+        </button>
+      </div>
+    )}>
+      <Suspense fallback={<WarehousePageSkeleton />}>{children}</Suspense>
+    </ErrorBoundary>
+  );
+}
 
 // Tổng quát riêng từng phòng ban (landing sau login).
 // Module overview (id *_overview) render số liệu thật của phòng;
@@ -54,33 +82,39 @@ export default function DepartmentStubPage() {
   }
 
   if (isOverview) {
-    if (deptKey === 'WAREHOUSE') return <WarehouseOverview deptKey={deptKey} />;
+    if (deptKey === 'WAREHOUSE') return <WarehousePageLoader><WarehouseOverview deptKey={deptKey} /></WarehousePageLoader>;
     return <DeptOverview deptKey={deptKey} title={moduleLabel || `Tổng quan ${DEPT_LABELS[deptKey]}`} />;
   }
 
   // Module kho đã có trang thật thì render thật, còn lại giữ placeholder.
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_stock') return <InventoryPage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_receipt') return <StockDocsPage deptKey={deptKey} kind="RECEIPT" />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_issue') return <StockDocsPage deptKey={deptKey} kind="ISSUE" />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_transfer') return <StockDocsPage deptKey={deptKey} kind="TRANSFER" />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_alerts') return <AlertsPage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_exceptions') return <ExceptionsPage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_slow') return <SlowStockPage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_serial') return <SerialPage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_approvals') return <ApprovalsPage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_bundle') return <BundlePage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_my_tasks') return <MyWorkPage deptKey={deptKey} initialTab="tasks" />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_my_history') return <MyWorkPage deptKey={deptKey} initialTab="history" />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_products') return <CatalogPage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_in_transit') return <InTransitPage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && (moduleId === 'wh_report_nxt' || moduleId === 'wh_report_warehouse')) return <WarehouseReportsPage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_history') return <MovesPage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_misa') return <MisaPage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_report_minmax') return <MinMaxPage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_count') return <CountPage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && (moduleId === 'wh_variance' || moduleId === 'wh_adjustment')) return <CountPage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_reservation') return <ReservationsPage deptKey={deptKey} />;
-  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_locations') return <LocationsPage deptKey={deptKey} />;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_stock') return <WarehousePageLoader><InventoryPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_receipt') return <WarehousePageLoader><StockDocsPage deptKey={deptKey} kind="RECEIPT" /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_issue') return <WarehousePageLoader><StockDocsPage deptKey={deptKey} kind="ISSUE" /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_return') return <WarehousePageLoader><StockDocsPage deptKey={deptKey} kind="RETURN" /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_transfer') return <WarehousePageLoader><StockDocsPage deptKey={deptKey} kind="TRANSFER" /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_processing') return <WarehousePageLoader><ProcessingQueuePage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_alerts') return <WarehousePageLoader><AlertsPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_exceptions') return <WarehousePageLoader><ExceptionsPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_slow') return <WarehousePageLoader><SlowStockPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_serial') return <WarehousePageLoader><SerialPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_approvals') return <WarehousePageLoader><ApprovalsPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_bundle') return <WarehousePageLoader><BundlePage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_my_tasks') return <WarehousePageLoader><MyWorkPage deptKey={deptKey} initialTab="tasks" /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_my_history') return <WarehousePageLoader><MyWorkPage deptKey={deptKey} initialTab="history" /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_products') return <WarehousePageLoader><CatalogPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_in_transit') return <WarehousePageLoader><InTransitPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_report_nxt') return <WarehousePageLoader><WarehouseReportsPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_report_warehouse') return <WarehousePageLoader><WarehouseStockReportPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_history') return <WarehousePageLoader><MovesPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_audit') return <WarehousePageLoader><AuditLogPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_control') return <WarehousePageLoader><StockControlPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_misa') return <WarehousePageLoader><MisaPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_report_minmax') return <WarehousePageLoader><MinMaxPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_count') return <WarehousePageLoader><CountPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_variance') return <WarehousePageLoader><CountVariancePage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_adjustment') return <WarehousePageLoader><StockAdjustmentPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_reservation') return <WarehousePageLoader><ReservationsPage deptKey={deptKey} /></WarehousePageLoader>;
+  if (deptKey === 'WAREHOUSE' && moduleId === 'wh_locations') return <WarehousePageLoader><LocationsPage deptKey={deptKey} /></WarehousePageLoader>;
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">

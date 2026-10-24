@@ -1,0 +1,1316 @@
+import { getStockLocations, type StockLocation } from '../../../services/locationService';
+import { ReceiveTransferButton } from '../ReceiveTransferButton';
+import { apiFetch } from '../../../services/api';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { Link } from 'react-router-dom';
+import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, FileText, Calendar, Building2, User, ScanLine } from 'lucide-react';
+import { Card } from '../../../components/UI';
+import {
+  getStockDocuments, getWarehouses, getAvailableInventory, createReceipt, createIssue, createReturn, createTransfer,
+  advanceDocument, advanceTransfer, getPartnerSuggestions, getStockDocument, cancelStockDocument, updateStockDocument, getNextDocCode,
+  type StockDocument, type StockDocLine, type Warehouse,
+  type PartnerSuggestion, type PartnerSuggestionsData, type StockDocDetailLine, type AvailableInventoryRow,
+} from '../../../services/stockService';
+import { getProducts, createProduct, suggestCode, type Product } from '../../../services/productService';
+import { getReservations, type Reservation } from '../../../services/reservationService';
+import { getDeptHomePath } from '../../../components/layout/menus/departmentMenus';
+import { useData } from '../../../contexts/DataContext';
+import type { DeptKey } from '../../../components/layout/menus/menuTypes';
+
+
+import { KIND_META, type Kind } from './meta';
+import { SearchCombo, FormattedNumberInput, UnitSuggestInput, PartnerSuggestInput, TextSuggestInput } from './controls';
+import { SerialEditorModal, parseSerialList } from './SerialEditorModal';
+
+export function DocCreateModal({ kind, warehouses, products, users, canEditFinancials, onClose, onDone, onError, editingId }: {
+  kind: Kind; warehouses: Warehouse[]; products: Product[]; users: { id: string; name: string }[];
+  /** Chỉ Trưởng phòng kho được ghi đè dữ liệu do mapping kế toán cung cấp. */
+  canEditFinancials: boolean;
+  onClose: () => void; onDone: (created?: { id: string; code?: string }) => Promise<void>; onError: (m: string) => void;
+  editingId?: string;
+}) {
+  const isEditing = Boolean(editingId);
+  const [warehouseId, setWarehouseId] = useState('');
+  const [destWarehouseId, setDestWarehouseId] = useState('');
+  const [notes, setNotes] = useState('');
+  const [lines, setLines] = useState<StockDocLine[]>([{ productId: '', quantity: 1, unitPrice: 0, vatRate: 8, serialLot: '' }]);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+  const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
+  const [locations, setLocations] = useState<StockLocation[]>([]);
+  // Danh sách hàng nội bộ modal (được bổ sung khi tạo nhanh SP mới) —
+  // đồng bộ lại mỗi khi prop products đổi (mở modal mới).
+  const [localProducts, setLocalProducts] = useState<Product[]>(products);
+  useEffect(() => { setLocalProducts(products); }, [products]);
+  const [sourceInventory, setSourceInventory] = useState<AvailableInventoryRow[]>([]);
+  const [sourceInventoryLoading, setSourceInventoryLoading] = useState(false);
+  // Tạo nhanh sản phẩm mới khi gõ tên/mã chưa có trong danh mục.
+  const [quickCreate, setQuickCreate] = useState<{ line: number; name: string; code: string } | null>(null);
+  // Editor serial/lot cho từng dòng.
+  const [serialEdit, setSerialEdit] = useState<number | null>(null);
+  // Giữ hàng đang HELD của kho — dùng để gắn vào dòng phiếu xuất.
+  const [heldReservations, setHeldReservations] = useState<Reservation[]>([]);
+  const [reservationPicker, setReservationPicker] = useState<number | null>(null);
+  const [partnerSuggestions, setPartnerSuggestions] = useState<PartnerSuggestionsData>({
+    partners: [],
+    deliverers: [],
+    notes: [],
+    addresses: [],
+  });
+
+  useEffect(() => {
+    getPartnerSuggestions()
+      .then(setPartnerSuggestions)
+      .catch(() => {});
+  }, []);
+
+  const handlePickPartner = (p: PartnerSuggestion) => {
+    if (p.code) setPartnerCode(p.code);
+    if (p.name) setPartnerName(p.name);
+    if (p.address) setPartnerAddress(p.address);
+    if (p.deliverer && !deliverer) setDeliverer(p.deliverer);
+  };
+
+  useEffect(() => {
+    if (!warehouseId && warehouses.length > 0) setWarehouseId(warehouses[0].id);
+  }, [warehouses]);
+
+  const requiresSourceAvailability = kind === 'ISSUE' || kind === 'TRANSFER';
+
+  useEffect(() => {
+    // Chỉ xuất/điều chuyển cần chọn hàng đang khả dụng ở kho nguồn.
+    // Nhập kho và hàng trả về phải được phép chọn toàn bộ danh mục, kể cả
+    // sản phẩm chưa từng có tồn tại kho nhận.
+    if (!requiresSourceAvailability || !warehouseId) {
+      setSourceInventory([]);
+      setSourceInventoryLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setSourceInventoryLoading(true);
+    getAvailableInventory({ warehouseId, onlyAvailable: true, limit: 1000 })
+      .then((result) => { if (!cancelled) setSourceInventory(result.rows.filter((row) => Number(row.available) > 0)); })
+      .catch(() => { if (!cancelled) setSourceInventory([]); })
+      .finally(() => { if (!cancelled) setSourceInventoryLoading(false); });
+    return () => { cancelled = true; };
+  }, [requiresSourceAvailability, warehouseId]);
+
+  useEffect(() => {
+    if (kind !== 'ISSUE' || !warehouseId) {
+      setHeldReservations([]);
+      return;
+    }
+    let cancelled = false;
+    getReservations(warehouseId, 'HELD', { limit: 1000 })
+      .then((rows) => {
+        if (cancelled) return;
+        setHeldReservations((rows || []).filter((r) => {
+          const remaining = Number(r.quantity || 0) - Number(r.consumedQuantity || 0);
+          return remaining > 0;
+        }));
+      })
+      .catch(() => { if (!cancelled) setHeldReservations([]); });
+    return () => { cancelled = true; };
+  }, [kind, warehouseId]);
+
+  // Chế độ sửa phiếu nháp: nạp chi tiết rồi đổ vào form.
+  useEffect(() => {
+    if (!editingId) return;
+    let active = true;
+    setLoadingDoc(true);
+    getStockDocument(editingId)
+      .then((doc) => {
+        if (!active) return;
+        if (doc.status !== 'DRAFT') {
+          setErr('Chỉ sửa được phiếu ở trạng thái nháp.');
+          return;
+        }
+        setSavedCode(doc.code || '');
+        setWarehouseId(doc.warehouseId || '');
+        setDestWarehouseId(doc.destWarehouseId || '');
+        setNotes(doc.notes || '');
+        const firstLine = doc.lines?.[0];
+        setTkKho(firstLine?.accountDebit || '');
+        setTkCongNo(firstLine?.accountCredit || '');
+        setProject(firstLine?.projectId || '');
+        setCostItem(firstLine?.costItem || '');
+        setCostObject((firstLine as any)?.costObjectId || '');
+        setPartnerCode(doc.partnerCode || '');
+        setPartnerName(doc.partnerName || '');
+        setPartnerAddress(doc.partnerAddress || '');
+        setDeliverer(doc.deliverer || '');
+        setPurchaserId(doc.purchaserId || '');
+        setPostingDate((doc.postingDate || '').slice(0, 10));
+        setDocDate((doc.docDate || '').slice(0, 10));
+        setInvoiceNumber(doc.invoiceNumber || '');
+        setInvoiceDate((doc.invoiceDate || '').slice(0, 10));
+        setPaymentStatus(doc.paymentStatus || 'UNPAID');
+        setPaymentDueDate((doc.paymentDueDate || '').slice(0, 10));
+        setReferenceType(doc.referenceType || 'PO');
+        setReferenceId(doc.referenceId || '');
+        setInvoiceLookupCode(doc.invoiceLookupCode || '');
+        setInvoiceLookupUrl(doc.invoiceLookupUrl || '');
+        setShippingFee(doc.shippingFee !== undefined && doc.shippingFee !== null ? String(doc.shippingFee) : '');
+        if ((doc as any).receiptSubType) setReceiptSubType((doc as any).receiptSubType);
+        const att = (doc as any).attachments;
+        if (Array.isArray(att)) {
+          setAttachments(att.map((a: any) => typeof a === 'string' ? { name: a.split('/').pop() || a, url: a } : a));
+        } else if (typeof att === 'string' && att) {
+          try {
+            const parsed = JSON.parse(att);
+            if (Array.isArray(parsed)) {
+              setAttachments(parsed.map((a: any) => typeof a === 'string' ? { name: String(a).split('/').pop() || String(a), url: String(a) } : a));
+            }
+          } catch { /* attachments không phải JSON — bỏ qua */ }
+        }
+        const linksByLine = new Map<string, string[]>();
+        for (const link of doc.reservationLinks || []) {
+          const list = linksByLine.get(link.documentLineId) || [];
+          list.push(link.reservationId);
+          linksByLine.set(link.documentLineId, list);
+        }
+        setLines((doc.lines || []).map((l) => ({
+          id: (l as any).id,
+          productId: l.productId,
+          quantity: Number(l.quantity) || 1,
+          reservationIds: linksByLine.get((l as any).id) || [],
+          unitPrice: Number(l.unitPrice) || 0,
+          locationId: (l as any).locationId ?? null,
+          unit: (l as any).unit || '',
+          note: (l as any).note ?? (l as any).notes ?? undefined,
+          vatRate: Number((l as any).vatRate ?? 8),
+          vatAmount: (l as any).vatAmount ?? undefined,
+          totalAmount: (l as any).totalAmount ?? undefined,
+          serialLot: (l as any).serialLot || '',
+          accountDebit: (l as any).accountDebit || undefined,
+          accountCredit: (l as any).accountCredit || undefined,
+          projectId: (l as any).projectId || undefined,
+          costItem: (l as any).costItem || undefined,
+          costObjectId: (l as any).costObjectId || undefined,
+        })));
+      })
+      .catch((e: any) => { if (active) setErr(e.message || 'Không tải được phiếu để sửa.'); })
+      .finally(() => { if (active) setLoadingDoc(false); });
+    return () => { active = false; };
+  }, [editingId]);
+  const isReturn = kind === 'RETURN';
+  // Phiếu trả là chứng từ nhận lại thiết bị đã xuất, không phải phiếu nhập mua
+  // hàng. Giá, VAT, thanh toán và hạch toán không được nhập tại đây.
+  const moneyKind = kind !== 'TRANSFER' && !isReturn;
+  const [costTab, setCostTab] = useState<'goods' | 'cost'>('goods');
+  const [referenceType, setReferenceType] = useState('PO');
+  const [referenceId, setReferenceId] = useState('');
+  const [invoiceLookupCode, setInvoiceLookupCode] = useState('');
+  const [invoiceLookupUrl, setInvoiceLookupUrl] = useState('');
+  const [shippingFee, setShippingFee] = useState('');
+  const [tkKho, setTkKho] = useState('');
+  const [tkCongNo, setTkCongNo] = useState('');
+  const [costItem, setCostItem] = useState('');
+  const [costObject, setCostObject] = useState('');
+  const [project, setProject] = useState('');
+  const [receiptSubType, setReceiptSubType] = useState('DOMESTIC_PURCHASE');
+  const [partnerCode, setPartnerCode] = useState('');
+  const [partnerName, setPartnerName] = useState('');
+  const [partnerAddress, setPartnerAddress] = useState('');
+  const [deliverer, setDeliverer] = useState('');
+  const [purchaserId, setPurchaserId] = useState('');
+  const [postingDate, setPostingDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [docDate, setDocDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [invoiceNumber, setInvoiceNumber] = useState('');
+  const [invoiceDate, setInvoiceDate] = useState('');
+  const [paymentStatus, setPaymentStatus] = useState('UNPAID');
+  const [paymentDueDate, setPaymentDueDate] = useState('');
+  const [attachments, setAttachments] = useState<{ name: string; url: string }[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [loadingDoc, setLoadingDoc] = useState(isEditing);
+  const [previewCode, setPreviewCode] = useState('');
+  const [savedCode, setSavedCode] = useState('');
+
+  // Số phiếu dự kiến khi tạo mới (không giữ chỗ — số thực chốt khi lưu).
+  useEffect(() => {
+    if (isEditing) return;
+    let active = true;
+    getNextDocCode(kind)
+      .then((r) => { if (active) setPreviewCode(r.code || ''); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [kind, isEditing]);
+  const notesRef = React.useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const closeRef = React.useRef(onClose);
+  closeRef.current = onClose;
+
+  // Form dơ (đã nhập gì đó) thì ESC/X/Hủy phải confirm trước khi bỏ.
+  const isDirty = useMemo(() => {
+    if (
+      notes.trim() || partnerCode.trim() || partnerName.trim() || partnerAddress.trim()
+      || deliverer.trim() || invoiceNumber.trim() || invoiceDate.trim()
+      || shippingFee !== '' || referenceId.trim() || attachments.length > 0
+    ) return true;
+    return lines.some((l) => Boolean(l.productId)
+      || Number(l.quantity) !== 1 || Number(l.unitPrice) > 0
+      || (l.serialLot || '').trim() !== '' || (l.note || '').trim() !== '');
+  }, [notes, partnerCode, partnerName, partnerAddress, deliverer, invoiceNumber, invoiceDate, shippingFee, referenceId, attachments, lines]);
+
+  const requestClose = () => {
+    if (!isDirty || window.confirm('Bỏ các thay đổi chưa lưu trên phiếu này?')) closeRef.current();
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // Modal tạo nhanh đang mở thì để nó tự đóng trước.
+      if (quickCreate) return;
+      // Dropdown gợi ý (portal ul) đang mở thì để nó tự đóng trước.
+      if (document.querySelector('body > ul.overflow-y-auto')) return;
+      e.stopPropagation();
+      requestClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  });
+  const uploadFiles = async (files: FileList | File[]) => {
+    const arr = Array.from(files);
+    if (arr.length === 0) return;
+    const formData = new FormData();
+    arr.forEach((f) => formData.append('files', f));
+    setUploading(true);
+    try {
+      const res = await apiFetch('/api/upload', { method: 'POST', body: formData });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Tải file thất bại');
+      setAttachments((prev) => [...prev, ...((data.files || []) as any[]).map((f: any) => ({ name: f.name, url: f.url }))]);
+    } catch (e: any) {
+      setErr(e.message || 'Tải file thất bại.');
+    } finally {
+      setUploading(false);
+    }
+  };
+  useEffect(() => {
+    let active = true;
+    setLocations([]);
+    setLines(lines => lines.map(line => ({ ...line, locationId: '', reservationIds: [] })));
+    if (warehouseId) getStockLocations(warehouseId)
+      .then(rows => { if (active) setLocations(rows.filter(row => row.isActive)); })
+      .catch(error => { if (active) setErr(error.message); });
+    return () => { active = false; };
+  }, [warehouseId]);
+
+  const availableUnits = useMemo(() => {
+    const set = new Set<string>();
+    localProducts.forEach((p) => {
+      if (p.unit && p.unit.trim()) set.add(p.unit.trim());
+    });
+    ['Bộ', 'Cái', 'Tấm', 'Cuộn', 'Mét', 'Kg', 'Hộp', 'Thùng', 'Lô'].forEach((u) => set.add(u));
+    return Array.from(set);
+  }, [localProducts]);
+
+  const selectableProducts = useMemo(() => {
+    if (!requiresSourceAvailability) return localProducts;
+    const inStock = new Set(sourceInventory.map((row) => row.productId));
+    const selected = new Set(lines.map((line) => line.productId).filter(Boolean));
+    // Giữ các dòng đã có khi sửa phiếu, kể cả tồn đã thay đổi; sản phẩm mới
+    // chỉ được chọn nếu còn tồn tại kho nguồn.
+    return localProducts.filter((product) => inStock.has(product.id) || selected.has(product.id));
+  }, [requiresSourceAvailability, localProducts, sourceInventory, lines]);
+
+  const setLine = (i: number, patch: Partial<StockDocLine>) =>
+    setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
+
+  const pickProduct = (i: number, p: Product | null) => {
+    setLines((ls) => ls.map((l, j) => {
+      if (j !== i) return l;
+      if (!p) return { ...l, productId: '', unit: '', reservationIds: [] };
+      return {
+        ...l,
+        productId: p.id,
+        reservationIds: [],
+        unitPrice: Number(l.unitPrice) > 0 ? l.unitPrice : (p.salePrice || p.defaultPrice || 0),
+        unit: p.unit || l.unit || '',
+      };
+    }));
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setHasAttemptedSubmit(true);
+
+    if (kind !== 'TRANSFER' && !warehouseId) {
+      setErr('Vui lòng chọn kho (*).');
+      return;
+    }
+    if (kind === 'TRANSFER') {
+      if (!warehouseId) {
+        setErr('Vui lòng chọn kho gửi (*).');
+        return;
+      }
+      if (!destWarehouseId) {
+        setErr('Vui lòng chọn kho nhận (*).');
+        return;
+      }
+      if (warehouseId === destWarehouseId) {
+        setErr('Kho gửi và kho nhận phải khác nhau.');
+        return;
+      }
+    }
+
+    if (lines.length === 0) {
+      setErr('Vui lòng thêm ít nhất 1 dòng hàng hóa.');
+      return;
+    }
+
+    const invalidLines = lines
+      .map((l, idx) => {
+        const noProduct = !l.productId;
+        const invalidQty = !l.quantity || Number(l.quantity) <= 0 || isNaN(Number(l.quantity));
+        const price = Number(l.unitPrice ?? 0);
+        const vatRate = canEditFinancials ? Number(l.vatRate ?? 8) : 8;
+        const invalidPrice = !Number.isFinite(price) || price < 0;
+        const invalidVat = !Number.isFinite(vatRate) || vatRate < 0 || vatRate > 100;
+        return { idx, noProduct, invalidQty, invalidPrice, invalidVat, hasError: noProduct || invalidQty || invalidPrice || invalidVat };
+      })
+      .filter((x) => x.hasError);
+
+    if (invalidLines.length > 0) {
+      if (costTab !== 'goods') setCostTab('goods');
+      const details = invalidLines
+        .map((x) => {
+          const issues: string[] = [];
+          if (x.noProduct) issues.push('chưa chọn hàng hóa');
+          if (x.invalidQty) issues.push('số lượng phải > 0');
+          if (x.invalidPrice) issues.push('đơn giá không được âm');
+          if (x.invalidVat) issues.push('VAT phải từ 0 đến 100%');
+          return `Dòng #${x.idx + 1} (${issues.join(', ')})`;
+        })
+        .join('; ');
+      setErr(`Phát hiện ${invalidLines.length} dòng nhập sai hoặc thiếu: ${details}. Vui lòng kiểm tra các ô được đánh dấu đỏ.`);
+      return;
+    }
+
+    const shipping = shippingFee === '' ? 0 : Number(shippingFee);
+    if (canEditFinancials && (!Number.isFinite(shipping) || shipping < 0)) {
+      setCostTab('cost');
+      setErr('Chi phí mua hàng phải là số hợp lệ và không được âm.');
+      return;
+    }
+    if (isReturn && !notes.trim()) {
+      setErr('Vui lòng nhập lý do trả hàng.');
+      return;
+    }
+
+    const clean = lines.map((l) => ({
+      ...l,
+      id: undefined,
+      reservationIds: kind === 'ISSUE' ? (l.reservationIds || []) : undefined,
+      quantity: Number(l.quantity),
+      serialLot: l.serialLot?.trim() || undefined,
+      vatRate: canEditFinancials ? Number(l.vatRate ?? 8) : 8,
+      accountDebit: moneyKind && canEditFinancials ? (tkKho.trim() || undefined) : undefined,
+      accountCredit: moneyKind && canEditFinancials ? (tkCongNo.trim() || undefined) : undefined,
+      projectId: moneyKind && canEditFinancials ? (project.trim() || undefined) : undefined,
+      costItem: moneyKind && canEditFinancials ? (costItem.trim() || undefined) : undefined,
+      costObjectId: moneyKind && canEditFinancials ? (costObject.trim() || undefined) : undefined,
+    }));
+
+    setSaving(true); setErr('');
+    try {
+      const header = moneyKind ? {
+        receiptSubType: kind === 'RECEIPT' ? receiptSubType : undefined,
+        partnerCode: partnerCode.trim() || undefined,
+        partnerName: partnerName.trim() || undefined,
+        partnerAddress: partnerAddress.trim() || undefined,
+        deliverer: deliverer.trim() || undefined,
+        purchaserId: purchaserId || undefined,
+        postingDate: postingDate || undefined,
+        docDate: docDate || undefined,
+        invoiceNumber: invoiceNumber.trim() || undefined,
+        invoiceDate: invoiceDate || undefined,
+        paymentStatus,
+        paymentDueDate: paymentDueDate || undefined,
+        referenceType: !isReturn ? (referenceType || undefined) : undefined,
+        referenceId: !isReturn ? (referenceId.trim() || undefined) : undefined,
+        invoiceLookupCode: invoiceLookupCode.trim() || undefined,
+        invoiceLookupUrl: invoiceLookupUrl.trim() || undefined,
+        shippingFee: canEditFinancials && shippingFee !== '' ? shipping : undefined,
+      } : {};
+      const attachUrls = attachments.map((a) => a.url);
+      if (isEditing && editingId) {
+        await updateStockDocument(editingId, { lines: clean, notes: notes || undefined, ...header, ...(attachUrls.length > 0 ? { attachments: attachUrls } : {}) });
+        await onDone();
+      } else if (kind === 'RECEIPT') {
+        const created = await createReceipt({ warehouseId, lines: clean, notes: notes || undefined, ...header, ...(attachUrls.length > 0 ? { attachments: attachUrls } : {}) });
+        await onDone(created);
+      } else if (kind === 'ISSUE') {
+        const created = await createIssue({ warehouseId, lines: clean, notes: notes || undefined, ...header, ...(attachUrls.length > 0 ? { attachments: attachUrls } : {}) });
+        await onDone(created);
+      } else if (kind === 'RETURN') {
+        const created = await createReturn({ warehouseId, lines: clean, notes: notes || undefined, ...header, ...(attachUrls.length > 0 ? { attachments: attachUrls } : {}) });
+        await onDone(created);
+      } else {
+        const created = await createTransfer({ sourceWarehouseId: warehouseId, destWarehouseId, lines: clean, notes: notes || undefined });
+        await onDone(created);
+      }
+    } catch (e: any) {
+      const msg = e.message || (isEditing ? 'Lưu thay đổi thất bại.' : 'Tạo phiếu thất bại.');
+      setErr(msg); onError(msg);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const productName = (id: string) => localProducts.find((p) => p.id === id)?.name || '';
+
+  const openQuickCreate = (lineIndex: number, typed: string, fromCode: boolean) => {
+    setQuickCreate({
+      line: lineIndex,
+      name: fromCode ? '' : typed,
+      code: fromCode ? typed : '',
+    });
+  };
+
+  const handleCreatedProduct = (lineIndex: number, created: Product) => {
+    setLocalProducts((prev) => (prev.some((p) => p.id === created.id) ? prev : [...prev, created]));
+    pickProduct(lineIndex, created);
+    setQuickCreate(null);
+  };
+  const whCode = warehouses.find((w) => w.id === warehouseId)?.code || '';
+
+  const totals = lines.reduce((acc, l) => {
+    const pre = Number(l.quantity || 0) * Number(l.unitPrice || 0);
+    const vat = pre * ((canEditFinancials ? Number(l.vatRate ?? 8) : 8) / 100);
+    return { pre: acc.pre + pre, vat: acc.vat + vat };
+  }, { pre: 0, vat: 0 });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/40 backdrop-blur-sm p-0 overflow-y-auto">
+      <div className="bg-white shadow-2xl w-full h-[100vh] h-[100dvh] flex flex-col">
+        <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-4 border-b border-gray-100 flex-shrink-0">
+          <div className="min-w-0">
+            <h3 className="font-bold text-gray-900 text-sm sm:text-base truncate">{isEditing ? 'Sửa phiếu' : 'Tạo phiếu'} {KIND_META[kind].title.toLowerCase()} ({KIND_META[kind].code})</h3>
+            {isEditing
+              ? (savedCode && <p className="text-sm font-extrabold text-gray-700 font-mono mt-0.5">Số: {savedCode}</p>)
+              : (previewCode && <p className="text-sm font-extrabold text-gray-500 font-mono mt-0.5">Số (dự kiến): {previewCode}</p>)}
+            {moneyKind && <p className="text-sm font-extrabold text-emerald-700 font-mono mt-0.5">Tổng: {(totals.pre + totals.vat).toLocaleString('vi-VN')} ₫</p>}
+          </div>
+          <div className="flex items-center gap-2">
+            {kind === 'RECEIPT' && (
+              <select value={receiptSubType} onChange={(e) => setReceiptSubType(e.target.value)} title={isEditing ? 'Loại chứng từ không đổi được khi sửa' : 'Loại chứng từ'}
+                disabled={isEditing}
+                className="px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none max-w-[150px] sm:max-w-[280px] truncate disabled:bg-gray-50 disabled:text-gray-400">
+                <option value="DOMESTIC_PURCHASE">Mua hàng trong nước nhập kho</option>
+                <option value="IMPORT_PURCHASE">Mua hàng nhập khẩu nhập kho</option>
+                <option value="OTHER_RECEIPT">Nhập kho khác</option>
+              </select>
+            )}
+            <button onClick={requestClose} title="Đóng (Esc)" className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
+          </div>
+        </div>
+        <form onSubmit={submit} className="flex flex-col flex-1 min-h-0">
+          <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 sm:py-5 space-y-4">
+            {loadingDoc && (
+              <div className="flex flex-col items-center py-16 gap-3">
+                <div className="w-10 h-10 border-4 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+                <p className="text-gray-400 text-sm">Đang tải phiếu để sửa...</p>
+              </div>
+            )}
+            {err && <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm"><AlertCircle size={14} />{err}</div>}
+            <div className={`grid gap-4 ${kind === 'TRANSFER' ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'}`}>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
+                <label className="text-xs font-bold text-gray-600 uppercase tracking-wider whitespace-nowrap shrink-0 sm:min-w-[70px]">
+                  {kind === 'TRANSFER' ? 'Kho gửi' : isReturn ? 'Kho nhận trả' : 'Kho'} <span className="text-red-500 font-bold">*</span>
+                </label>
+                <div className="flex-1 min-w-0">
+                  <SearchCombo
+                    items={warehouses}
+                    selectedId={warehouseId}
+                    display={(w) => `${w.code} · ${w.name}`}
+                    match={(w, q) => `${w.code} ${w.name}`.toLowerCase().includes(q)}
+                    onPick={(w) => setWarehouseId(w ? w.id : '')}
+                    placeholder="-- Chọn kho (*) --"
+                    showArrow={true}
+                    disabled={isEditing}
+                    inputClassName={`w-full px-4 py-2 border rounded-xl bg-white text-sm outline-none transition-colors disabled:bg-gray-50 disabled:text-gray-400 ${hasAttemptedSubmit && !warehouseId ? 'border-red-500 ring-1 ring-red-400 bg-red-50/50' : 'border-gray-200 focus:border-emerald-500'}`}
+                  />
+                </div>
+              </div>
+              {kind === 'TRANSFER' && (
+                <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
+                  <label className="text-xs font-bold text-gray-600 uppercase tracking-wider whitespace-nowrap shrink-0 sm:min-w-[70px]">
+                    Kho nhận <span className="text-red-500 font-bold">*</span>
+                  </label>
+                  <div className="flex-1 min-w-0">
+                    <SearchCombo
+                      items={warehouses}
+                      selectedId={destWarehouseId}
+                      display={(w) => `${w.code} · ${w.name}`}
+                      match={(w, q) => `${w.code} ${w.name}`.toLowerCase().includes(q)}
+                      onPick={(w) => setDestWarehouseId(w ? w.id : '')}
+                      placeholder="-- Chọn kho nhận (*) --"
+                      showArrow={true}
+                      disabled={isEditing}
+                      inputClassName={`w-full px-4 py-2 border rounded-xl bg-white text-sm outline-none transition-colors disabled:bg-gray-50 disabled:text-gray-400 ${hasAttemptedSubmit && (!destWarehouseId || destWarehouseId === warehouseId) ? 'border-red-500 ring-1 ring-red-400 bg-red-50/50' : 'border-gray-200 focus:border-emerald-500'}`}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+            {isReturn && (
+              <p className="-mt-2 text-xs text-gray-500">
+                Chọn kho thực tế nhận lại hàng. Kho này có thể khác kho nhập hoặc kho xuất trước đây; Serial quét đầu tiên sẽ tự xác định phiếu xuất và đơn vị trả.
+              </p>
+            )}
+            {moneyKind && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Nhà cung cấp</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-3 gap-y-2">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Mã NCC/KH</label>
+                      <PartnerSuggestInput
+                        mode="code"
+                        value={partnerCode}
+                        onChange={setPartnerCode}
+                        onSelectPartner={handlePickPartner}
+                        partners={partnerSuggestions.partners}
+                        placeholder="CTY.SINPOWER"
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500 transition-colors"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Tên NCC/KH</label>
+                      <PartnerSuggestInput
+                        mode="name"
+                        value={partnerName}
+                        onChange={setPartnerName}
+                        onSelectPartner={handlePickPartner}
+                        partners={partnerSuggestions.partners}
+                        placeholder="CÔNG TY TNHH..."
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500 transition-colors"
+                      />
+                    </div>
+                    <div className="sm:col-span-3">
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Địa chỉ</label>
+                      <TextSuggestInput
+                        value={partnerAddress}
+                        onChange={setPartnerAddress}
+                        suggestions={partnerSuggestions.addresses}
+                        placeholder="Địa chỉ..."
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500 transition-colors"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Người giao hàng</label>
+                      <TextSuggestInput
+                        value={deliverer}
+                        onChange={setDeliverer}
+                        suggestions={partnerSuggestions.deliverers}
+                        placeholder="Nguyễn Văn A"
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500 transition-colors"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Nhân viên mua hàng</label>
+                      <select value={purchaserId} onChange={(e) => setPurchaserId(e.target.value)} disabled={isEditing} title={isEditing ? 'Không đổi được khi sửa' : undefined}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none disabled:bg-gray-50 disabled:text-gray-400">
+                        <option value="">-- Chọn --</option>
+                        {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                      </select>
+                    </div>
+                    <div className="sm:col-span-3">
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Diễn giải</label>
+                      <TextSuggestInput
+                        as="textarea"
+                        rows={2}
+                        textareaRef={notesRef}
+                        value={notes}
+                        onChange={setNotes}
+                        suggestions={partnerSuggestions.notes.length > 0 ? partnerSuggestions.notes : [
+                          'Mua hàng theo hóa đơn số...',
+                          'Nhập kho hàng mua trong nước',
+                          'Nhập kho hàng nhập khẩu',
+                          'Xuất kho bán hàng theo hóa đơn',
+                          'Xuất kho vật tư cho công trình'
+                        ]}
+                        placeholder="Mua hàng theo hóa đơn số..."
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none resize-none focus:border-emerald-500 transition-colors"
+                      />
+                    </div>
+                    <div className="sm:col-span-3">
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Tham chiếu</label>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <select value={referenceType} onChange={(e) => setReferenceType(e.target.value)} title={isEditing ? 'Tham chiếu không đổi được khi sửa' : 'Loại tham chiếu'} disabled={isEditing}
+                          className="w-full sm:w-36 px-2 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none disabled:bg-gray-50 disabled:text-gray-400">
+                          <option value="PO">PO mua hàng</option>
+                          <option value="CONTRACT">Hợp đồng MB</option>
+                          <option value="INVOICE">Hóa đơn</option>
+                          <option value="CUSTOMS">Tờ khai HQ</option>
+                          <option value="PROJECT">Dự án</option>
+                          <option value="OTHER">Khác</option>
+                        </select>
+                        <input value={referenceId} onChange={(e) => setReferenceId(e.target.value)} placeholder="PO-2026-0021" disabled={isEditing}
+                          title={isEditing ? 'Tham chiếu không đổi được khi sửa' : undefined}
+                          className="flex-1 px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none disabled:bg-gray-50 disabled:text-gray-400" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Chứng từ</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-2">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Ngày hạch toán <span className="text-red-500 font-bold">*</span></label>
+                      <input type="date" value={postingDate} onChange={(e) => setPostingDate(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Ngày chứng từ <span className="text-red-500 font-bold">*</span></label>
+                      <input type="date" value={docDate} onChange={(e) => setDocDate(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none" />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Số phiếu</label>
+                      <input readOnly disabled value={isEditing ? (savedCode || '—') : (previewCode ? `${previewCode} (dự kiến)` : 'Tự động')} title="Số phiếu do hệ thống sinh khi lưu"
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-gray-50 text-sm text-gray-500 outline-none font-mono" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Thanh toán</label>
+                      <select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none">
+                        <option value="UNPAID">Chưa thanh toán</option>
+                        <option value="PAID">Đã thanh toán</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Hạn thanh toán</label>
+                      <input type="date" value={paymentDueDate} onChange={(e) => setPaymentDueDate(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">{isReturn ? 'Thiết bị trả' : 'Dòng hàng'}</label>
+              {!isReturn && <div className="flex items-center gap-2 flex-wrap mb-2">
+                <div className="flex bg-gray-100 rounded-xl p-0.5">
+                  <button type="button" onClick={() => setCostTab('goods')}
+                    className={`px-3 py-1.5 text-xs font-bold rounded-lg ${costTab === 'goods' ? 'bg-white shadow text-emerald-700' : 'text-gray-500'}`}>Hàng tiền</button>
+                  <button type="button" onClick={() => setCostTab('cost')}
+                    className={`px-3 py-1.5 text-xs font-bold rounded-lg ${costTab === 'cost' ? 'bg-white shadow text-emerald-700' : 'text-gray-500'}`}>Chi phí</button>
+                </div>
+                <span className="ml-auto text-xs text-gray-400">Loại tiền: <b className="text-gray-700">VNĐ</b></span>
+              </div>}
+              {(isReturn || costTab === 'goods') ? (
+                <div className="overflow-x-auto border border-gray-200">
+                  <table className={`wh-table wh-table-compact w-full text-sm ${isReturn ? 'min-w-[520px]' : 'min-w-[900px]'}`}>
+                    <thead className="bg-gray-50 sticky top-0">
+                      <tr>
+                        <th className="py-2 px-1 text-xs font-bold text-gray-500 uppercase w-8 text-center">#</th>
+                        {!isReturn && <th className="py-2 px-1 text-center text-xs font-bold text-gray-500 uppercase w-20">Mã hàng <span className="text-red-500 font-bold">*</span></th>}
+                        <th className="py-2 px-2 text-left text-xs font-bold text-gray-500 uppercase min-w-[180px]">{isReturn ? 'Thiết bị' : 'Tên hàng'} <span className="text-red-500 font-bold">*</span></th>
+                        {!isReturn && <th className="py-2 px-1 text-center text-xs font-bold text-gray-500 uppercase w-16">Kho</th>}
+                        {!isReturn && <th className="py-2 px-1 text-center text-xs font-bold text-gray-500 uppercase w-32">Vị trí</th>}
+                        <th className="py-2 px-0.5 text-center text-xs font-bold text-gray-500 uppercase hidden md:table-cell w-12">ĐVT</th>
+                        <th className="py-2 px-0.5 text-center text-xs font-bold text-gray-500 uppercase w-12">SL <span className="text-red-500 font-bold">*</span></th>
+                        {moneyKind && (
+                          <>
+                            <th className="py-2 px-1 text-center text-xs font-bold text-gray-500 uppercase w-28">Đơn giá</th>
+                            <th className="py-2 px-2 text-right text-xs font-bold text-gray-500 uppercase min-w-[90px]">Thành tiền</th>
+                            <th className="py-2 px-0.5 text-center text-xs font-bold text-gray-500 uppercase w-11">VAT%</th>
+                            <th className="py-2 px-2 text-right text-xs font-bold text-gray-500 uppercase min-w-[85px]">Tiền thuế</th>
+                            <th className="py-2 px-2 text-right text-xs font-bold text-gray-500 uppercase min-w-[100px]">Tổng tiền</th>
+                            <th className="py-2 px-1 text-center text-xs font-bold text-gray-500 uppercase w-28">Serial/Lot</th>
+                          </>
+                        )}
+                        <th className="w-10"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-50">
+                      {lines.map((l, i) => {
+                        const lineTotal = Number(l.quantity || 0) * Number(l.unitPrice || 0);
+                        const effectiveVatRate = canEditFinancials ? Number(l.vatRate ?? 8) : 8;
+                        const vatAmount = lineTotal * (effectiveVatRate / 100);
+                        const totalLine = lineTotal + vatAmount;
+
+                        const noProduct = !l.productId;
+                        const invalidQty = !l.quantity || Number(l.quantity) <= 0 || isNaN(Number(l.quantity));
+                        const isRowError = hasAttemptedSubmit && (noProduct || invalidQty);
+
+                        return (
+                        <tr key={i} className={`border-l-4 transition-colors ${
+                          isRowError
+                            ? 'bg-red-50/80 hover:bg-red-100/60 border-l-red-500'
+                            : 'hover:bg-gray-50/70 border-l-transparent'
+                        }`}>
+                          <td className="py-1 px-1 text-center text-xs">
+                            {isRowError ? (
+                              <span
+                                className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-600 text-white font-bold text-[10px] shadow-sm animate-pulse mx-auto"
+                                title={`Dòng #${i + 1}: ${noProduct ? 'Chưa chọn hàng hóa' : ''}${noProduct && invalidQty ? '; ' : ''}${invalidQty ? 'Số lượng phải > 0' : ''}`}
+                              >
+                                !
+                              </span>
+                            ) : (
+                              <span className="text-gray-400">{i + 1}</span>
+                            )}
+                          </td>
+                          {!isReturn && <td className="py-1 px-1 w-20 text-center">
+                            <SearchCombo
+                              items={selectableProducts}
+                              selectedId={l.productId}
+                              display={(p) => p.importCode || ''}
+                              match={(p, q) => `${p.importCode || ''} ${p.name || ''}`.toLowerCase().includes(q)}
+                              onPick={(p) => pickProduct(i, p)}
+                              onCreateNew={kind === 'RECEIPT' ? (t) => openQuickCreate(i, t, true) : undefined}
+                              placeholder={sourceInventoryLoading ? 'Đang tải tồn...' : 'Mã...'}
+                              inputClassName={`w-20 px-1 py-1 border rounded-none text-xs outline-none focus:border-emerald-500 text-center mx-auto transition-colors ${
+                                hasAttemptedSubmit && noProduct
+                                  ? 'border-red-400 bg-red-50/70 text-red-900 placeholder:text-red-400 ring-1 ring-red-400/40'
+                                  : 'border-gray-200 bg-white text-gray-900'
+                              }`}
+                              placement="top"
+                              minWidth={340}
+                              renderItem={(p) => (
+                                <div className="flex flex-col gap-0.5 text-left">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    {p.importCode ? (
+                                      <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[11px] font-semibold">
+                                        {p.importCode}
+                                      </span>
+                                    ) : (
+                                      <span className="text-gray-400 text-[11px]">—</span>
+                                    )}
+                                    <span className="font-semibold text-gray-900 text-xs">{p.name}</span>
+                                  </div>
+                                  <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                                    {p.category && <span>{p.category}</span>}
+                                    {p.unit && <span>· ĐVT: <b className="text-gray-700">{p.unit}</b></span>}
+                                    {p.defaultPrice ? <span>· Giá: {Number(p.defaultPrice).toLocaleString('vi-VN')} ₫</span> : null}
+                                  </div>
+                                </div>
+                              )}
+                            />
+                          </td>}
+                          <td className="py-1 px-2 min-w-[180px]">
+                            <SearchCombo
+                              items={selectableProducts}
+                              selectedId={l.productId}
+                              display={(p) => p.name}
+                              match={(p, q) => `${p.name} ${p.importCode || ''} ${p.unit || ''}`.toLowerCase().includes(q)}
+                              onPick={(p) => pickProduct(i, p)}
+                              onCreateNew={kind === 'RECEIPT' ? (t) => openQuickCreate(i, t, false) : undefined}
+                              placeholder={sourceInventoryLoading ? 'Đang tải tồn kho...' : hasAttemptedSubmit && noProduct ? '⚠️ Bắt buộc chọn hàng (*)...' : 'Gõ tên/mã hàng...'}
+                              inputClassName={`w-full px-2 py-1 border rounded-none text-xs outline-none transition-colors ${
+                                hasAttemptedSubmit && noProduct
+                                  ? 'border-red-400 bg-red-50/70 text-red-900 placeholder:text-red-400 ring-1 ring-red-400/40'
+                                  : 'border-gray-200 bg-white text-gray-900'
+                              }`}
+                              placement="top"
+                              minWidth={360}
+                              renderItem={(p) => (
+                                <div className="flex flex-col gap-0.5 text-left">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    {p.importCode && (
+                                      <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[11px] font-semibold">
+                                        {p.importCode}
+                                      </span>
+                                    )}
+                                    <span className="font-semibold text-gray-900 text-xs">{p.name}</span>
+                                  </div>
+                                  <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                                    {p.category && <span>{p.category}</span>}
+                                    {p.unit && <span>· ĐVT: <b className="text-gray-700">{p.unit}</b></span>}
+                                    {p.defaultPrice ? <span>· Giá: {Number(p.defaultPrice).toLocaleString('vi-VN')} ₫</span> : null}
+                                  </div>
+                                </div>
+                              )}
+                            />
+                          </td>
+                          {!isReturn && <td className="py-1 px-1 text-center text-gray-600 text-xs w-16">{whCode}</td>}
+                          {!isReturn && <td className="py-1 px-1 text-center w-32">
+                            <select aria-label="Vị trí hàng" value={l.locationId || ''} onChange={e => setLine(i, { locationId: e.target.value, reservationIds: [] })} className="w-32 px-1.5 py-1 border border-gray-200 rounded-none text-xs outline-none bg-white truncate text-center mx-auto">
+                              <option value="">Chưa phân vị trí</option>
+                              {locations.filter(location => kind !== 'ISSUE' || location.purpose === 'SALEABLE').map(location => <option key={location.id} value={location.id}>{location.code} · {location.name}</option>)}
+                            </select>
+                          </td>}
+                          <td className="py-1 px-0.5 text-center hidden md:table-cell w-12">
+                            {isReturn ? <span className="text-xs text-gray-600">{l.unit || localProducts.find((p) => p.id === l.productId)?.unit || '—'}</span> : <UnitSuggestInput
+                              value={l.unit !== undefined ? (l.unit || '') : (localProducts.find((p) => p.id === l.productId)?.unit || '')}
+                              onChange={(val) => setLine(i, { unit: val })}
+                              availableUnits={availableUnits}
+                              placeholder="ĐVT"
+                              className="w-11 px-0.5 py-1 border border-gray-200 rounded-none bg-white text-xs outline-none text-center mx-auto focus:border-emerald-500"
+                            />}
+                          </td>
+                          <td className="py-1 px-0.5 text-center w-12">
+                            <input type="number" min={isReturn ? 1 : 0.000001} step={isReturn ? 1 : 'any'} value={l.quantity}
+                              onChange={(e) => setLine(i, { quantity: Number(e.target.value) })}
+                              className={`w-11 px-0.5 py-1 border rounded-none text-xs outline-none text-center tabular-nums mx-auto [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none transition-colors ${
+                                hasAttemptedSubmit && invalidQty
+                                  ? 'border-red-400 bg-red-50/70 text-red-900 font-bold ring-1 ring-red-400/40 focus:border-red-500'
+                                  : 'border-gray-200 bg-white text-gray-900'
+                              }`}
+                              title={hasAttemptedSubmit && invalidQty ? 'Số lượng bắt buộc > 0' : 'Số lượng'} />
+                          </td>
+                          {moneyKind && (
+                            <>
+                              <td className="py-1 px-1 text-center w-28">
+                                <FormattedNumberInput
+                                  value={l.unitPrice ?? 0}
+                                  onChange={(val) => setLine(i, { unitPrice: val })}
+                                  className="w-28 px-1.5 py-1 border border-gray-200 rounded-none text-xs outline-none text-right tabular-nums mx-auto focus:border-emerald-500"
+                                  title="Đơn giá"
+                                  placeholder="0"
+                                />
+                              </td>
+                              <td className="py-1 px-2 text-right font-medium text-gray-800 tabular-nums text-xs min-w-[90px]">{lineTotal.toLocaleString('vi-VN')}</td>
+                              <td className="py-1 px-0.5 text-center w-11">
+                                <input type="number" min={0} max={100} step="any" value={effectiveVatRate}
+                                  disabled={!canEditFinancials}
+                                  onChange={(e) => setLine(i, { vatRate: Number(e.target.value) })}
+                                  className="w-10 px-0.5 py-1 border border-gray-200 rounded-none text-xs outline-none text-center tabular-nums mx-auto disabled:bg-gray-50 disabled:text-gray-500 disabled:cursor-not-allowed [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" title={canEditFinancials ? '% VAT' : 'VAT lấy theo cấu hình mặc định'} />
+                              </td>
+                              <td className="py-1 px-2 text-right text-gray-600 tabular-nums text-xs min-w-[85px]">{vatAmount.toLocaleString('vi-VN')}</td>
+                              <td className="py-1 px-2 text-right font-bold text-emerald-700 tabular-nums text-xs min-w-[100px]">{totalLine.toLocaleString('vi-VN')}</td>
+                              <td className="py-1 px-1 text-center w-28">
+                                {(() => {
+                                  const n = parseSerialList(l.serialLot || '').length;
+                                  const qty = Number(l.quantity) || 0;
+                                  const ok = n === 0 || n === qty || (n === 1 && qty > 1);
+                                  return (
+                                    <button type="button" onClick={() => setSerialEdit(i)}
+                                      title={n === 0 ? 'Nhập/quét serial' : `${n} serial (SL ${qty}) — bấm để sửa`}
+                                      className={`w-28 px-1.5 py-1 border rounded-none text-xs outline-none text-center mx-auto transition-colors flex items-center justify-center gap-1 ${
+                                        n === 0
+                                          ? 'border-dashed border-gray-300 text-gray-400 hover:border-emerald-400 hover:text-emerald-600'
+                                          : ok
+                                          ? 'border-emerald-300 bg-emerald-50/60 text-emerald-800 font-bold'
+                                          : 'border-amber-400 bg-amber-50 text-amber-800 font-bold'
+                                      }`}>
+                                      <ScanLine size={12} className="shrink-0" />
+                                      <span className="tabular-nums">{n === 0 ? 'Quét' : `${n}/${qty}`}</span>
+                                    </button>
+                                  );
+                                })()}
+                                {kind === 'ISSUE' && (
+                                  <button type="button" onClick={() => setReservationPicker(i)}
+                                    title={l.reservationIds?.length ? `${l.reservationIds.length} giữ hàng đã gắn — bấm để sửa` : 'Gắn hàng đã giữ cho dòng xuất'}
+                                    className={`mt-1 w-28 px-1.5 py-1 border rounded-none text-xs outline-none text-center mx-auto transition-colors flex items-center justify-center gap-1 ${
+                                      l.reservationIds?.length
+                                        ? 'border-sky-300 bg-sky-50 text-sky-800 font-bold'
+                                        : 'border-dashed border-gray-300 text-gray-400 hover:border-sky-400 hover:text-sky-600'
+                                    }`}>
+                                    <PackageCheck size={12} className="shrink-0" />
+                                    <span className="tabular-nums">{l.reservationIds?.length ? `${l.reservationIds.length} giữ` : 'Giữ hàng'}</span>
+                                  </button>
+                                )}
+                              </td>
+                            </>
+                          )}
+                          <td className="py-1.5 px-2 text-center">
+                            <button type="button" onClick={() => setLines((ls) => ls.filter((_, j) => j !== i))}
+                              className="p-1.5 text-gray-300 hover:text-red-500 transition-colors" title="Xóa dòng">
+                              <X size={15} />
+                            </button>
+                          </td>
+                        </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr className="bg-gray-50 font-bold text-sm">
+                        <td colSpan={99} className="py-2 px-3 text-right text-gray-700">
+                          Tổng SL: {lines.reduce((s, l) => s + (Number(l.quantity) || 0), 0).toLocaleString('vi-VN')}
+                          {moneyKind && (<> · Tiền hàng: {totals.pre.toLocaleString('vi-VN')} · VAT: {totals.vat.toLocaleString('vi-VN')} · Tổng: {(totals.pre + totals.vat).toLocaleString('vi-VN')}</>)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              ) : canEditFinancials ? (
+                <div className="border border-gray-200 rounded-xl p-4 space-y-3">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Chi phí mua hàng (vận chuyển, hải quan, bốc xếp...)</label>
+                    <FormattedNumberInput
+                      value={Number(shippingFee) || 0}
+                      onChange={(v) => setShippingFee(v > 0 ? String(v) : '')}
+                      className="w-full sm:w-64 px-3 py-2 border border-gray-200 rounded-none text-sm outline-none text-right tabular-nums focus:border-emerald-500"
+                      title="Chi phí mua hàng"
+                      placeholder="0"
+                    />
+                  </div>
+                  <p className="text-xs text-gray-400">Phân bổ chi phí vào giá vốn từng dòng sẽ thực hiện ở bước sau; hiện tại chi phí chỉ lưu ở đầu phiếu.</p>
+                </div>
+              ) : (
+                <div className="border border-sky-100 bg-sky-50 rounded-xl px-4 py-3 text-xs text-sky-800">
+                  VAT áp dụng mặc định 8%. Chi phí mua hàng, tài khoản và khoản mục được lấy từ cấu hình/mapping kế toán và chỉ Trưởng phòng kho mới được điều chỉnh.
+                </div>
+              )}
+              </div>
+              <div className="mt-2 flex items-center gap-2 flex-wrap">
+                <button type="button" onClick={() => setLines((ls) => [...ls, { productId: '', quantity: 1, unitPrice: 0, vatRate: 8, serialLot: '' }])}
+                  className="px-3 py-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg">+ Thêm dòng</button>
+                <button type="button" onClick={() => setLines([])}
+                  className="px-3 py-1.5 text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg">Xóa hết dòng</button>
+                <button type="button" onClick={() => notesRef.current?.focus()}
+                  className="px-3 py-1.5 text-xs font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg">+ Thêm ghi chú</button>
+                <span className="ml-auto text-xs text-gray-400">Tổng số: {lines.length} dòng</span>
+              </div>
+              {hasAttemptedSubmit && lines.some((l) => !l.productId || !l.quantity || Number(l.quantity) <= 0) && (
+                <div className="mt-2.5 p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-xs flex items-center gap-2.5 animate-in fade-in">
+                  <AlertCircle size={16} className="flex-shrink-0 text-red-500" />
+                  <span>
+                    Có <b>{lines.filter((l) => !l.productId || !l.quantity || Number(l.quantity) <= 0).length} dòng</b> chưa chọn hàng hóa hoặc chưa nhập số lượng hợp lệ (được tô nền đỏ và đánh dấu biểu tượng <b>!</b>). Vui lòng hoàn tất thông tin để lưu phiếu.
+                  </span>
+                </div>
+              )}
+              {lines.some((l) => l.productId) && (
+                <p className="text-xs text-gray-400 mt-1">Đang chọn: {lines.filter((l) => l.productId).map((l) => productName(l.productId)).join(', ')}</p>
+              )}
+            {moneyKind && canEditFinancials && (
+              <div>
+                <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Hạch toán (áp dụng cho mọi dòng)</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-x-3 gap-y-2 border border-gray-100 rounded-2xl px-4 py-3 bg-white">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">TK Kho / Nợ</label>
+                    <input value={tkKho} onChange={(e) => setTkKho(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none text-right font-mono" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">TK Công nợ / Có</label>
+                    <input value={tkCongNo} onChange={(e) => setTkCongNo(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none text-right font-mono" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Khoản mục CP</label>
+                    <input value={costItem} onChange={(e) => setCostItem(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Đối tượng THCP</label>
+                    <input value={costObject} onChange={(e) => setCostObject(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Công trình / Dự án</label>
+                    <input value={project} onChange={(e) => setProject(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none" />
+                  </div>
+                </div>
+              </div>
+            )}
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Đính kèm <span className="font-medium normal-case text-gray-400">(tối đa 5MB/file)</span></label>
+              <div onDragOver={(e) => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => { e.preventDefault(); setDragOver(false); if (e.dataTransfer.files) uploadFiles(e.dataTransfer.files); }}
+                className={`border-2 border-dashed rounded-2xl px-4 py-6 text-center text-sm transition-colors ${dragOver ? 'border-emerald-500 bg-emerald-50' : 'border-gray-200 bg-white'}`}>
+                <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) uploadFiles(e.target.files); e.target.value = ''; }} />
+                <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploading}
+                  className="text-emerald-700 font-bold hover:underline disabled:opacity-60">
+                  {uploading ? 'Đang tải lên...' : 'Chọn tệp hoặc kéo thả vào đây'}
+                </button>
+              </div>
+              {attachments.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {attachments.map((a, i) => (
+                    <li key={i} className="flex items-center gap-2 text-sm bg-white border border-gray-100 rounded-xl px-3 py-1.5">
+                      <a href={a.url} target="_blank" rel="noreferrer" className="flex-1 truncate text-emerald-700 hover:underline">{a.name}</a>
+                      <button type="button" onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                        className="p-1 text-gray-300 hover:text-red-500" title="Gỡ file">
+                        <X size={14} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            {moneyKind && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Hóa đơn / Tham chiếu</p>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Số hóa đơn</label>
+                      <input value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} placeholder="439"
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Ngày hóa đơn</label>
+                      <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Mã tra cứu HĐĐT</label>
+                      <input value={invoiceLookupCode} onChange={(e) => setInvoiceLookupCode(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">URL HĐĐT</label>
+                      <input value={invoiceLookupUrl} onChange={(e) => setInvoiceLookupUrl(e.target.value)} placeholder="https://..."
+                        className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none" />
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Tổng tiền</p>
+                  <div className="bg-emerald-50/60 border border-emerald-100 rounded-2xl px-4 py-3 text-sm space-y-1">
+                    <div className="flex justify-between text-gray-600"><span>Tiền hàng</span><span className="font-bold font-mono">{totals.pre.toLocaleString('vi-VN')}</span></div>
+                    <div className="flex justify-between text-gray-600"><span>Chiết khấu</span><span className="font-bold font-mono">0</span></div>
+                    <div className="flex justify-between text-gray-600"><span>Thuế GTGT</span><span className="font-bold font-mono">{totals.vat.toLocaleString('vi-VN')}</span></div>
+                    <div className="flex justify-between text-gray-900 font-extrabold text-base border-t border-emerald-200 pt-1"><span>Tổng thanh toán</span><span className="font-mono">{(totals.pre + totals.vat).toLocaleString('vi-VN')}</span></div>
+                    <div className="flex justify-between text-gray-600"><span>Giá trị nhập kho</span><span className="font-bold font-mono">{totals.pre.toLocaleString('vi-VN')}</span></div>
+                  </div>
+                </div>
+              </div>
+            )}
+            {!moneyKind && (
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">{isReturn ? <>Lý do trả hàng <span className="text-red-500">*</span></> : 'Ghi chú'}</label>
+                <textarea ref={notesRef} value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
+                  required={isReturn}
+                  placeholder={isReturn ? 'Ví dụ: Khách hoàn trả thiết bị không sử dụng / đổi bảo hành...' : undefined}
+                  className={`w-full px-4 py-2.5 border rounded-xl text-sm outline-none resize-none ${hasAttemptedSubmit && isReturn && !notes.trim() ? 'border-red-400 bg-red-50' : 'border-gray-200'}`} />
+              </div>
+            )}
+          </div>
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sm:gap-3 px-4 sm:px-6 py-4 border-t border-gray-100 bg-gray-50 flex-shrink-0">
+            <button type="button" onClick={requestClose} className="w-full sm:w-auto px-4 py-2.5 sm:py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-xl text-center">Hủy</button>
+            <button type="submit" disabled={saving || loadingDoc}
+              className="w-full sm:w-auto px-5 py-2.5 sm:py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60 flex items-center justify-center gap-2">
+              {saving ? <><RefreshCw size={14} className="animate-spin" />Đang lưu...</> : (isEditing ? 'Lưu thay đổi' : isReturn ? 'Tạo phiếu trả hàng' : 'Tạo phiếu nháp')}
+            </button>
+          </div>
+        </form>
+      </div>
+      {quickCreate && (
+        <QuickCreateProductModal
+          key={`${quickCreate.line}-${quickCreate.name}-${quickCreate.code}`}
+          initialName={quickCreate.name}
+          initialCode={quickCreate.code}
+          unit={lines[quickCreate.line]?.unit || ''}
+          unitPrice={Number(lines[quickCreate.line]?.unitPrice) || 0}
+          units={availableUnits}
+          onClose={() => setQuickCreate(null)}
+          onCreated={(p) => handleCreatedProduct(quickCreate.line, p)}
+        />
+      )}
+      {serialEdit !== null && lines[serialEdit] && (
+        <SerialEditorModal
+          key={`serial-${serialEdit}`}
+          initial={lines[serialEdit].serialLot || ''}
+          quantity={Number(lines[serialEdit].quantity) || 0}
+          productId={lines[serialEdit].productId}
+          warehouseId={kind === 'TRANSFER' ? destWarehouseId : warehouseId}
+          mode={kind === 'ISSUE' ? 'issue' : 'receipt'}
+          onSave={(v) => { setLine(serialEdit, { serialLot: v || undefined }); setSerialEdit(null); }}
+          onClose={() => setSerialEdit(null)}
+        />
+      )}
+      {reservationPicker !== null && lines[reservationPicker] && (
+        <ReservationPickerModal
+          key={`reservation-${reservationPicker}`}
+          line={lines[reservationPicker]}
+          reservations={heldReservations}
+          productName={productName(lines[reservationPicker].productId)}
+          onSave={(ids) => { setLine(reservationPicker, { reservationIds: ids }); setReservationPicker(null); }}
+          onClose={() => setReservationPicker(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ReservationPickerModal({ line, reservations, productName, onSave, onClose }: {
+  line: StockDocLine;
+  reservations: Reservation[];
+  productName: string;
+  onSave: (ids: string[]) => void;
+  onClose: () => void;
+}) {
+  const [selected, setSelected] = useState<string[]>(line.reservationIds || []);
+  const available = reservations.filter((r) =>
+    r.productId === line.productId
+    && String(r.locationId || '') === String(line.locationId || '')
+  );
+  const remainingOf = (r: Reservation) => Math.max(0, Number(r.quantity || 0) - Number(r.consumedQuantity || 0));
+  const selectedTotal = available
+    .filter((r) => selected.includes(r.id))
+    .reduce((sum, r) => sum + remainingOf(r), 0);
+  const toggle = (id: string) => {
+    setSelected((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  };
+  return (
+    <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <div>
+            <h3 className="font-bold text-gray-900">Gắn hàng đã giữ</h3>
+            <p className="text-xs text-gray-500 mt-0.5">{productName || 'Chưa chọn hàng'} · SL dòng: {Number(line.quantity) || 0}</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          {!line.productId ? (
+            <p className="text-sm text-gray-500">Chọn hàng hóa trước khi gắn giữ hàng.</p>
+          ) : available.length === 0 ? (
+            <div className="text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-xl p-4">
+              Không có giữ hàng HELD phù hợp sản phẩm, kho và vị trí này.
+            </div>
+          ) : available.map((r) => {
+            const checked = selected.includes(r.id);
+            return (
+              <label key={r.id} className={`flex items-start gap-3 p-3 border rounded-xl cursor-pointer transition-colors ${checked ? 'border-sky-300 bg-sky-50' : 'border-gray-200 hover:bg-gray-50'}`}>
+                <input type="checkbox" checked={checked} onChange={() => toggle(r.id)} className="mt-1 accent-sky-600" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-semibold text-sm text-gray-900 truncate">{r.productName || productName}</span>
+                    <span className="text-sm font-bold text-sky-700 tabular-nums">{remainingOf(r).toLocaleString('vi-VN')}</span>
+                  </div>
+                  <div className="text-xs text-gray-500 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+                    <span>Nguồn: {r.sourceType}{r.sourceId ? ` · ${r.sourceId}` : ''}</span>
+                    {r.expiresAt && <span>Hết hạn: {new Date(r.expiresAt).toLocaleString('vi-VN')}</span>}
+                    <span className="font-mono text-gray-400">{r.id.slice(0, 8)}</span>
+                  </div>
+                </div>
+              </label>
+            );
+          })}
+        </div>
+        <div className="px-5 py-4 border-t border-gray-100 bg-gray-50 flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between">
+          <p className="text-xs text-gray-500">
+            Đã chọn <b>{selected.length}</b> giữ hàng · Tổng còn giữ <b>{selectedTotal.toLocaleString('vi-VN')}</b>.
+            {selectedTotal > (Number(line.quantity) || 0) && (
+              <span className="text-amber-700"> Hệ thống chỉ trừ tối đa theo số lượng dòng.</span>
+            )}
+          </p>
+          <div className="flex items-center gap-2 justify-end">
+            <button type="button" onClick={() => setSelected([])} className="px-3 py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-xl">Bỏ chọn</button>
+            <button type="button" onClick={onClose} className="px-3 py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-xl">Hủy</button>
+            <button type="button" onClick={() => onSave(selected)} className="px-4 py-2 text-sm font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-xl">Lưu</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function QuickCreateProductModal({ initialName, initialCode, unit, unitPrice, units, onClose, onCreated }: {
+  initialName: string; initialCode: string; unit: string; unitPrice: number; units: string[];
+  onClose: () => void; onCreated: (p: Product) => void;
+}) {
+  const [name, setName] = useState(initialName);
+  const [code, setCode] = useState(initialCode);
+  const [punit, setPunit] = useState(unit || 'Cái');
+  const [importPrice, setImportPrice] = useState(unitPrice);
+  const [salePrice, setSalePrice] = useState(unitPrice);
+  const [warrantyMonths, setWarrantyMonths] = useState(24);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+  const [suggesting, setSuggesting] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const suggest = async () => {
+    setSuggesting(true);
+    try {
+      const r = await suggestCode('NK-');
+      setCode(r.suggestedCode);
+    } catch {
+      setErr('Không gợi ý được mã, bạn nhập tay mã hàng.');
+    } finally {
+      setSuggesting(false);
+    }
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr('');
+    if (!name.trim()) { setErr('Tên hàng hóa là bắt buộc.'); return; }
+    if (!(salePrice > importPrice)) { setErr('Giá bán phải lớn hơn giá nhập (quy định danh mục).'); return; }
+    setSaving(true);
+    try {
+      const created = await createProduct({
+        name: name.trim(),
+        importCode: code.trim() || undefined,
+        unit: punit.trim() || 'Cái',
+        importPrice,
+        salePrice,
+        defaultPrice: salePrice,
+        warrantyMonths: Math.min(Math.max(warrantyMonths || 0, 0), 1200),
+      });
+      onCreated(created);
+    } catch (e: any) {
+      setErr(e.message || 'Tạo sản phẩm thất bại (có thể bạn không có quyền quản lý kho).');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <h3 className="font-bold text-gray-900">Tạo nhanh hàng hóa</h3>
+          <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
+        </div>
+        <form onSubmit={submit} className="p-5 space-y-3">
+          {err && <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm"><AlertCircle size={14} />{err}</div>}
+          <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Tên hàng <span className="text-red-500">*</span></label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="VD: Tấm pin..."
+              className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500" />
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Mã hàng</label>
+            <div className="flex gap-2">
+              <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="Để trống nếu chưa có mã"
+                className="flex-1 px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500 font-mono" />
+              <button type="button" onClick={suggest} disabled={suggesting}
+                className="px-3 py-2 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-xl disabled:opacity-60">
+                {suggesting ? '...' : 'Gợi ý mã'}
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">ĐVT</label>
+              <input value={punit} onChange={(e) => setPunit(e.target.value)} list="qc-units"
+                className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none focus:border-emerald-500" />
+              <datalist id="qc-units">{units.map((u) => <option key={u} value={u} />)}</datalist>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Giá nhập</label>
+              <input type="number" min={0} value={importPrice} onChange={(e) => setImportPrice(Number(e.target.value))}
+                className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none text-right tabular-nums focus:border-emerald-500" />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Giá bán <span className="text-red-500">*</span></label>
+              <input type="number" min={0} value={salePrice} onChange={(e) => setSalePrice(Number(e.target.value))}
+                className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none text-right tabular-nums focus:border-emerald-500" />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">BH (tháng)</label>
+              <input type="number" min={0} max={1200} value={warrantyMonths} onChange={(e) => setWarrantyMonths(Number(e.target.value))}
+                className="w-full px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm outline-none text-right tabular-nums focus:border-emerald-500" />
+            </div>
+          </div>
+          <p className="text-xs text-gray-400">Giá bán phải lớn hơn giá nhập. Hàng mới tạo sẽ vào danh mục chung và được chọn luôn vào dòng này.</p>
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-xl">Hủy</button>
+            <button type="submit" disabled={saving}
+              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60">
+              {saving ? 'Đang tạo...' : 'Tạo hàng hóa'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}

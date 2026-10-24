@@ -50,7 +50,7 @@ export default function MyWorkPage({ deptKey, initialTab }: { deptKey: DeptKey; 
   const historyDocs = useMemo(() => docs.filter((d) => d.status === 'DONE').slice(0, 30), [docs]);
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kho vận · Của tôi</p>

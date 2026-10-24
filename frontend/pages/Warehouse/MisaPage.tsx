@@ -3,13 +3,22 @@ import { Link } from 'react-router-dom';
 import { RefreshCcw, PlusCircle, RefreshCw, AlertCircle, X, Trash2 } from 'lucide-react';
 import { Card } from '../../components/UI';
 import {
-  getMisaMappings, createMisaMapping, deleteMisaMapping, getMisaLogs,
+  getMisaMappings, createMisaMapping, deleteMisaMapping, getMisaLogs, prepareMisaSync,
   type MisaMapping, type MisaSyncLog,
 } from '../../services/stockService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
 
-const ENTITY_TYPES = ['product', 'warehouse', 'document'];
+const ENTITY_TYPES = [
+  { value: 'PRODUCT_ITEM', label: 'Sản phẩm → mã vật tư MISA' },
+  { value: 'PRODUCT_INVENTORY_ACCOUNT', label: 'Sản phẩm → tài khoản kho' },
+  { value: 'PARTNER_PAYABLE_ACCOUNT', label: 'Đối tác → tài khoản công nợ' },
+  { value: 'WAREHOUSE', label: 'Kho → mã kho MISA' },
+  { value: 'PROJECT', label: 'Dự án → công trình MISA' },
+  { value: 'DOCUMENT', label: 'Chứng từ → mã MISA' },
+] as const;
+
+const entityTypeLabel = (entityType: string) => ENTITY_TYPES.find((type) => type.value === entityType)?.label || entityType;
 
 // Đối soát MISA (§30.6 + §35): quản trị mapping trước, sync thật khi có endpoint.
 // Tuyệt đối không tự tạo mapping mơ hồ, không adjust chỉ để khớp số.
@@ -43,9 +52,13 @@ export default function MisaPage({ deptKey }: { deptKey: DeptKey }) {
       setError(e.message || 'Xóa thất bại');
     }
   };
+  const prepareQueue = async () => {
+    try { const result = await prepareMisaSync(); setError(`Đã chuẩn bị ${result.prepared} phiếu; bỏ qua ${result.skipped} phiếu đã có trong hàng đợi.`); await fetchAll(); }
+    catch (e: any) { setError(e.message || 'Không thể chuẩn bị hàng đợi MISA'); }
+  };
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kho vận · Báo cáo</p>
@@ -70,6 +83,9 @@ export default function MisaPage({ deptKey }: { deptKey: DeptKey }) {
               <PlusCircle size={16} /> Thêm mapping
             </button>
           )}
+          <button onClick={() => void prepareQueue()} className="px-4 py-2.5 border border-emerald-200 text-emerald-700 rounded-xl font-bold text-sm hover:bg-emerald-50">
+            Chuẩn bị queue sync
+          </button>
         </div>
       </div>
 
@@ -94,25 +110,25 @@ export default function MisaPage({ deptKey }: { deptKey: DeptKey }) {
         ) : (
           <Card className="overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="wh-table w-full text-sm">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Đối tượng</th>
-                    <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Mã nội bộ</th>
-                    <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Mã MISA</th>
-                    <th className="text-right py-3 px-5 text-xs font-bold text-gray-500 uppercase">Xóa</th>
+                    <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Đối tượng</th>
+                    <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Mã nội bộ</th>
+                    <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Mã MISA</th>
+                    <th className="text-right py-2 px-5 text-xs font-bold text-gray-500 uppercase">Xóa</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
                   {mappings.map((m) => (
                     <tr key={m.id} className="hover:bg-gray-50/70">
-                      <td className="py-3 px-5 text-gray-500 text-xs">{m.entityType}</td>
-                      <td className="py-3 px-4 font-mono text-xs text-gray-700">{m.entityId}</td>
-                      <td className="py-3 px-4">
+                      <td className="py-2 px-5 text-gray-500 text-xs">{entityTypeLabel(m.entityType)}</td>
+                      <td className="py-2 px-4 font-mono text-xs text-gray-700">{m.entityId}</td>
+                      <td className="py-2 px-4">
                         <span className="font-mono font-bold text-gray-800 text-xs">{m.misaCode}</span>
                         {m.misaName && <span className="text-xs text-gray-400 ml-2">{m.misaName}</span>}
                       </td>
-                      <td className="py-3 px-5 text-right">
+                      <td className="py-2 px-5 text-right">
                         <button onClick={() => remove(m.id)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg" title="Xóa mapping">
                           <Trash2 size={14} />
                         </button>
@@ -132,22 +148,22 @@ export default function MisaPage({ deptKey }: { deptKey: DeptKey }) {
       ) : (
         <Card className="overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="wh-table w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Thời gian</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Chiều · Đối tượng</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Lỗi</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Thời gian</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Chiều · Đối tượng</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Lỗi</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {logs.map((l) => (
                   <tr key={l.id} className="hover:bg-gray-50/70">
-                    <td className="py-3 px-5 text-xs text-gray-500">{l.createdAt ? new Date(l.createdAt).toLocaleString('vi-VN') : ''}</td>
-                    <td className="py-3 px-4 text-xs text-gray-600">{l.direction} · {l.entityType}</td>
-                    <td className="py-3 px-4"><span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600">{l.status}</span></td>
-                    <td className="py-3 px-5 text-xs text-red-500 max-w-[280px] truncate" title={l.error || ''}>{l.error || '—'}</td>
+                    <td className="py-2 px-5 text-xs text-gray-500">{l.createdAt ? new Date(l.createdAt).toLocaleString('vi-VN') : ''}</td>
+                    <td className="py-2 px-4 text-xs text-gray-600">{l.direction} · {l.entityType}</td>
+                    <td className="py-2 px-4"><span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600">{l.status}</span></td>
+                    <td className="py-2 px-5 text-xs text-red-500 max-w-[280px] truncate" title={l.error || ''}>{l.error || '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -168,7 +184,7 @@ export default function MisaPage({ deptKey }: { deptKey: DeptKey }) {
 }
 
 function MappingModal({ onClose, onDone }: { onClose: () => void; onDone: () => Promise<void> }) {
-  const [entityType, setEntityType] = useState('product');
+  const [entityType, setEntityType] = useState<(typeof ENTITY_TYPES)[number]['value']>('PRODUCT_ITEM');
   const [entityId, setEntityId] = useState('');
   const [misaCode, setMisaCode] = useState('');
   const [misaName, setMisaName] = useState('');
@@ -200,9 +216,9 @@ function MappingModal({ onClose, onDone }: { onClose: () => void; onDone: () => 
           {err && <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm"><AlertCircle size={14} />{err}</div>}
           <div>
             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Loại đối tượng</label>
-            <select value={entityType} onChange={(e) => setEntityType(e.target.value)}
+            <select value={entityType} onChange={(e) => setEntityType(e.target.value as typeof entityType)}
               className="w-full px-4 py-2.5 border border-gray-200 rounded-xl bg-white text-sm outline-none">
-              {ENTITY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              {ENTITY_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
             </select>
           </div>
           <div>

@@ -55,7 +55,7 @@ export default function BundlePage({ deptKey }: { deptKey: DeptKey }) {
   useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [warehouseId]);
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kho vận · Hàng hóa</p>
@@ -142,7 +142,8 @@ export default function BundlePage({ deptKey }: { deptKey: DeptKey }) {
                   </button>
                 </div>
               )}
-              <table className="w-full text-xs">
+              <div className="overflow-x-auto">
+              <table className="wh-table wh-table-compact w-full text-xs">
                 <thead>
                   <tr className="text-gray-400 uppercase text-[10px]">
                     <th className="text-left py-1.5 font-bold">Thành phần</th>
@@ -162,6 +163,7 @@ export default function BundlePage({ deptKey }: { deptKey: DeptKey }) {
                   ))}
                 </tbody>
               </table>
+              </div>
             </Card>
           ))}
         </div>

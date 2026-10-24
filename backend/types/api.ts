@@ -228,6 +228,7 @@ export interface CreateProductRequest {
 
 export interface UpdateProductRequest extends Partial<CreateProductRequest> {
   id: string;
+  /** @deprecated Legacy field; stock is tracked in stock_balances/stock_moves. */
   remainingQuantity?: number;
 }
 

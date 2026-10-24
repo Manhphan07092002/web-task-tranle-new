@@ -401,7 +401,7 @@ CREATE TABLE IF NOT EXISTS products (
   id VARCHAR(191) PRIMARY KEY, name VARCHAR(191) NOT NULL, unit TEXT, origin TEXT,
   defaultPrice DOUBLE DEFAULT 0, createdAt TEXT NOT NULL, category VARCHAR(191),
   importQuantity INT DEFAULT 0, remainingQuantity INT DEFAULT 0,
-  importPrice DOUBLE DEFAULT 0, salePrice DOUBLE DEFAULT 0, importCode VARCHAR(191), invoiceDate TEXT
+  importPrice DOUBLE DEFAULT 0, salePrice DOUBLE DEFAULT 0, importCode VARCHAR(191), invoiceDate TEXT, warrantyMonths INT NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS mail_quotas (
@@ -448,18 +448,34 @@ CREATE TABLE IF NOT EXISTS stock_locations (
   isActive TINYINT NOT NULL DEFAULT 1, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY unique_warehouse_location (warehouseId, code),
   INDEX idx_loc_warehouse (warehouseId),
+  INDEX idx_loc_wh_purpose_active (warehouseId, purpose, isActive),
   INDEX idx_loc_purpose (purpose)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS stock_documents (
   id VARCHAR(191) PRIMARY KEY, code VARCHAR(100) NULL UNIQUE,
   docType VARCHAR(32) NOT NULL, status VARCHAR(32) NOT NULL DEFAULT 'DRAFT',
+  receiptSubType VARCHAR(64) NULL DEFAULT 'DOMESTIC_PURCHASE',
   warehouseId VARCHAR(191) NULL, sourceWarehouseId VARCHAR(191) NULL, destWarehouseId VARCHAR(191) NULL,
+  partnerCode VARCHAR(100) NULL, partnerName VARCHAR(255) NULL, partnerAddress TEXT NULL,
+  deliverer VARCHAR(191) NULL, purchaserId VARCHAR(191) NULL,
+  postingDate VARCHAR(191) NULL, docDate VARCHAR(40) NULL,
+  invoiceNumber VARCHAR(100) NULL, invoiceDate VARCHAR(40) NULL,
+  customsDeclarationNumber VARCHAR(100) NULL,
+  invoiceLookupCode VARCHAR(100) NULL, invoiceLookupUrl TEXT NULL,
+  totalPreTax DOUBLE NOT NULL DEFAULT 0, vatRate DOUBLE NOT NULL DEFAULT 0,
+  vatAmount DOUBLE NOT NULL DEFAULT 0, totalAmount DOUBLE NOT NULL DEFAULT 0,
+  shippingFee DOUBLE NOT NULL DEFAULT 0,
+  paymentStatus VARCHAR(32) NOT NULL DEFAULT 'UNPAID', paymentDueDate VARCHAR(40) NULL,
+  deliveryDate VARCHAR(40) NULL, installationDate VARCHAR(40) NULL, acceptanceDate VARCHAR(40) NULL,
   referenceType VARCHAR(64) NULL, referenceId VARCHAR(191) NULL,
+  attachments TEXT NULL,
   notes TEXT NULL, createdBy VARCHAR(191) NULL, approvedBy VARCHAR(191) NULL,
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_sdoc_type_status (docType, status),
   INDEX idx_sdoc_warehouse (warehouseId),
+  INDEX idx_sdoc_source (sourceWarehouseId),
+  INDEX idx_sdoc_dest (destWarehouseId),
   INDEX idx_sdoc_reference (referenceType, referenceId),
   INDEX idx_sdoc_created (createdAt)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -468,6 +484,13 @@ CREATE TABLE IF NOT EXISTS stock_document_lines (
   id VARCHAR(191) PRIMARY KEY, documentId VARCHAR(191) NOT NULL, productId VARCHAR(191) NOT NULL,
   quantity DOUBLE NOT NULL DEFAULT 0, unitPrice DOUBLE NOT NULL DEFAULT 0,
   locationId VARCHAR(191) NULL, note TEXT NULL,
+  accountDebit VARCHAR(32) NULL DEFAULT '1561',
+  accountCredit VARCHAR(32) NULL DEFAULT '331',
+  vatRate DOUBLE NOT NULL DEFAULT 0, vatAmount DOUBLE NOT NULL DEFAULT 0,
+  totalAmount DOUBLE NOT NULL DEFAULT 0,
+  projectId VARCHAR(191) NULL, costItem VARCHAR(100) NULL,
+  processingStatus VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  actualQty DOUBLE NULL, varianceQty DOUBLE NULL, varianceReason VARCHAR(500) NULL,
   INDEX idx_sdline_document (documentId),
   INDEX idx_sdline_product (productId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -476,12 +499,15 @@ CREATE TABLE IF NOT EXISTS stock_moves (
   id VARCHAR(191) PRIMARY KEY, productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
   locationId VARCHAR(191) NULL, quantity DOUBLE NOT NULL,
   moveType VARCHAR(32) NOT NULL, referenceType VARCHAR(64) NULL, referenceId VARCHAR(191) NULL,
-  documentLineId VARCHAR(191) NULL, createdBy VARCHAR(191) NULL,
+  documentLineId VARCHAR(191) NULL, serialId VARCHAR(191) NULL, lotId VARCHAR(191) NULL, createdBy VARCHAR(191) NULL,
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_smove_product (productId),
   INDEX idx_smove_warehouse (warehouseId),
   INDEX idx_smove_wh_product (warehouseId, productId),
+  INDEX idx_smove_wh_product_created (warehouseId, productId, createdAt),
   INDEX idx_smove_reference (referenceType, referenceId),
+  INDEX idx_smove_serial (serialId),
+  INDEX idx_smove_lot (lotId),
   INDEX idx_smove_created (createdAt)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -504,10 +530,12 @@ CREATE TABLE IF NOT EXISTS product_warehouse_policies (
 CREATE TABLE IF NOT EXISTS reservations (
   id VARCHAR(191) PRIMARY KEY, productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
   locationId VARCHAR(191) NULL, quantity DOUBLE NOT NULL DEFAULT 0,
+  consumedQuantity DOUBLE NOT NULL DEFAULT 0,
   sourceType VARCHAR(32) NOT NULL DEFAULT 'INTERNAL', sourceId VARCHAR(191) NULL,
   requestedBy VARCHAR(191) NULL, status VARCHAR(32) NOT NULL DEFAULT 'HELD',
   expiresAt DATETIME NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_res_wh_product (warehouseId, productId),
+  INDEX idx_res_wh_status_created (warehouseId, status, createdAt),
   INDEX idx_res_status (status),
   INDEX idx_res_source (sourceType, sourceId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -517,7 +545,11 @@ CREATE TABLE IF NOT EXISTS stock_serials (
   serialNumber VARCHAR(191) NULL UNIQUE, lotCode VARCHAR(191) NULL,
   warehouseId VARCHAR(191) NOT NULL, locationId VARCHAR(191) NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'SALEABLE',
+  stockStatus VARCHAR(16) NOT NULL DEFAULT 'IN_STOCK',
   supplier VARCHAR(300) NULL, receiptId VARCHAR(191) NULL,
+  receiptDocumentId VARCHAR(191) NULL, receiptLineId VARCHAR(191) NULL,
+  issueDocumentId VARCHAR(191) NULL, issueLineId VARCHAR(191) NULL,
+  receivedAt DATETIME NULL, outDate DATETIME NULL,
   customerName VARCHAR(300) NULL, projectId VARCHAR(191) NULL,
   warrantyStart DATE NULL, warrantyMonths INT NOT NULL DEFAULT 0,
   notes TEXT NULL, createdBy VARCHAR(191) NULL,
@@ -525,7 +557,58 @@ CREATE TABLE IF NOT EXISTS stock_serials (
   INDEX idx_sser_product (productId),
   INDEX idx_sser_lot (lotCode),
   INDEX idx_sser_warehouse (warehouseId),
-  INDEX idx_sser_status (status)
+  INDEX idx_sser_wh_status_created (warehouseId, status, createdAt),
+  INDEX idx_sser_status (status),
+  INDEX idx_sser_stock_status (stockStatus),
+  INDEX idx_sser_receipt (receiptDocumentId, receiptLineId),
+  INDEX idx_sser_issue (issueDocumentId, issueLineId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_lots (
+  id VARCHAR(191) PRIMARY KEY, productId VARCHAR(191) NOT NULL,
+  lotCode VARCHAR(191) NOT NULL, coilCode VARCHAR(191) NULL,
+  warehouseId VARCHAR(191) NOT NULL, locationId VARCHAR(191) NULL,
+  initialQty DOUBLE NOT NULL DEFAULT 0, remainingQty DOUBLE NOT NULL DEFAULT 0,
+  unit VARCHAR(32) NULL,
+  manufacturedAt VARCHAR(40) NULL, supplier VARCHAR(300) NULL,
+  receiptDocumentId VARCHAR(191) NULL, receiptLineId VARCHAR(191) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  createdBy VARCHAR(191) NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_lot (productId, warehouseId, lotCode),
+  INDEX idx_slot_product_wh (productId, warehouseId),
+  INDEX idx_slot_receipt (receiptDocumentId, receiptLineId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_lot_movements (
+  id VARCHAR(191) PRIMARY KEY, lotId VARCHAR(191) NOT NULL,
+  productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
+  quantity DOUBLE NOT NULL,
+  moveType VARCHAR(32) NOT NULL, referenceType VARCHAR(64) NULL, referenceId VARCHAR(191) NULL,
+  documentLineId VARCHAR(191) NULL, createdBy VARCHAR(191) NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_slotm_lot (lotId),
+  INDEX idx_slotm_reference (referenceType, referenceId),
+  INDEX idx_slotm_created (createdAt)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_document_line_lots (
+  id VARCHAR(191) PRIMARY KEY, documentLineId VARCHAR(191) NOT NULL,
+  lotId VARCHAR(191) NOT NULL, quantity DOUBLE NOT NULL DEFAULT 0,
+  createdBy VARCHAR(191) NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_document_line_lot (documentLineId, lotId),
+  INDEX idx_sdll_line (documentLineId),
+  INDEX idx_sdll_lot (lotId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_transfer_line_lots (
+  id VARCHAR(191) PRIMARY KEY, documentLineId VARCHAR(191) NOT NULL,
+  sourceLotId VARCHAR(191) NOT NULL, destLotId VARCHAR(191) NULL,
+  quantity DOUBLE NOT NULL DEFAULT 0, createdBy VARCHAR(191) NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_transfer_line_source_lot (documentLineId, sourceLotId),
+  INDEX idx_stll_line (documentLineId), INDEX idx_stll_source_lot (sourceLotId),
+  INDEX idx_stll_dest_lot (destLotId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS product_bundles (
@@ -551,6 +634,7 @@ CREATE TABLE IF NOT EXISTS stock_counts (
   notes TEXT NULL, createdBy VARCHAR(191) NULL, approvedBy VARCHAR(191) NULL,
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_scnt_warehouse (warehouseId),
+  INDEX idx_scnt_wh_status (warehouseId, status),
   INDEX idx_scnt_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -558,7 +642,7 @@ CREATE TABLE IF NOT EXISTS stock_count_lines (
   id VARCHAR(191) PRIMARY KEY, countId VARCHAR(191) NOT NULL,
   productId VARCHAR(191) NOT NULL, locationId VARCHAR(191) NOT NULL DEFAULT '',
   expectedQty DOUBLE NOT NULL DEFAULT 0, actualQty DOUBLE NULL,
-  note TEXT NULL,
+  note TEXT NULL, countedBy VARCHAR(191) NULL,
   UNIQUE KEY unique_count_line (countId, productId, locationId),
   INDEX idx_scline_count (countId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -1165,6 +1249,310 @@ export async function initDbMysql(): Promise<MysqlDb> {
         await dropLegacyTableFks('stock_count_lines');
       });
 
+      await runVersionedMigration(db, 26, 'misa_stock_receipt_fields', async () => {
+        // Mở rộng các trường hóa đơn, đối tác, thuế và hạch toán kế toán theo chuẩn MISA
+        await ensureColumn('stock_documents', 'receiptSubType', "`receiptSubType` VARCHAR(64) NULL DEFAULT 'DOMESTIC_PURCHASE'");
+        await ensureColumn('stock_documents', 'partnerCode', '`partnerCode` VARCHAR(100) NULL');
+        await ensureColumn('stock_documents', 'partnerName', '`partnerName` VARCHAR(255) NULL');
+        await ensureColumn('stock_documents', 'partnerAddress', '`partnerAddress` TEXT NULL');
+        await ensureColumn('stock_documents', 'deliverer', '`deliverer` VARCHAR(191) NULL');
+        await ensureColumn('stock_documents', 'purchaserId', '`purchaserId` VARCHAR(191) NULL');
+        await ensureColumn('stock_documents', 'postingDate', '`postingDate` VARCHAR(191) NULL');
+        await ensureColumn('stock_documents', 'docDate', '`docDate` VARCHAR(40) NULL');
+        await ensureColumn('stock_documents', 'invoiceNumber', '`invoiceNumber` VARCHAR(100) NULL');
+        await ensureColumn('stock_documents', 'invoiceDate', '`invoiceDate` VARCHAR(40) NULL');
+        await ensureColumn('stock_documents', 'customsDeclarationNumber', '`customsDeclarationNumber` VARCHAR(100) NULL');
+        await ensureColumn('stock_documents', 'invoiceLookupCode', '`invoiceLookupCode` VARCHAR(100) NULL');
+        await ensureColumn('stock_documents', 'invoiceLookupUrl', '`invoiceLookupUrl` TEXT NULL');
+        await ensureColumn('stock_documents', 'totalPreTax', '`totalPreTax` DOUBLE NOT NULL DEFAULT 0');
+        await ensureColumn('stock_documents', 'vatRate', '`vatRate` DOUBLE NOT NULL DEFAULT 0');
+        await ensureColumn('stock_documents', 'vatAmount', '`vatAmount` DOUBLE NOT NULL DEFAULT 0');
+        await ensureColumn('stock_documents', 'totalAmount', '`totalAmount` DOUBLE NOT NULL DEFAULT 0');
+        await ensureColumn('stock_documents', 'shippingFee', '`shippingFee` DOUBLE NOT NULL DEFAULT 0');
+        await ensureColumn('stock_documents', 'paymentStatus', "`paymentStatus` VARCHAR(32) NOT NULL DEFAULT 'UNPAID'");
+        await ensureColumn('stock_documents', 'paymentDueDate', '`paymentDueDate` VARCHAR(40) NULL');
+        await ensureColumn('stock_documents', 'attachments', '`attachments` TEXT NULL');
+
+        await ensureColumn('stock_document_lines', 'accountDebit', "`accountDebit` VARCHAR(32) NULL DEFAULT '1561'");
+        await ensureColumn('stock_document_lines', 'accountCredit', "`accountCredit` VARCHAR(32) NULL DEFAULT '331'");
+        await ensureColumn('stock_document_lines', 'vatRate', '`vatRate` DOUBLE NOT NULL DEFAULT 0');
+        await ensureColumn('stock_document_lines', 'vatAmount', '`vatAmount` DOUBLE NOT NULL DEFAULT 0');
+        await ensureColumn('stock_document_lines', 'totalAmount', '`totalAmount` DOUBLE NOT NULL DEFAULT 0');
+        await ensureColumn('stock_document_lines', 'projectId', '`projectId` VARCHAR(191) NULL');
+        await ensureColumn('stock_document_lines', 'costItem', '`costItem` VARCHAR(100) NULL');
+      });
+
+      await runVersionedMigration(db, 29, 'stock_line_serial_cost_object', async () => {
+        // Cột Serial/Lot + Đối tượng THCP theo dòng cho UI chứng từ kiểu MISA.
+        // (DB dev đời cũ đã có 2 cột này từ migration v27/v28 không còn trong code —
+        // ensureColumn bỏ qua khi đã tồn tại, nên an toàn mọi môi trường.)
+        await ensureColumn('stock_document_lines', 'serialLot', '`serialLot` VARCHAR(191) NULL');
+        await ensureColumn('stock_document_lines', 'costObjectId', '`costObjectId` VARCHAR(191) NULL');
+      });
+
+      await runVersionedMigration(db, 30, 'stock_query_indexes', async () => {
+        // Index cho các pattern truy vấn sau P2/P3 (list có limit/offset, check
+        // tồn batch, tồn chậm). Chỉ thêm index đã có trong DDL cài mới — an toàn
+        // dữ liệu cũ vì CREATE INDEX không đụng hàng.
+        // KHÔNG làm ở đây (ghi chú quyết định):
+        // - FK ledger -> warehouses/products: DB cũ có hàng mồ côi (xóa kho đời
+        //   cũ không dọn), ép FK có thể làm migration fail và chặn boot prod.
+        //   Xóa kho đã được chặn ở app (warehouses.ts) + dọn scopes/locations.
+        // - CHECK quantity > 0 / đổi postingDate sang DATE: dữ liệu cũ lẫn lộn
+        //   ('09/10/2026' dd/mm/yyyy + ISO). Giữ VARCHAR, validate ở API (zod).
+        const ensureIndex = async (table: string, indexName: string, columns: string) => {
+          const tbl = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
+            [table]
+          );
+          if (!tbl || Number(tbl.count) === 0) return;
+          const existing = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+            [table, indexName]
+          );
+          if (!existing || Number(existing.count) === 0) {
+            await db.run(`CREATE INDEX ${indexName} ON \`${table}\` (${columns})`);
+          }
+        };
+        await ensureIndex('stock_moves', 'idx_smove_wh_product_created', 'warehouseId, productId, createdAt');
+        await ensureIndex('reservations', 'idx_res_wh_status_created', 'warehouseId, status, createdAt');
+        await ensureIndex('stock_serials', 'idx_sser_wh_status_created', 'warehouseId, status, createdAt');
+        await ensureIndex('stock_counts', 'idx_scnt_wh_status', 'warehouseId, status');
+        await ensureIndex('stock_locations', 'idx_loc_wh_purpose_active', 'warehouseId, purpose, isActive');
+      });
+
+      await runVersionedMigration(db, 31, 'stock_doc_directional_indexes_counted_by', async () => {
+        // Index 2 đầu điều chuyển cho query list lọc cả 3 cột + truy vết người đếm.
+        const ensureIndex31 = async (table: string, indexName: string, columns: string) => {
+          const tbl = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
+            [table]
+          );
+          if (!tbl || Number(tbl.count) === 0) return;
+          const existing = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+            [table, indexName]
+          );
+          if (!existing || Number(existing.count) === 0) {
+            await db.run(`CREATE INDEX ${indexName} ON \`${table}\` (${columns})`);
+          }
+        };
+        await ensureIndex31('stock_documents', 'idx_sdoc_source', 'sourceWarehouseId');
+        await ensureIndex31('stock_documents', 'idx_sdoc_dest', 'destWarehouseId');
+        await ensureColumn('stock_count_lines', 'countedBy', '`countedBy` VARCHAR(191) NULL');
+      });
+
+      await runVersionedMigration(db, 32, 'product_warranty_months', async () => {
+        // Số tháng bảo hành theo từng sản phẩm — phiếu nhập tự lấy khi đăng ký serial.
+        await ensureColumn('products', 'warrantyMonths', '`warrantyMonths` INT NOT NULL DEFAULT 0');
+      });
+
+      await runVersionedMigration(db, 33, 'serial_line_tracking_lots_warranty_dates', async () => {
+        // Phase 1 truy xuất Serial/Lot: serial gắn dòng phiếu + lifecycle riêng,
+        // entity LOT/cuộn, trạng thái xử lý dòng, ngày phục vụ bảo hành, timeline moves.
+        // (CREATE TABLE bảng mới đã chạy trong DDL; ở đây chỉ thêm cột/index/backfill.)
+        await ensureColumn('stock_serials', 'stockStatus', "`stockStatus` VARCHAR(16) NOT NULL DEFAULT 'IN_STOCK'");
+        await ensureColumn('stock_serials', 'receiptDocumentId', '`receiptDocumentId` VARCHAR(191) NULL');
+        await ensureColumn('stock_serials', 'receiptLineId', '`receiptLineId` VARCHAR(191) NULL');
+        await ensureColumn('stock_serials', 'issueDocumentId', '`issueDocumentId` VARCHAR(191) NULL');
+        await ensureColumn('stock_serials', 'issueLineId', '`issueLineId` VARCHAR(191) NULL');
+        await ensureColumn('stock_serials', 'receivedAt', '`receivedAt` DATETIME NULL');
+        await ensureColumn('stock_serials', 'outDate', '`outDate` DATETIME NULL');
+        await ensureColumn('stock_documents', 'deliveryDate', '`deliveryDate` VARCHAR(40) NULL');
+        await ensureColumn('stock_documents', 'installationDate', '`installationDate` VARCHAR(40) NULL');
+        await ensureColumn('stock_documents', 'acceptanceDate', '`acceptanceDate` VARCHAR(40) NULL');
+        await ensureColumn('stock_document_lines', 'processingStatus', "`processingStatus` VARCHAR(16) NOT NULL DEFAULT 'PENDING'");
+        await ensureColumn('stock_document_lines', 'actualQty', '`actualQty` DOUBLE NULL');
+        await ensureColumn('stock_document_lines', 'varianceQty', '`varianceQty` DOUBLE NULL');
+        await ensureColumn('stock_document_lines', 'varianceReason', '`varianceReason` VARCHAR(500) NULL');
+        await ensureColumn('stock_moves', 'serialId', '`serialId` VARCHAR(191) NULL');
+        await ensureColumn('stock_moves', 'lotId', '`lotId` VARCHAR(191) NULL');
+
+        const ensureIndex33 = async (table: string, indexName: string, columns: string) => {
+          const tbl = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
+            [table]
+          );
+          if (!tbl || Number(tbl.count) === 0) return;
+          const existing = await db.get(
+            'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+            [table, indexName]
+          );
+          if (!existing || Number(existing.count) === 0) {
+            await db.run(`CREATE INDEX ${indexName} ON \`${table}\` (${columns})`);
+          }
+        };
+        await ensureIndex33('stock_serials', 'idx_sser_stock_status', 'stockStatus');
+        await ensureIndex33('stock_serials', 'idx_sser_receipt', 'receiptDocumentId, receiptLineId');
+        await ensureIndex33('stock_serials', 'idx_sser_issue', 'issueDocumentId, issueLineId');
+        await ensureIndex33('stock_moves', 'idx_smove_serial', 'serialId');
+        await ensureIndex33('stock_moves', 'idx_smove_lot', 'lotId');
+
+        // Backfill lifecycle: hàng đã SOLD coi như OUT, còn lại IN_STOCK.
+        await db.run(`UPDATE stock_serials SET stockStatus = 'OUT' WHERE status = 'SOLD' AND stockStatus <> 'OUT'`);
+        // warranty_start_type seed trong COMPANY_CONFIGS (seedInitialData) thay vì ở
+        // đây — migration chạy cả trên legacy install, app đọc thiếu thì fallback OUTBOUND.
+      });
+
+      await runVersionedMigration(db, 34, 'stock_document_line_lot_allocations', async () => {
+        // Phân bổ lô theo từng dòng PXK: một phiếu có thể lấy từ nhiều PNK/lô,
+        // xuất lẻ theo remainingQty mà không cần nhét cấu trúc vào serialLot.
+        await db.run(`CREATE TABLE IF NOT EXISTS stock_document_line_lots (
+          id VARCHAR(191) PRIMARY KEY, documentLineId VARCHAR(191) NOT NULL,
+          lotId VARCHAR(191) NOT NULL, quantity DOUBLE NOT NULL DEFAULT 0,
+          createdBy VARCHAR(191) NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_document_line_lot (documentLineId, lotId),
+          INDEX idx_sdll_line (documentLineId),
+          INDEX idx_sdll_lot (lotId)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+      });
+
+      await runVersionedMigration(db, 35, 'stock_transfer_line_lot_links', async () => {
+        await db.run(`CREATE TABLE IF NOT EXISTS stock_transfer_line_lots (
+          id VARCHAR(191) PRIMARY KEY, documentLineId VARCHAR(191) NOT NULL,
+          sourceLotId VARCHAR(191) NOT NULL, destLotId VARCHAR(191) NULL,
+          quantity DOUBLE NOT NULL DEFAULT 0, createdBy VARCHAR(191) NULL,
+          createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_transfer_line_source_lot (documentLineId, sourceLotId),
+          INDEX idx_stll_line (documentLineId), INDEX idx_stll_source_lot (sourceLotId),
+          INDEX idx_stll_dest_lot (destLotId)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+      });
+
+      await runVersionedMigration(db, 36, 'new_stock_documents_require_serials', async () => {
+        // Snapshot theo dòng: chỉ phiếu tạo sau migration mới bắt buộc quét Serial.
+        await ensureColumn('stock_document_lines', 'serialRequired', '`serialRequired` TINYINT(1) NOT NULL DEFAULT 0');
+      });
+
+      await runVersionedMigration(db, 37, 'stock_line_serial_skip_confirmation', async () => {
+        await ensureColumn('stock_document_lines', 'serialSkipped', '`serialSkipped` TINYINT(1) NOT NULL DEFAULT 0');
+      });
+
+      await runVersionedMigration(db, 38, 'backfill_product_tracking_from_stock_entities', async () => {
+        // Legacy products were created before tracking was persisted and defaulted
+        // to NONE. Infer only from durable stock entities; do not touch an explicit
+        // SERIAL/LOT/QUANTITY configuration.
+        await db.run(`UPDATE products p SET tracking = 'SERIAL'
+          WHERE (p.tracking IS NULL OR p.tracking = '' OR p.tracking = 'NONE')
+            AND EXISTS (SELECT 1 FROM stock_serials s
+              WHERE s.productId = p.id AND s.serialNumber IS NOT NULL AND TRIM(s.serialNumber) <> '')`);
+        await db.run(`UPDATE products p SET tracking = 'LOT'
+          WHERE (p.tracking IS NULL OR p.tracking = '' OR p.tracking = 'NONE')
+            AND EXISTS (SELECT 1 FROM stock_lots l WHERE l.productId = p.id)`);
+        // NONE in legacy data means quantity-managed for inventory display and
+        // availability calculations. New product forms may still choose NONE
+        // before a tracking policy is configured.
+        await db.run(`UPDATE products SET tracking = 'QUANTITY'
+          WHERE tracking IS NULL OR tracking = '' OR tracking = 'NONE'`);
+      });
+
+      await runVersionedMigration(db, 39, 'warehouse_activity_logs', async () => {
+        await db.run(`CREATE TABLE IF NOT EXISTS warehouse_activity_logs (
+          id VARCHAR(191) PRIMARY KEY,
+          actionType VARCHAR(64) NOT NULL,
+          entityType VARCHAR(64) NOT NULL,
+          entityId VARCHAR(191) NULL,
+          documentId VARCHAR(191) NULL,
+          documentCode VARCHAR(191) NULL,
+          productId VARCHAR(191) NULL,
+          serialId VARCHAR(191) NULL,
+          lotId VARCHAR(191) NULL,
+          warehouseId VARCHAR(191) NULL,
+          fromWarehouseId VARCHAR(191) NULL,
+          toWarehouseId VARCHAR(191) NULL,
+          quantity DOUBLE NULL,
+          unit VARCHAR(32) NULL,
+          userId VARCHAR(191) NULL,
+          oldData TEXT NULL,
+          newData TEXT NULL,
+          metadata TEXT NULL,
+          createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_wh_activity_created (createdAt),
+          INDEX idx_wh_activity_action (actionType, createdAt),
+          INDEX idx_wh_activity_document (documentId, createdAt),
+          INDEX idx_wh_activity_user (userId, createdAt),
+          INDEX idx_wh_activity_product (productId, createdAt),
+          INDEX idx_wh_activity_serial (serialId, createdAt),
+          INDEX idx_wh_activity_lot (lotId, createdAt),
+          INDEX idx_wh_activity_warehouse (warehouseId, createdAt)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+      });
+
+      await runVersionedMigration(db, 40, 'remove_hardcoded_stock_account_defaults', async () => {
+        // Giữ nguyên dữ liệu cũ, chỉ bỏ default tài khoản kế toán cứng để
+        // chứng từ mới phải lấy từ mapping hoặc cấu hình được phân quyền.
+        await db.run("ALTER TABLE stock_document_lines MODIFY accountDebit VARCHAR(32) NULL DEFAULT NULL");
+        await db.run("ALTER TABLE stock_document_lines MODIFY accountCredit VARCHAR(32) NULL DEFAULT NULL");
+      });
+
+      await runVersionedMigration(db, 41, 'canonicalize_misa_mapping_entity_types', async () => {
+        // Tên type cũ ở UI viết thường, trong khi resolver kế toán dùng tên
+        // chuẩn viết hoa. Giữ nguyên mapping, chỉ chuẩn hóa loại để không mất
+        // dữ liệu và để một mapping được dùng nhất quán bởi ledger/reconcile.
+        // Nếu bản ghi canonical đã tồn tại, ưu tiên nó và bỏ bản legacy trùng.
+        await db.run(`DELETE legacy FROM misa_mappings legacy
+          INNER JOIN misa_mappings canonical
+            ON canonical.entityId = legacy.entityId
+           AND canonical.entityType = CASE legacy.entityType
+             WHEN 'product' THEN 'PRODUCT_ITEM'
+             WHEN 'warehouse' THEN 'WAREHOUSE'
+             WHEN 'project' THEN 'PROJECT'
+             WHEN 'document' THEN 'DOCUMENT'
+             ELSE legacy.entityType END
+          WHERE legacy.entityType IN ('product', 'warehouse', 'project', 'document')`);
+        await db.run(`UPDATE misa_mappings SET entityType = CASE entityType
+          WHEN 'product' THEN 'PRODUCT_ITEM'
+          WHEN 'warehouse' THEN 'WAREHOUSE'
+          WHEN 'project' THEN 'PROJECT'
+          WHEN 'document' THEN 'DOCUMENT'
+          ELSE entityType END
+          WHERE entityType IN ('product', 'warehouse', 'project', 'document')`);
+      });
+
+      await runVersionedMigration(db, 42, 'stock_alert_state', async () => {
+        // Trạng thái cảnh báo để scheduler chỉ notify khi cảnh báo mới/đổi mức,
+        // tránh gửi lặp mỗi vòng quét. stateVersion tăng mỗi lần kích hoạt lại.
+        await db.run(`
+          CREATE TABLE IF NOT EXISTS stock_alert_state (
+            productId VARCHAR(191) NOT NULL,
+            warehouseId VARCHAR(191) NOT NULL,
+            alertType VARCHAR(16) NOT NULL,
+            isActive TINYINT NOT NULL DEFAULT 1,
+            stateVersion INT NOT NULL DEFAULT 1,
+            lastChangedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            lastNotifiedAt DATETIME NULL,
+            lastNotifiedVersion INT NOT NULL DEFAULT 0,
+            PRIMARY KEY (productId, warehouseId),
+            INDEX idx_sas_active (warehouseId, isActive)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
+      await runVersionedMigration(db, 43, 'issue_reservation_links', async () => {
+        // Lượng đã tiêu thụ của một reservation. Cột này cho phép một reservation
+        // được dùng một phần rồi phần còn lại tái sử dụng cho phiếu xuất khác.
+        const column = await db.get(
+          `SELECT COUNT(*) AS count FROM information_schema.columns
+           WHERE table_schema = DATABASE() AND table_name = 'reservations' AND column_name = 'consumedQuantity'`
+        );
+        if (Number(column?.count ?? 0) === 0) {
+          await db.run('ALTER TABLE reservations ADD COLUMN consumedQuantity DOUBLE NOT NULL DEFAULT 0 AFTER quantity');
+        }
+        // Mỗi reservation chỉ gắn tối đa một dòng phiếu xuất tại một thời điểm.
+        // Link được dọn khi phiếu hủy/xóa/hoàn tất để phần còn lại có thể tái sử dụng.
+        await db.run(`
+          CREATE TABLE IF NOT EXISTS stock_document_line_reservations (
+            id VARCHAR(191) PRIMARY KEY,
+            documentLineId VARCHAR(191) NOT NULL,
+            reservationId VARCHAR(191) NOT NULL,
+            quantity DOUBLE NOT NULL DEFAULT 0,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_sdlr_reservation (reservationId),
+            INDEX idx_sdlr_line (documentLineId)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      });
+
 
 
 
@@ -1254,6 +1642,7 @@ async function seedInitialData(db: MysqlDb) {
     ['company_scale_customers', '2000+ khách hàng'],
     ['company_capital', '20 tỷ đồng vốn điều lệ'],
     ['company_revenue_2020', 'Doanh thu trước thuế vượt mốc 1000 tỷ đồng (2020)'],
+    ['warranty_start_type', 'OUTBOUND'],
   ];
 
   for (const [key, value] of COMPANY_CONFIGS) {

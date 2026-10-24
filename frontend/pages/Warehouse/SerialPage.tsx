@@ -1,33 +1,55 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { ScanLine, PlusCircle, RefreshCw, AlertCircle, X, ChevronDown, Pencil } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { ScanLine, RefreshCw, AlertCircle, X, ChevronDown, Pencil, History, Trash2 } from 'lucide-react';
 import { Card } from '../../components/UI';
+import { Pagination } from '../../components/Pagination';
 import {
-  getStockSerials, registerSerial, updateSerial, getWarehouses,
-  type StockSerial, type Warehouse, type SerialStatus,
+  getStockSerials, updateSerial, deleteSerial,
+  type StockSerial, type SerialStatus,
 } from '../../services/stockService';
-import { getProducts, type Product } from '../../services/productService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
+import { useAuth } from '../../contexts/AuthContext';
+import { levelOf, LEVELS } from '../../utils/rbac';
+import SerialDocMode from './SerialDocMode';
+import { SerialTimelineModal } from './StockDocs/SerialTimelineModal';
+import { LotTimelineModal } from './StockDocs/LotTimelineModal';
+import { QuickScanLookupModal } from './StockDocs/QuickScanLookupModal';
 
 const STATUSES: SerialStatus[] = ['SALEABLE', 'WARRANTY', 'DAMAGED', 'DEMO', 'QUARANTINE', 'SOLD'];
 const STATUS_LABEL: Record<string, string> = {
   SALEABLE: 'Bán được', WARRANTY: 'Bảo hành', DAMAGED: 'Hàng lỗi',
   DEMO: 'Demo', QUARANTINE: 'Cách ly', SOLD: 'Đã bán',
 };
+const STOCK_STATUS_LABEL: Record<string, string> = { IN_STOCK: 'Đang trong kho', RESERVED: 'Đang giữ', OUT: 'Đã xuất' };
+const formatDate = (value?: string | null) => value ? new Date(value).toLocaleDateString('vi-VN') : '—';
 
 // Serial / Lô (§22): tìm kiếm chung + chi tiết + đổi trạng thái (TP).
 export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
+  const { user } = useAuth();
+  const [params] = useSearchParams();
+  // Chế độ xử lý theo phiếu (?documentId=...) — tách khỏi danh sách chung.
+  const docModeId = params.get('documentId');
+  const canManage = levelOf(user) >= LEVELS.MANAGER && levelOf(user) !== LEVELS.ADMIN;
   const [rows, setRows] = useState<StockSerial[]>([]);
-  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [status, setStatus] = useState('');
-  const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState<StockSerial | null>(null);
+  const [timelineSerial, setTimelineSerial] = useState<string | null>(null);
+  const [timelineLotId, setTimelineLotId] = useState<string | null>(null);
+  const [showQuickScan, setShowQuickScan] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [hasMore, setHasMore] = useState(false);
+
+  const removeSerial = async (row: StockSerial) => {
+    if (!window.confirm(`Xóa ${row.serialNumber || row.lotCode || 'Serial này'}? Chỉ dữ liệu chưa phát sinh kho mới được xóa.`)) return;
+    try { await deleteSerial(row.id); await fetchAll(); }
+    catch (e: any) { setError(e.message || 'Không thể xóa Serial'); }
+  };
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(q.trim()), 350);
@@ -37,12 +59,10 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
   const fetchAll = async () => {
     setLoading(true); setError(null);
     try {
-      const [s, w] = await Promise.all([
-        getStockSerials({ q: debouncedQ || undefined, status: status || undefined }),
-        getWarehouses().catch(() => [] as Warehouse[]),
-      ]);
-      setRows(s); setWarehouses(w);
-      getProducts().then(setProducts).catch(() => {});
+      const s = await getStockSerials({ q: debouncedQ || undefined, status: status || undefined, limit: pageSize + 1, offset: (page - 1) * pageSize });
+      // Lấy dư một dòng để xác định còn trang sau, tránh tạo trang rỗng
+      // khi tổng số Serial/Lô chia hết cho pageSize.
+      setHasMore(s.length > pageSize); setRows(s.slice(0, pageSize));
     } catch (e: any) {
       setError(e.message || 'Không tải được serial/lô');
     } finally {
@@ -50,19 +70,21 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
     }
   };
 
-  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [debouncedQ, status]);
+  useEffect(() => { setPage(1); }, [debouncedQ, status]);
+  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [debouncedQ, status, page, pageSize]);
+
+  if (docModeId) {
+    return <SerialDocMode deptKey={deptKey} />;
+  }
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kho vận · Hàng hóa</p>
           <h1 className="text-2xl font-bold text-gray-800 mt-1">Serial / Lô</h1>
         </div>
-        <button onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-md transition-colors">
-          <PlusCircle size={16} /> Đăng ký serial
-        </button>
+        <div className="text-xs text-gray-400 max-w-xs text-right">Serial/Lô chỉ phát sinh từ phiếu nhập, trả hàng hoặc nghiệp vụ điều chỉnh đã được duyệt.</div>
       </div>
 
       <div className="flex flex-col md:flex-row gap-3">
@@ -81,6 +103,15 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
         </div>
         <button onClick={fetchAll} className="p-2.5 border border-gray-200 rounded-xl hover:bg-gray-50 text-gray-500 shadow-sm" title="Tải lại">
           <RefreshCw size={16} />
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowQuickScan(true)}
+          className="flex items-center gap-1.5 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-sm transition-all"
+          title="Quét hoặc nhập serial để tra cứu toàn diện hồ sơ thiết bị"
+        >
+          <ScanLine size={16} />
+          <span>Tra cứu nhanh</span>
         </button>
       </div>
 
@@ -103,32 +134,50 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
       ) : (
         <Card className="overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="wh-table w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Serial / Lô · Sản phẩm</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Kho</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Bảo hành</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
-                  <th className="text-right py-3 px-5 text-xs font-bold text-gray-500 uppercase">Sửa</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Serial / Lô · Sản phẩm</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Kho</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase hidden md:table-cell">Bảo hành</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Trạng thái</th>
+                  <th className="text-right py-2 px-5 text-xs font-bold text-gray-500 uppercase">Sửa</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {rows.map((r) => (
                   <tr key={r.id} className="hover:bg-gray-50/70">
-                    <td className="py-3 px-5">
-                      <p className="font-mono font-bold text-gray-800 text-[13px]">{r.serialNumber || r.lotCode || '—'}</p>
+                    <td className="py-2 px-5">
+                      <p className="font-mono font-bold text-gray-800 text-[13px]">{r.serialNumber || r.lotCode || '—'} {r.recordType === 'LOT' && <span className="font-sans text-[10px] text-blue-600">(Lô)</span>}</p>
                       <p className="text-xs text-gray-400">{r.productName || r.productId}{r.lotCode && r.serialNumber ? ` · Lô ${r.lotCode}` : ''}</p>
+                      {r.recordType === 'LOT' && <p className="text-[11px] text-gray-500">Còn {Number(r.remainingQty || 0).toLocaleString('vi-VN')} / {Number(r.initialQty || 0).toLocaleString('vi-VN')} {r.unit || ''}</p>}
                     </td>
-                    <td className="py-3 px-4 text-xs text-gray-500">{r.warehouseName || r.warehouseId}</td>
-                    <td className="py-3 px-4 text-xs text-gray-500">
-                      {r.warrantyStart ? `${r.warrantyStart}${r.warrantyMonths ? ` · ${r.warrantyMonths} tháng` : ''}` : '—'}
+                    <td className="py-2 px-4 text-xs text-gray-500">{r.warehouseName || r.warehouseId}</td>
+                    <td className="py-2 px-4 text-xs text-gray-500 hidden md:table-cell">
+                      {r.warrantyStart ? `${formatDate(r.warrantyStart)}${r.warrantyMonths ? ` · ${r.warrantyMonths} tháng` : ''}` : '—'}
                     </td>
-                    <td className="py-3 px-4"><span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600">{STATUS_LABEL[r.status] || r.status}</span></td>
-                    <td className="py-3 px-5 text-right">
-                      <button onClick={() => setEditing(r)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg" title="Chi tiết / đổi trạng thái">
-                        <Pencil size={14} />
-                      </button>
+                    <td className="py-2 px-4"><div className="flex flex-wrap gap-1"><span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600">{STATUS_LABEL[r.status] || (r.recordType === 'LOT' ? 'Đang hoạt động' : r.status)}</span><span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${r.stockStatus === 'RESERVED' ? 'bg-amber-50 text-amber-700' : r.stockStatus === 'OUT' ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-700'}`}>{STOCK_STATUS_LABEL[r.stockStatus || 'IN_STOCK'] || r.stockStatus}</span></div></td>
+                    <td className="py-2 px-5 text-right">
+                      <div className="flex justify-end gap-1">
+                        {r.recordType === 'LOT' && (
+                          <button onClick={() => setTimelineLotId(r.id)} className="p-1.5 text-gray-400 hover:text-violet-600 hover:bg-violet-50 rounded-lg" title="Lịch sử lô">
+                            <History size={14} />
+                          </button>
+                        )}
+                        {r.recordType !== 'LOT' && r.serialNumber && (
+                          <button onClick={() => setTimelineSerial(r.serialNumber!)} className="p-1.5 text-gray-400 hover:text-violet-600 hover:bg-violet-50 rounded-lg" title="Vòng đời serial">
+                            <History size={14} />
+                          </button>
+                        )}
+                        {r.recordType !== 'LOT' && <>
+                          <button onClick={() => setEditing(r)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg" title="Chi tiết / đổi trạng thái">
+                            <Pencil size={14} />
+                          </button>
+                          {canManage && <button onClick={() => void removeSerial(r)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg" title="Xóa Serial chưa phát sinh kho">
+                            <Trash2 size={14} />
+                          </button>}
+                        </>}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -137,16 +186,21 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
           </div>
         </Card>
       )}
+      {!loading && rows.length > 0 && <Pagination currentPage={page} totalPages={hasMore ? page + 1 : page} onPageChange={setPage} itemsPerPage={pageSize} onItemsPerPageChange={(size) => { setPageSize(size); setPage(1); }} />}
 
-      {showCreate && (
-        <SerialModal warehouses={warehouses} products={products}
-          onClose={() => setShowCreate(false)}
-          onDone={async () => { setShowCreate(false); await fetchAll(); }} />
-      )}
       {editing && (
-        <SerialStatusModal serial={editing}
+        <SerialStatusModal serial={editing} canManage={canManage}
           onClose={() => setEditing(null)}
           onDone={async () => { setEditing(null); await fetchAll(); }} />
+      )}
+      {timelineSerial && (
+        <SerialTimelineModal serialNumber={timelineSerial} onClose={() => setTimelineSerial(null)} />
+      )}
+      {timelineLotId && (
+        <LotTimelineModal lotId={timelineLotId} onClose={() => setTimelineLotId(null)} />
+      )}
+      {showQuickScan && (
+        <QuickScanLookupModal onClose={() => setShowQuickScan(false)} />
       )}
 
       <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">
@@ -156,98 +210,8 @@ export default function SerialPage({ deptKey }: { deptKey: DeptKey }) {
   );
 }
 
-function SerialModal({ warehouses, products, onClose, onDone }: {
-  warehouses: Warehouse[]; products: Product[];
-  onClose: () => void; onDone: () => Promise<void>;
-}) {
-  const [productId, setProductId] = useState('');
-  const [serialNumber, setSerialNumber] = useState('');
-  const [lotCode, setLotCode] = useState('');
-  const [warehouseId, setWarehouseId] = useState('');
-  const [warrantyMonths, setWarrantyMonths] = useState(0);
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState('');
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!productId || !warehouseId || (!serialNumber.trim() && !lotCode.trim())) {
-      setErr('Chọn hàng, kho và nhập serial hoặc lô.');
-      return;
-    }
-    setSaving(true); setErr('');
-    try {
-      await registerSerial({
-        productId, warehouseId,
-        serialNumber: serialNumber.trim() || null, lotCode: lotCode.trim() || null,
-        warrantyMonths: Number(warrantyMonths) || 0,
-      });
-      await onDone();
-    } catch (e: any) {
-      setErr(e.message || 'Đăng ký thất bại.');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <h3 className="font-bold text-gray-900">Đăng ký serial / lô</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
-        </div>
-        <form onSubmit={submit} className="p-6 space-y-4">
-          {err && <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm"><AlertCircle size={14} />{err}</div>}
-          <div>
-            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Mặt hàng</label>
-            <select value={productId} onChange={(e) => setProductId(e.target.value)} required
-              className="w-full px-4 py-2.5 border border-gray-200 rounded-xl bg-white text-sm outline-none">
-              <option value="">-- Chọn hàng --</option>
-              {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Serial</label>
-              <input value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)} placeholder="VD: SAJ25A000123"
-                className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm font-mono outline-none" />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Lô</label>
-              <input value={lotCode} onChange={(e) => setLotCode(e.target.value)} placeholder="VD: LOT-2026-001"
-                className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm font-mono outline-none" />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Kho</label>
-              <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} required
-                className="w-full px-4 py-2.5 border border-gray-200 rounded-xl bg-white text-sm outline-none">
-                <option value="">-- Chọn kho --</option>
-                {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Bảo hành (tháng)</label>
-              <input type="number" min={0} value={warrantyMonths} onChange={(e) => setWarrantyMonths(Number(e.target.value))}
-                className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm outline-none" />
-            </div>
-          </div>
-          <div className="flex justify-end gap-3 pt-2 border-t border-gray-100">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-xl">Hủy</button>
-            <button type="submit" disabled={saving}
-              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm disabled:opacity-60">
-              {saving ? 'Đang lưu...' : 'Đăng ký'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-function SerialStatusModal({ serial, onClose, onDone }: {
-  serial: StockSerial; onClose: () => void; onDone: () => Promise<void>;
+function SerialStatusModal({ serial, canManage, onClose, onDone }: {
+  serial: StockSerial; canManage: boolean; onClose: () => void; onDone: () => Promise<void>;
 }) {
   const [status, setStatus] = useState<SerialStatus>(serial.status);
   const [customerName, setCustomerName] = useState(serial.customerName || '');
@@ -279,12 +243,13 @@ function SerialStatusModal({ serial, onClose, onDone }: {
           <p className="text-sm text-gray-500">{serial.productName || serial.productId} · {serial.warehouseName || serial.warehouseId}</p>
           <div>
             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Trạng thái (cần cấp TP)</label>
-            <select value={status} onChange={(e) => setStatus(e.target.value as SerialStatus)}
-              className="w-full px-4 py-2.5 border border-gray-200 rounded-xl bg-white text-sm outline-none">
+            <select value={status} onChange={(e) => setStatus(e.target.value as SerialStatus)} disabled={!canManage}
+              className="w-full px-4 py-2.5 border border-gray-200 rounded-xl bg-white text-sm outline-none disabled:bg-gray-50 disabled:text-gray-400">
               {(['SALEABLE', 'WARRANTY', 'DAMAGED', 'DEMO', 'QUARANTINE', 'SOLD'] as SerialStatus[]).map((s) => (
                 <option key={s} value={s}>{STATUS_LABEL[s]}</option>
               ))}
             </select>
+            {!canManage && <p className="text-xs text-gray-400 mt-1">Bạn đang ở chế độ xem — đổi trạng thái cần cấp TP trở lên.</p>}
           </div>
           <div>
             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Khách hàng / dự án gán</label>

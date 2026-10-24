@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Truck, RefreshCw, AlertCircle, PackageCheck } from 'lucide-react';
 import { Card } from '../../components/UI';
+import { Pagination } from '../../components/Pagination';
 import { getStockDocuments, advanceTransfer, type StockDocument } from '../../services/stockService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
@@ -12,11 +13,15 @@ export default function InTransitPage({ deptKey }: { deptKey: DeptKey }) {
   const [rows, setRows] = useState<StockDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [hasMore, setHasMore] = useState(false);
 
   const fetchAll = async () => {
     setLoading(true); setError(null);
     try {
-      setRows(await getStockDocuments({ docType: 'TRANSFER', status: 'IN_TRANSIT' }));
+      const data = await getStockDocuments({ docType: 'TRANSFER', status: 'IN_TRANSIT', limit: pageSize + 1, offset: (page - 1) * pageSize });
+      setHasMore(data.length > pageSize); setRows(data.slice(0, pageSize));
     } catch (e: any) {
       setError(e.message || 'Không tải được điều chuyển');
     } finally {
@@ -24,10 +29,10 @@ export default function InTransitPage({ deptKey }: { deptKey: DeptKey }) {
     }
   };
 
-  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/await-in-effect */ }, []);
+  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/await-in-effect */ }, [page, pageSize]);
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div>
         <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Kho vận · Báo cáo</p>
         <h1 className="text-2xl font-bold text-gray-800 mt-1">Đang vận chuyển</h1>
@@ -53,20 +58,20 @@ export default function InTransitPage({ deptKey }: { deptKey: DeptKey }) {
       ) : (
         <Card className="overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="wh-table w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Mã phiếu</th>
-                  <th className="text-left py-3 px-4 text-xs font-bold text-gray-500 uppercase">Ngày gửi</th>
-                  <th className="text-right py-3 px-5 text-xs font-bold text-gray-500 uppercase">Nhận hàng</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Mã phiếu</th>
+                  <th className="text-left py-2 px-4 text-xs font-bold text-gray-500 uppercase">Ngày gửi</th>
+                  <th className="text-right py-2 px-5 text-xs font-bold text-gray-500 uppercase">Nhận hàng</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {rows.map((d) => (
                   <tr key={d.id} className="hover:bg-gray-50/70">
-                    <td className="py-3 px-5 font-mono font-bold text-gray-800 text-[13px]">{d.code || d.id.slice(0, 8)}</td>
-                    <td className="py-3 px-4 text-xs text-gray-400">{d.createdAt ? new Date(d.createdAt).toLocaleString('vi-VN') : ''}</td>
-                    <td className="py-3 px-5 text-right">
+                    <td className="py-2 px-5 font-mono font-bold text-gray-800 text-[13px]">{d.code || d.id.slice(0, 8)}</td>
+                    <td className="py-2 px-4 text-xs text-gray-400">{d.createdAt ? new Date(d.createdAt).toLocaleString('vi-VN') : ''}</td>
+                    <td className="py-2 px-5 text-right">
                       <ReceiveTransferButton id={d.id} warehouseId={d.destWarehouseId!} onDone={fetchAll} />
                     </td>
                   </tr>
@@ -76,6 +81,7 @@ export default function InTransitPage({ deptKey }: { deptKey: DeptKey }) {
           </div>
         </Card>
       )}
+      {!loading && rows.length > 0 && <Pagination currentPage={page} totalPages={hasMore ? page + 1 : page} onPageChange={setPage} itemsPerPage={pageSize} onItemsPerPageChange={(s) => { setPageSize(s); setPage(1); }} />}
 
       <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">
         ← Về tổng quan kho vận

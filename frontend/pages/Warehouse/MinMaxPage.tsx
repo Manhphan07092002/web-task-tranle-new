@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Gauge, RefreshCw, AlertCircle, ChevronDown } from 'lucide-react';
 import { Card } from '../../components/UI';
+import { Pagination } from '../../components/Pagination';
 import { getStockPolicies, getWarehouses, type StockPolicyRow, type Warehouse } from '../../services/stockService';
 import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
@@ -13,15 +14,18 @@ export default function MinMaxPage({ deptKey }: { deptKey: DeptKey }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [warehouseId, setWarehouseId] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [hasMore, setHasMore] = useState(false);
 
   const fetchAll = async () => {
     setLoading(true); setError(null);
     try {
       const [p, w] = await Promise.all([
-        getStockPolicies(warehouseId || undefined),
+        getStockPolicies(warehouseId || undefined, { limit: pageSize + 1, offset: (page - 1) * pageSize }),
         getWarehouses().catch(() => [] as Warehouse[]),
       ]);
-      setRows(p); setWarehouses(w);
+      setHasMore(p.length > pageSize); setRows(p.slice(0, pageSize)); setWarehouses(w);
     } catch (e: any) {
       setError(e.message || 'Không tải được chính sách tồn');
     } finally {
@@ -29,10 +33,11 @@ export default function MinMaxPage({ deptKey }: { deptKey: DeptKey }) {
     }
   };
 
-  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [warehouseId]);
+  useEffect(() => { setPage(1); }, [warehouseId]);
+  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [warehouseId, page, pageSize]);
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="w-full max-w-[1400px] mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Kho vận · Báo cáo</p>
@@ -74,27 +79,27 @@ export default function MinMaxPage({ deptKey }: { deptKey: DeptKey }) {
       ) : (
         <Card className="overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="wh-table w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm / Kho</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Min</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Điểm đặt</th>
-                  <th className="text-right py-3 px-4 text-xs font-bold text-gray-500 uppercase">Max</th>
-                  <th className="text-right py-3 px-5 text-xs font-bold text-gray-500 uppercase">Lead (ngày)</th>
+                  <th className="text-left py-2 px-5 text-xs font-bold text-gray-500 uppercase">Sản phẩm / Kho</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Min</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Điểm đặt</th>
+                  <th className="text-right py-2 px-4 text-xs font-bold text-gray-500 uppercase">Max</th>
+                  <th className="text-right py-2 px-5 text-xs font-bold text-gray-500 uppercase">Lead (ngày)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {rows.map((r) => (
                   <tr key={`${r.productId}|${r.warehouseId}`} className="hover:bg-gray-50/70">
-                    <td className="py-3 px-5">
+                    <td className="py-2 px-5">
                       <p className="font-semibold text-gray-800">{r.productName || r.productId}</p>
                       <p className="text-xs text-gray-400">{r.warehouseName || r.warehouseId}</p>
                     </td>
-                    <td className="py-3 px-4 text-right text-gray-700">{Number(r.minStock).toLocaleString('vi-VN')}</td>
-                    <td className="py-3 px-4 text-right text-gray-700">{Number(r.reorderPoint).toLocaleString('vi-VN')}</td>
-                    <td className="py-3 px-4 text-right text-gray-700">{Number(r.maxStock).toLocaleString('vi-VN')}</td>
-                    <td className="py-3 px-5 text-right text-gray-500">{r.leadTimeDays}</td>
+                    <td className="py-2 px-4 text-right text-gray-700">{Number(r.minStock).toLocaleString('vi-VN')}</td>
+                    <td className="py-2 px-4 text-right text-gray-700">{Number(r.reorderPoint).toLocaleString('vi-VN')}</td>
+                    <td className="py-2 px-4 text-right text-gray-700">{Number(r.maxStock).toLocaleString('vi-VN')}</td>
+                    <td className="py-2 px-5 text-right text-gray-500">{r.leadTimeDays}</td>
                   </tr>
                 ))}
               </tbody>
@@ -102,6 +107,7 @@ export default function MinMaxPage({ deptKey }: { deptKey: DeptKey }) {
           </div>
         </Card>
       )}
+      {!loading && rows.length > 0 && <Pagination currentPage={page} totalPages={hasMore ? page + 1 : page} onPageChange={setPage} itemsPerPage={pageSize} onItemsPerPageChange={(s) => { setPageSize(s); setPage(1); }} />}
 
       <Link to={getDeptHomePath(deptKey) || '/'} className="inline-block text-sm text-emerald-600 hover:underline font-medium">
         ← Về tổng quan kho vận

@@ -652,7 +652,8 @@ export function contractRoutes(db: any) {
 
       await logActivity(req.user?.id || 'system', 'Tạo Hợp đồng', contractId, { contractNumber: contractNumber.trim(), contractName: contractName.trim() });
 
-      // Nếu là hợp đồng đầu vào, tạo MỤC KHO MỚI (không gộp vào lô cũ)
+      // Nếu là hợp đồng đầu vào, chỉ tạo MỤC DANH MỤC sản phẩm (không tạo phiếu nhập,
+      // không ghi tồn kho). Tồn thật chỉ phát sinh khi lập phiếu nhập kho.
       if (contractType === 'input' && Array.isArray(products)) {
         // Clean up any pre-existing warehouse products under this contract number to prevent duplicates
         const contractNumberTrimmed = contractNumber.trim();
@@ -668,17 +669,17 @@ export function contractRoutes(db: any) {
           const price = Number(p.unitPrice) || 0;
           const importCodeVal = `${contractNumberTrimmed}-${i + 1}`;
 
-          // New contract → new warehouse entry with unique id
+          // Catalog entry only: no remainingQuantity, no stock ledger rows.
           const prodId = 'prod-' + randomUUID().substring(0, 8);
           await db.run(
             `INSERT INTO products
-               (id, name, unit, origin, category, importQuantity, remainingQuantity,
+               (id, name, unit, origin, category, importQuantity,
                 importPrice, invoiceDate, createdAt, importCode)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               prodId, p.name.trim(), p.unit || '', p.origin || '',
               invoiceNumber ? invoiceNumber.trim() : '',
-              qty, qty, price,
+              qty, price,
               invoiceDate ? invoiceDate.trim() : null,
               now, importCodeVal
             ]
@@ -915,7 +916,8 @@ export function contractRoutes(db: any) {
         }
       }
 
-      // Nếu là hợp đồng mua (đầu vào), cập nhật MỤC KHO theo hợp đồng
+      // Nếu là hợp đồng mua (đầu vào), chỉ cập nhật MỤC DANH MỤC sản phẩm.
+      // Không tạo phiếu nhập và không ghi tồn kho từ hợp đồng.
       if (contractType === 'input' && Array.isArray(products)) {
         // First delete all existing warehouse products associated with the old contract number
         const oldContractNumberTrimmed = existingContract.contractNumber.trim();
@@ -940,16 +942,17 @@ export function contractRoutes(db: any) {
           const price = Number(p.unitPrice) || 0;
           const importCodeVal = `${contractNumberTrimmed}-${i + 1}`;
 
+          // Catalog entry only: no remainingQuantity, no stock ledger rows.
           const prodId = 'prod-' + randomUUID().substring(0, 8);
           await db.run(
             `INSERT INTO products
-               (id, name, unit, origin, category, importQuantity, remainingQuantity,
+               (id, name, unit, origin, category, importQuantity,
                 importPrice, invoiceDate, createdAt, importCode)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               prodId, p.name.trim(), p.unit || '', p.origin || '',
               invoiceNumber ? invoiceNumber.trim() : '',
-              qty, qty, price,
+              qty, price,
               invoiceDate ? invoiceDate.trim() : null,
               now, importCodeVal
             ]
