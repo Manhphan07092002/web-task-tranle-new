@@ -17,10 +17,20 @@ const TRACK_LABEL: Record<string, string> = { SERIAL: 'Serial', LOT: 'Lô/Cuộn
 
 // Chế độ xử lý Serial/Lô theo phiếu (?documentId=): tiến độ từng dòng,
 // quét serial, đăng ký lô, xác nhận số lượng. Không động vào danh sách chung.
-export default function SerialDocMode({ deptKey, embedded = false, onClosed }: { deptKey: DeptKey; embedded?: boolean; onClosed?: () => void }) {
+export default function SerialDocMode({
+  deptKey,
+  embedded = false,
+  docId,
+  onClosed,
+}: {
+  deptKey: DeptKey;
+  embedded?: boolean;
+  docId?: string;
+  onClosed?: () => void;
+}) {
   const [params] = useSearchParams();
   const navigate = useNavigate();
-  const documentId = params.get('documentId') || '';
+  const documentId = docId || params.get('documentId') || '';
   const [doc, setDoc] = useState<{ code?: string | null; docType: string; status: string; warehouseName?: string | null; sourceWarehouseName?: string | null; destWarehouseName?: string | null; partnerName?: string | null } | null>(null);
   const [progress, setProgress] = useState<DocProgress | null>(null);
   const [loading, setLoading] = useState(true);

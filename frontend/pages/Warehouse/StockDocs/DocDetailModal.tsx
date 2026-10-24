@@ -3,11 +3,12 @@ import { ReceiveTransferButton } from '../ReceiveTransferButton';
 import { apiFetch } from '../../../services/api';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Link, useNavigate } from 'react-router-dom';
-import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, FileText, Calendar, Building2, User, Printer, Tag } from 'lucide-react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, FileText, Calendar, Building2, User, Printer, Tag, ArrowLeft, ScanLine } from 'lucide-react';
 import { Card } from '../../../components/UI';
 import { StockDocPrintModal } from './StockDocPrintModal';
 import { StockLabelPrintModal } from './StockLabelPrintModal';
+import SerialDocMode from '../SerialDocMode';
 import { FeedbackDialog } from '../../../components/FeedbackDialog';
 import {
   getStockDocuments, getWarehouses, createReceipt, createIssue, createTransfer,
@@ -48,8 +49,11 @@ export function DocDetailModal({
   const [actionLoading, setActionLoading] = useState(false);
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [showLabelModal, setShowLabelModal] = useState(false);
+  const [showSerialModal, setShowSerialModal] = useState(false);
   const [notice, setNotice] = useState<{ title: string; message: string; docId?: string } | null>(null);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const fromProcessing = searchParams.get('from') === 'wh_processing';
   const closeRef = React.useRef(onClose);
   closeRef.current = onClose;
 
@@ -181,6 +185,20 @@ export function DocDetailModal({
                   <span className="hidden sm:inline">In phiếu</span>
                 </button>
               </>
+            )}
+            {fromProcessing && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  navigate(getDeptModulePath(deptKey, 'wh_processing'));
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-300 hover:bg-amber-100 text-amber-900 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                title="Quay lại danh sách Xử lý phiếu"
+              >
+                <ArrowLeft size={14} />
+                <span className="hidden sm:inline">Quay lại</span> Xử lý phiếu
+              </button>
             )}
             <button
               type="button"
@@ -532,6 +550,19 @@ export function DocDetailModal({
                 </button>
               </>
             )}
+            {fromProcessing && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  navigate(getDeptModulePath(deptKey, 'wh_processing'));
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-2 border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+              >
+                <ArrowLeft size={14} />
+                Quay lại Xử lý phiếu
+              </button>
+            )}
             <button
               type="button"
               onClick={onClose}
@@ -539,6 +570,17 @@ export function DocDetailModal({
             >
               Đóng
             </button>
+            {!readOnly && (doc?.status === 'DRAFT' || doc?.status === 'PROCESSING') && kind !== 'TRANSFER' && (
+              <button
+                type="button"
+                onClick={() => setShowSerialModal(true)}
+                className="flex items-center gap-1.5 px-4 py-2 border border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-xl text-xs font-bold transition-colors cursor-pointer shadow-xs"
+                title="Mở giao diện nhập và quét mã Serial / Lô"
+              >
+                <ScanLine size={14} />
+                Quét Serial / Lô
+              </button>
+            )}
             {!readOnly && doc?.status === 'DRAFT' && onEdit && (
               <button
                 type="button"
@@ -589,6 +631,18 @@ export function DocDetailModal({
         <StockLabelPrintModal
           doc={doc}
           onClose={() => setShowLabelModal(false)}
+        />
+      )}
+      {showSerialModal && doc && (
+        <SerialDocMode
+          deptKey={deptKey}
+          embedded
+          docId={doc.id}
+          onClosed={async () => {
+            setShowSerialModal(false);
+            await loadDetail();
+            await onUpdated();
+          }}
         />
       )}
     </div>

@@ -1,10 +1,10 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { levelOf, LEVELS } from '../../utils/rbac';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ClipboardCheck, PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, RotateCcw,
-  Camera, Scan, Plus, Minus, Barcode, Sparkles,
+  Camera, Scan, Plus, Minus, Barcode, Sparkles, ArrowLeft,
 } from 'lucide-react';
 import { Card } from '../../components/UI';
 import { Pagination } from '../../components/Pagination';
@@ -17,13 +17,15 @@ import {
   requestRecount, approveCount, cancelCount, getWarehouses, getSerialTimeline,
   type StockCount, type Warehouse,
 } from '../../services/stockService';
-import { getDeptHomePath } from '../../components/layout/menus/departmentMenus';
+import { getDeptHomePath, getDeptModulePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
 
 // Kiểm kê blind-count (§19–20): NV đếm không thấy số hệ thống,
 // TP đối chiếu/duyệt chênh lệch → sinh điều chỉnh tồn.
 export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const fromProcessing = searchParams.get('from') === 'wh_processing';
   const { user } = useAuth();
   const canManage = levelOf(user) >= LEVELS.MANAGER && levelOf(user) !== LEVELS.ADMIN;
   const [counts, setCounts] = useState<StockCount[]>([]);
@@ -63,9 +65,9 @@ export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
   };
 
   useEffect(() => {
-    const countId = searchParams.get('countId');
+    const countId = searchParams.get('countId') || searchParams.get('documentId');
     if (countId) openDetail(countId);
-    // Deep-link từ trang Chênh lệch kiểm kê.
+    // Deep-link từ trang Chênh lệch kiểm kê hoặc Xử lý phiếu.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
@@ -80,6 +82,24 @@ export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
 
   return (
     <div className="w-full max-w-[1400px] mx-auto space-y-4">
+      {fromProcessing && (
+        <div className="flex items-center justify-between p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-950 text-sm shadow-xs flex-wrap gap-2">
+          <div className="flex items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="font-medium">
+              Bạn đang kiểm đếm phiếu từ danh sách <b>Xử lý phiếu</b>.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => navigate(getDeptModulePath(deptKey, 'wh_processing'))}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+          >
+            <ArrowLeft size={14} /> Quay lại Xử lý phiếu
+          </button>
+        </div>
+      )}
+
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Kho vận · Vận hành</p>
@@ -139,8 +159,21 @@ export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
 
       {selected && (
         <CountDetailModal
-          count={selected} onClose={() => setSelected(null)}
-          onChanged={() => refreshSelected(selected.id)} onError={setError} />
+          count={selected}
+          deptKey={deptKey}
+          fromProcessing={fromProcessing}
+          onClose={() => {
+            setSelected(null);
+            if (searchParams.get('countId') || searchParams.get('documentId')) {
+              const next = new URLSearchParams(searchParams);
+              next.delete('countId');
+              next.delete('documentId');
+              setSearchParams(next, { replace: true });
+            }
+          }}
+          onChanged={() => refreshSelected(selected.id)}
+          onError={setError}
+        />
       )}
       {showCreate && (
         <CountCreateModal warehouses={warehouses}
@@ -155,9 +188,17 @@ export default function CountPage({ deptKey }: { deptKey: DeptKey }) {
   );
 }
 
-function CountDetailModal({ count, onClose, onChanged, onError }: {
-  count: StockCount; onClose: () => void; onChanged: () => Promise<void>; onError: (m: string) => void;
+function CountDetailModal({
+  count, onClose, onChanged, onError, deptKey, fromProcessing,
+}: {
+  count: StockCount;
+  onClose: () => void;
+  onChanged: () => Promise<void>;
+  onError: (m: string) => void;
+  deptKey: DeptKey;
+  fromProcessing?: boolean;
 }) {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const canManage = levelOf(user) >= LEVELS.MANAGER && levelOf(user) !== LEVELS.ADMIN;
   const [actuals, setActuals] = useState<Record<string, string>>(() => {
@@ -368,9 +409,25 @@ function CountDetailModal({ count, onClose, onChanged, onError }: {
               Kho: <b className="text-gray-600">{count.warehouseName || count.warehouseId}</b> · {blind ? 'Đếm mù (ẩn số hệ thống)' : 'Hiện số hệ thống'}
             </p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 cursor-pointer p-1 rounded-lg">
-            <X size={20} />
-          </button>
+          <div className="flex items-center gap-2">
+            {fromProcessing && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  navigate(getDeptModulePath(deptKey, 'wh_processing'));
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-300 hover:bg-amber-100 text-amber-900 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                title="Quay lại danh sách Xử lý phiếu"
+              >
+                <ArrowLeft size={14} />
+                <span className="hidden sm:inline">Quay lại</span> Xử lý phiếu
+              </button>
+            )}
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 cursor-pointer p-1 rounded-lg">
+              <X size={20} />
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto overflow-x-auto px-6 py-4 space-y-3">

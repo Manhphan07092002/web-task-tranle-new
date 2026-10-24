@@ -3,8 +3,8 @@ import { ReceiveTransferButton } from './ReceiveTransferButton';
 import { apiFetch } from '../../services/api';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Link, useNavigate } from 'react-router-dom';
-import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, Copy, Trash2, ListChecks, FileText, Calendar, Building2, User, Printer, Tag } from 'lucide-react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { PlusCircle, RefreshCw, AlertCircle, X, CheckCircle2, Truck, PackageCheck, ChevronDown, Eye, Ban, Pencil, Copy, Trash2, ListChecks, FileText, Calendar, Building2, User, Printer, Tag, ArrowLeft } from 'lucide-react';
 import { Card } from '../../components/UI';
 import { Pagination } from '../../components/Pagination';
 import { FeedbackDialog } from '../../components/FeedbackDialog';
@@ -31,7 +31,10 @@ import { DocCreateModal } from './StockDocs/DocCreateModal';
 
 // Trang chứng từ kho dùng chung cho Nhập/Xuất/Điều chuyển (§13–18).
 export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kind: Kind }) {
+  const [searchParams, setSearchParams] = useSearchParams();
   const meta = KIND_META[kind];
+  const urlDocId = searchParams.get('documentId');
+  const fromProcessing = searchParams.get('from') === 'wh_processing';
   const [docs, setDocs] = useState<StockDocument[]>([]);
   const [summary, setSummary] = useState<ProcessingSummary>({});
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -135,6 +138,11 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
 
   useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [kind, page, pageSize, datePreset, dateSortOrder]);
   useEffect(() => { setPage(1); }, [kind]);
+  useEffect(() => {
+    if (urlDocId) {
+      setSelectedDocId(urlDocId);
+    }
+  }, [urlDocId]);
   const visibleDocs = docs;
 
   useEffect(() => {
@@ -295,6 +303,24 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
 
   return (
     <div className="w-full max-w-[1400px] mx-auto space-y-4">
+      {fromProcessing && (
+        <div className="flex items-center justify-between p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-950 text-sm shadow-xs flex-wrap gap-2">
+          <div className="flex items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="font-medium">
+              Bạn đang làm việc từ danh sách <b>Xử lý phiếu</b>.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => navigate(getDeptModulePath(deptKey, 'wh_processing'))}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+          >
+            <ArrowLeft size={14} /> Quay lại Xử lý phiếu
+          </button>
+        </div>
+      )}
+
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Kho vận · {meta.title}</p>
@@ -531,7 +557,14 @@ export default function StockDocsPage({ deptKey, kind }: { deptKey: DeptKey; kin
           docId={selectedDocId}
           warehouses={warehouses}
           kind={kind}
-          onClose={() => setSelectedDocId(null)}
+          onClose={() => {
+            setSelectedDocId(null);
+            if (searchParams.get('documentId')) {
+              const next = new URLSearchParams(searchParams);
+              next.delete('documentId');
+              setSearchParams(next, { replace: true });
+            }
+          }}
           onUpdated={fetchAll}
           onEdit={(id) => { setSelectedDocId(null); setEditingId(id); }}
           deptKey={deptKey}
