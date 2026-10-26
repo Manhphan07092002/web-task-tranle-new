@@ -5,7 +5,7 @@ import { stockRoutes } from '../routes/stock.js';
 import { DatabaseTransactionGate } from '../utils/dbTransactionGate.js';
 import { releaseExpiredReservations } from '../schedulers/reservationExpiry.js';
 
-function fixture(options: { type?: string; quantities?: number[]; onHand?: number; reserved?: number; location?: string; counting?: boolean; level?: number; status?: string } = {}) {
+function fixture(options: { type?: string; quantities?: number[]; onHand?: number; reserved?: number; location?: string; counting?: boolean; level?: number; status?: string; failRead?: (sql: string) => boolean } = {}) {
   const gate = new DatabaseTransactionGate();
   const doc: any = { id: 'd1', docType: options.type || 'ISSUE', status: options.status || 'DRAFT', warehouseId: 'w1', sourceWarehouseId: 'w1', destWarehouseId: 'w2' };
   const lines = (options.quantities || [6]).map((quantity, i) => ({ id: `l${i}`, productId: 'p1', locationId: options.location || '', quantity }));
@@ -17,6 +17,7 @@ function fixture(options: { type?: string; quantities?: number[]; onHand?: numbe
   const db: any = {
     runWithRequestContext: (fn: () => any) => gate.runWithRequestContext(fn),
     all: (sql: string, params: any[] = []) => gate.run(sql, async () => {
+      if (options.failRead?.(sql)) throw Object.assign(new Error('ER_LOCK_WAIT_TIMEOUT: Lock wait timeout exceeded'), { code: 'ER_LOCK_WAIT_TIMEOUT' });
       if (sql.includes('FROM warehouses') && sql.includes('FOR UPDATE')) locks.push({ sql, params });
       if (sql.includes('FROM user_warehouse_scopes')) return [{ warehouseId: 'w1' }, { warehouseId: 'w2' }];
       if (sql.includes('FROM stock_document_lines')) return structuredClone(lines);
@@ -35,6 +36,7 @@ function fixture(options: { type?: string; quantities?: number[]; onHand?: numbe
       return [];
     }),
     get: (sql: string, params: any[] = []) => gate.run(sql, async () => {
+      if (options.failRead?.(sql)) throw Object.assign(new Error('ER_LOCK_WAIT_TIMEOUT: Lock wait timeout exceeded'), { code: 'ER_LOCK_WAIT_TIMEOUT' });
       if (sql.includes('GET_LOCK')) return { acquired: 1 };
       if (sql.includes('RELEASE_LOCK')) return { released: 1 };
       if (sql.includes('FROM stock_documents')) return structuredClone(doc);
@@ -147,6 +149,18 @@ describe('warehouse stock integrity regressions', () => {
       expect(f.writes.some(write => write.sql.includes('INSERT INTO stock_moves')), action).toBe(false);
       expect(f.writes.at(-1)?.sql, action).toBe('ROLLBACK');
     }
+  });
+
+  it.each([
+    { name: 'receipt', path: '/receipts/d1/complete', type: 'RECEIPT', status: 'READY' },
+    { name: 'issue', path: '/issues/d1/complete', type: 'ISSUE', status: 'READY' },
+    { name: 'transfer ship', path: '/transfers/d1/ship', type: 'TRANSFER', status: 'READY' },
+  ])('reports 500 without leaking the driver error when a preflight read fails: $name', async ({ path, type, status }) => {
+    const f = fixture({ type, status, failRead: (sql) => sql.includes('FROM stock_counts') });
+    const res = await request(f.app).post(path).send({});
+    expect(res.status, res.body.error).toBe(500);
+    expect(res.body.error).not.toContain('ER_LOCK');
+    expect(f.writes.some(write => write.sql.includes('INSERT INTO stock_moves'))).toBe(false);
   });
 
   it.each([

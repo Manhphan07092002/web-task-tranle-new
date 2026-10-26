@@ -159,7 +159,7 @@ export function reservationsRoutes(ctx: StockContext) {
           'UPDATE reservations SET status = ?, consumedQuantity = ? WHERE id = ?',
           [toStatus, toStatus === 'CONSUMED' ? Number(r.quantity) : Number(r.consumedQuantity ?? 0), r.id]
         );
-        await db.run('DELETE FROM stock_document_line_reservations WHERE reservationId = ?', [r.id]).catch(() => undefined);
+        await db.run('DELETE FROM stock_document_line_reservations WHERE reservationId = ?', [r.id]);
         await recordWarehouseActivity(db.run.bind(db), {
           actionType: toStatus === 'CONSUMED' ? 'RESERVATION_CONSUMED' : 'RESERVATION_RELEASED',
           entityType: 'RESERVATION', entityId: r.id, productId: r.productId,

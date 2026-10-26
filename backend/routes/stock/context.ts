@@ -73,7 +73,7 @@ export function createStockContext(db: any) {
     const rows = await db.all(
       `SELECT id FROM stock_locations WHERE warehouseId = ? AND purpose = 'SALEABLE' AND isActive = 1 AND id IN (${ids.map(() => '?').join(', ')})`,
       [warehouseId, ...ids]
-    ).catch(() => []);
+    );
     for (const r of rows || []) out.add(r.id);
     return out;
   }
@@ -167,7 +167,10 @@ export function createStockContext(db: any) {
       `INSERT INTO stock_balances (productId, warehouseId, locationId, onHand, reserved, updatedAt)
        VALUES (?, ?, ?, ?, 0, ?)
        ON DUPLICATE KEY UPDATE onHand = onHand + VALUES(onHand), updatedAt = VALUES(updatedAt)`,
-      [args.productId, args.warehouseId, args.locationId, args.quantity, now]
+      // stock_balances.locationId là NOT NULL DEFAULT '' và là một phần của khóa
+      // tồn; sentinel '' phải khớp với postMoves, nếu không cùng một vị trí sẽ
+      // bị tách thành 2 dòng tồn.
+      [args.productId, args.warehouseId, args.locationId || '', args.quantity, now]
     );
     await recordWarehouseActivities(run, [{
       actionType: activityByMove[args.moveType] || `STOCK_MOVE_${args.moveType}`,

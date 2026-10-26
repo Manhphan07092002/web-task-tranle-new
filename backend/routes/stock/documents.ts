@@ -345,7 +345,7 @@ export function documentsRoutes(ctx: StockContext) {
              INNER JOIN stock_document_lines l ON l.id = a.documentLineId
              WHERE l.documentId = ?`,
             [id]
-          ).catch(() => undefined);
+          );
           await dropDocReservationLinks(id);
           await db.run('DELETE FROM stock_document_lines WHERE documentId = ?', [id]);
           const newLineIds: { id: string; productId: string; locationId: string; quantity: number }[] = [];
@@ -382,7 +382,7 @@ export function documentsRoutes(ctx: StockContext) {
           // Nối lại lô/cuộn sang dòng thay thế (PUT tạo id dòng mới).
           const docLots = await db.all(
             'SELECT id, productId, locationId, initialQty FROM stock_lots WHERE receiptDocumentId = ?', [id]
-          ).catch(() => []);
+          );
           for (const lot of docLots || []) {
             const target = newLineIds.find((l) =>
               l.productId === (lot as any).productId && l.locationId === ((lot as any).locationId || ''));
@@ -930,12 +930,12 @@ export function documentsRoutes(ctx: StockContext) {
     const s = await db.get(
       'SELECT id FROM stock_serials WHERE receiptDocumentId = ? OR issueDocumentId = ? LIMIT 1',
       [documentId, documentId]
-    ).catch(() => undefined);
+    );
     if (s) return true;
     const l = await db.get(
       `SELECT id FROM stock_document_lines WHERE documentId = ? AND processingStatus <> 'PENDING' LIMIT 1`,
       [documentId]
-    ).catch(() => undefined);
+    );
     return !!l;
   }
 
@@ -947,7 +947,7 @@ export function documentsRoutes(ctx: StockContext) {
     const issued = await db.get(
       `SELECT id FROM stock_serials WHERE receiptDocumentId = ? AND stockStatus = 'OUT' LIMIT 1`,
       [documentId]
-    ).catch(() => undefined);
+    );
     if (issued) {
       throw Object.assign(new Error('Serial của phiếu đã xuất kho, không thể reset xử lý. Hãy dùng phiếu điều chỉnh/trả hàng.'), { status: 409 });
     }
@@ -963,7 +963,7 @@ export function documentsRoutes(ctx: StockContext) {
        INNER JOIN stock_document_lines l ON l.id = a.documentLineId
        WHERE l.documentId = ?`,
       [documentId]
-    ).catch(() => undefined);
+    );
     await db.run(
       `UPDATE stock_document_lines SET processingStatus = 'PENDING', actualQty = NULL, varianceQty = NULL, varianceReason = NULL WHERE documentId = ?`,
       [documentId]
@@ -1150,7 +1150,7 @@ export function documentsRoutes(ctx: StockContext) {
         );
       } catch (e: any) {
         await db.run('ROLLBACK'); transactionOpen = false;
-        return res.status(e.status || 400).json({ error: e.message });
+        return res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to validate document before posting' });
       }
       await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['READY', new Date().toISOString(), loaded.doc.id]);
       await recordWarehouseActivity(db.run.bind(db), {
@@ -1893,7 +1893,7 @@ export function documentsRoutes(ctx: StockContext) {
       try {
         await preflightPosting(loaded.doc, loaded.lines, loaded.doc.warehouseId);
       } catch (e: any) {
-        return res.status(e.status || 400).json({ error: e.message });
+        return res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to validate document before posting' });
       }
 
       try {
@@ -1933,7 +1933,7 @@ export function documentsRoutes(ctx: StockContext) {
       try {
         await preflightPosting(loaded.doc, loaded.lines, loaded.doc.warehouseId, reservedForIssue);
       } catch (e: any) {
-        return res.status(e.status || 400).json({ error: e.message });
+        return res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to validate document before posting' });
       }
 
       const agg = aggregateLines(loaded.lines);
@@ -1987,7 +1987,7 @@ export function documentsRoutes(ctx: StockContext) {
       try {
         await preflightPosting(loaded.doc, loaded.lines, loaded.doc.warehouseId);
       } catch (e: any) {
-        return res.status(e.status || 400).json({ error: e.message });
+        return res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to validate document before posting' });
       }
 
       try {
@@ -2028,7 +2028,7 @@ export function documentsRoutes(ctx: StockContext) {
         await preflightPosting(loaded.doc, loaded.lines, loaded.doc.sourceWarehouseId);
         await assertTransferSerialsReady(loaded.doc, loaded.lines);
       } catch (e: any) {
-        return res.status(e.status || 400).json({ error: e.message });
+        return res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to validate document before posting' });
       }
       const agg = aggregateLines(loaded.lines);
       const avail = await availableMap(loaded.doc.sourceWarehouseId, agg.map((l) => ({ productId: l.productId, locationId: l.locationId || '' })));
@@ -2073,7 +2073,7 @@ export function documentsRoutes(ctx: StockContext) {
       try {
         await preflightPosting(loaded.doc, loaded.lines, loaded.doc.destWarehouseId);
       } catch (e: any) {
-        return res.status(e.status || 400).json({ error: e.message });
+        return res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to validate document before posting' });
       }
 
       try {
@@ -2132,7 +2132,7 @@ export function documentsRoutes(ctx: StockContext) {
         await assertNotCounting(warehouseId);
       } catch (e: any) {
         await db.run('ROLLBACK'); transactionOpen = false;
-        return res.status(e.status || 409).json({ error: e.message });
+        return res.status(e.status || 409).json({ error: e.status ? e.message : 'Failed to check counting state' });
       }
 
       const fromBal = await db.get(
