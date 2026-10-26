@@ -657,6 +657,14 @@ export function documentsRoutes(ctx: StockContext) {
       const docType = String(req.query.docType || 'RECEIPT').toUpperCase();
       const prefix = DOC_CODE_PREFIX[docType];
       if (!prefix) return res.status(400).json({ error: 'Invalid docType' });
+      // FE gọi /next-code trước khi form chọn kho nên warehouseId là tùy chọn;
+      // người không có kho nào trong scope thì không được xem số phiếu.
+      const warehouseId = req.query.warehouseId ? String(req.query.warehouseId) : '';
+      const scope = await listScope(user);
+      if (!isDirector(user)) {
+        if (warehouseId && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
+        if (!warehouseId && scope.length === 0) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      }
       res.json({ code: await nextDocCode(prefix), docType });
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to preview document code' }); }
   });

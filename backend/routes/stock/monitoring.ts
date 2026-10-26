@@ -2,13 +2,12 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
-import { normalizeManagementLevel, MANAGEMENT_LEVELS } from '../../middleware/auth.js';
 import { beginStockTransaction } from '../../utils/stockTransaction.js';
 import { listStockAlerts } from '../../services/stockAlerts.js';
 import type { StockContext } from './context.js';
 
 export function monitoringRoutes(ctx: StockContext) {
-  const { db, listScope, isDirector, requireWarehouse, paginationOf } = ctx;
+  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, paginationOf } = ctx;
   const router = Router();
   // ── Lịch sử hàng hóa: timeline moves (§30.5, đọc) ─────────────────────────────
 
@@ -216,8 +215,7 @@ export function monitoringRoutes(ctx: StockContext) {
       const user = req.user;
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
       // NV không được sửa Min/Max (§10.3); Admin không đụng business (D12).
-      if (normalizeManagementLevel(user.managementLevel) < MANAGEMENT_LEVELS.MANAGER
-        || normalizeManagementLevel(user.managementLevel) === MANAGEMENT_LEVELS.ADMIN) {
+      if (!requireWarehouseManager(user)) {
         return res.status(403).json({ error: 'Only warehouse managers can set stock policies' });
       }
       const { productId, warehouseId, minStock, maxStock, reorderPoint, leadTimeDays } = req.body;

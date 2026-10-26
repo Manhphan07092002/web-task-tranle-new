@@ -190,7 +190,7 @@ describe('user warehouse scopes', () => {
     const d: any = { all: vi.fn().mockResolvedValue([{ id: 'wh-hn', code: 'HN', name: 'Kho Hà Nội', region: 'Bắc', address: null, isActive: 1 }]) };
     const app = express();
     app.use(express.json());
-    app.use((req, _res, next) => { (req as any).user = { id: 'a', role: 'Admin' }; next(); });
+    app.use((req, _res, next) => { (req as any).user = { id: 'a', role: 'Admin', managementLevel: 99 }; next(); });
     app.use(warehouseRoutes(d));
     const res = await request(app).get('/').expect(200);
     expect(res.body).toEqual([{ id: 'wh-hn', code: 'HN', name: 'Kho Hà Nội', region: 'Bắc', address: null, isActive: true }]);

@@ -206,6 +206,16 @@ describe('receipts', () => {
     await request(appFor(admin, db)).get('/next-code?docType=RECEIPT').expect(403);
   });
 
+  it('previews the next code only inside the warehouse scope', async () => {
+    const db = mockDb({ scopes: ['wh-hn'] });
+    await request(appFor(nv, db)).get('/next-code?docType=RECEIPT&warehouseId=wh-hn').expect(200);
+    await request(appFor(nv, db)).get('/next-code?docType=RECEIPT&warehouseId=wh-hcm').expect(403);
+    // FE gọi /next-code trước khi form chọn kho nên không được bắt buộc warehouseId.
+    await request(appFor(nv, db)).get('/next-code?docType=RECEIPT').expect(200);
+    await request(appFor(director, db)).get('/next-code?docType=RECEIPT&warehouseId=wh-hcm').expect(200);
+    await request(appFor(nv, mockDb({ scopes: [] }))).get('/next-code?docType=RECEIPT').expect(403);
+  });
+
   it('retries with the next sequence when a concurrent receipt takes the code', async () => {
     const yy = String(new Date().getFullYear()).slice(2);
     const committed = new Set<string>();
