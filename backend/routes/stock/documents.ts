@@ -4,12 +4,13 @@ import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
 import { normalizeManagementLevel, MANAGEMENT_LEVELS } from '../../middleware/auth.js';
 import { beginStockTransaction } from '../../utils/stockTransaction.js';
+import { adjustReserved } from '../../utils/stockReserved.js';
 import { resolveTracking } from '../../utils/tracking.js';
 import { getWarrantyStartType, resolveWarrantyStart } from '../../utils/warranty.js';
 import type { StockContext } from './context.js';
 
 export function documentsRoutes(ctx: StockContext) {
-  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, canReadDocument, canWriteDocument, assertLocation, availableOf, saleableLocationSet, assertNotCounting, postMove, postMoves, recordWarehouseActivity, resolveAccountingDefaults, docCode, nextDocCode, paginationOf } = ctx;
+  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, availableOf, saleableLocationSet, assertNotCounting, postMove, postMoves, recordWarehouseActivity, resolveAccountingDefaults, docCode, nextDocCode, paginationOf } = ctx;
   const router = Router();
   // VAT mặc định theo quy ước nghiệp vụ hiện tại. Người có thẩm quyền vẫn có
   // thể thay đổi trên từng dòng; không dùng mã tài khoản mặc định cứng.
@@ -221,10 +222,17 @@ export function documentsRoutes(ctx: StockContext) {
       if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING') {
         return res.status(400).json({ error: 'Only draft documents can be cancelled' });
       }
-      await dropDocReservationLinks(id);
-      await releaseReservedSerials(id);
-      await dropDocLots(id);
-      await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['CANCELLED', new Date().toISOString(), id]);
+      await beginStockTransaction(db, docWarehouseIds(doc));
+      try {
+        await dropDocReservationLinks(id);
+        await releaseReservedSerials(id);
+        await dropDocLots(id);
+        await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['CANCELLED', new Date().toISOString(), id]);
+        await db.run('COMMIT');
+      } catch (err) {
+        await db.run('ROLLBACK');
+        throw err;
+      }
       res.json({ success: true });
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to cancel document' }); }
   });
@@ -961,14 +969,14 @@ export function documentsRoutes(ctx: StockContext) {
 
   /** Dọn lô/cuộn của phiếu hủy/xóa (chưa từng nhập kho chính thức). */
   async function dropDocLots(documentId: string): Promise<void> {
-    await db.run(`DELETE FROM stock_lot_movements WHERE referenceId = ?`, [documentId]).catch(() => undefined);
-    await db.run(`DELETE FROM stock_lots WHERE receiptDocumentId = ?`, [documentId]).catch(() => undefined);
+    await db.run(`DELETE FROM stock_lot_movements WHERE referenceId = ?`, [documentId]);
+    await db.run(`DELETE FROM stock_lots WHERE receiptDocumentId = ?`, [documentId]);
     await db.run(
       `DELETE a FROM stock_document_line_lots a
        INNER JOIN stock_document_lines l ON l.id = a.documentLineId
        WHERE l.documentId = ?`,
       [documentId]
-    ).catch(() => undefined);
+    );
   }
 
   /** Nhả serial đang RESERVED cho phiếu (hủy/xóa nháp): về IN_STOCK, xóa link xuất. */
@@ -976,7 +984,7 @@ export function documentsRoutes(ctx: StockContext) {
     await db.run(
       `UPDATE stock_serials SET stockStatus = 'IN_STOCK', issueDocumentId = NULL, issueLineId = NULL, updatedAt = ? WHERE issueDocumentId = ? AND stockStatus = 'RESERVED'`,
       [new Date().toISOString(), documentId]
-    ).catch(() => undefined);
+    );
   }
 
   /** Bỏ liên kết giữ hàng của phiếu nhưng KHÔNG nhả reservation.
@@ -987,7 +995,7 @@ export function documentsRoutes(ctx: StockContext) {
        INNER JOIN stock_document_lines l ON l.id = rl.documentLineId
        WHERE l.documentId = ?`,
       [documentId]
-    ).catch(() => undefined);
+    );
   }
 
   /** Liên kết giữ hàng còn hiệu lực của một phiếu xuất, kèm dữ liệu reservation. */
@@ -1100,10 +1108,10 @@ export function documentsRoutes(ctx: StockContext) {
         'UPDATE reservations SET consumedQuantity = ?, status = ? WHERE id = ?',
         [nextConsumed, nextStatus, link.reservationId]
       );
-      await db.run(
-        'UPDATE stock_balances SET reserved = GREATEST(0, reserved - ?), updatedAt = ? WHERE productId = ? AND warehouseId = ? AND locationId = ?',
-        [quantity, now, link.productId, link.warehouseId, link.locationId || '']
-      );
+      await adjustReserved(db.run.bind(db), {
+        kind: 'DECREMENT_CLAMPED', productId: link.productId, warehouseId: link.warehouseId,
+        locationId: link.locationId, delta: quantity, now,
+      });
     }
     await dropDocReservationLinks(doc.id);
   }

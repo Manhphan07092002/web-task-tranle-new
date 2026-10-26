@@ -4,10 +4,11 @@ import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
 import { normalizeManagementLevel, MANAGEMENT_LEVELS } from '../../middleware/auth.js';
 import { beginStockTransaction } from '../../utils/stockTransaction.js';
+import { adjustReserved } from '../../utils/stockReserved.js';
 import type { StockContext } from './context.js';
 
 export function reservationsRoutes(ctx: StockContext) {
-  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, assertLocation, isSaleableLocation, availableOf, assertNotCounting, paginationOf, recordWarehouseActivity } = ctx;
+  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, assertLocation, isSaleableLocation, availableOf, assertNotCounting, postMove, paginationOf, recordWarehouseActivity } = ctx;
   const router = Router();
   // ── Giữ hàng / phân bổ (§21: hold/release/consume, TP+NV trong scope) ─────────
 
@@ -81,12 +82,9 @@ export function reservationsRoutes(ctx: StockContext) {
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'HELD', ?, ?)`,
           [id, productId, warehouseId, locationId || '', quantity, sourceType || 'INTERNAL', sourceId ?? null, user.id, expiresAt ?? null, now]
         );
-        await db.run(
-          `INSERT INTO stock_balances (productId, warehouseId, locationId, onHand, reserved, updatedAt)
-           VALUES (?, ?, ?, 0, ?, ?)
-           ON DUPLICATE KEY UPDATE reserved = reserved + VALUES(reserved), updatedAt = VALUES(updatedAt)`,
-          [productId, warehouseId, locationId || '', quantity, now]
-        );
+        await adjustReserved(db.run.bind(db), {
+          kind: 'HOLD_UPSERT', productId, warehouseId, locationId, delta: Number(quantity), now,
+        });
         await recordWarehouseActivity(db.run.bind(db), {
           actionType: 'RESERVATION_HELD', entityType: 'RESERVATION', entityId: id,
           productId, warehouseId, quantity: Number(quantity), userId: user.id,
@@ -136,20 +134,20 @@ export function reservationsRoutes(ctx: StockContext) {
             await db.run('ROLLBACK'); transactionOpen = false;
             return res.status(400).json({ error: 'Insufficient on-hand stock to consume' });
           }
-          await db.run(
-            `INSERT INTO stock_moves (id, productId, warehouseId, locationId, quantity, moveType, referenceType, referenceId, createdBy, createdAt)
-             VALUES (?, ?, ?, ?, ?, 'ISSUE', 'RESERVATION', ?, ?, ?)`,
-            [randomUUID(), r.productId, r.warehouseId, r.locationId || '', -remaining, r.id, user.id, now]
-          );
-          await db.run(
-            'UPDATE stock_balances SET onHand = onHand - ?, reserved = reserved - ?, updatedAt = ? WHERE productId = ? AND warehouseId = ? AND locationId = ?',
-            [remaining, remaining, now, r.productId, r.warehouseId, r.locationId || '']
-          );
+          await postMove(db.run.bind(db), {
+            productId: r.productId, warehouseId: r.warehouseId, locationId: r.locationId || '',
+            quantity: -remaining, moveType: 'ISSUE', referenceType: 'RESERVATION',
+            referenceId: r.id, documentLineId: null, createdBy: user.id,
+          }, { skipCountingCheck: true });
+          await adjustReserved(db.run.bind(db), {
+            kind: 'DECREMENT', productId: r.productId, warehouseId: r.warehouseId,
+            locationId: r.locationId, delta: remaining, now,
+          });
         } else {
-          await db.run(
-            'UPDATE stock_balances SET reserved = reserved - ?, updatedAt = ? WHERE productId = ? AND warehouseId = ? AND locationId = ?',
-            [remaining, now, r.productId, r.warehouseId, r.locationId || '']
-          );
+          await adjustReserved(db.run.bind(db), {
+            kind: 'DECREMENT', productId: r.productId, warehouseId: r.warehouseId,
+            locationId: r.locationId, delta: remaining, now,
+          });
         }
         await db.run(
           'UPDATE reservations SET status = ?, consumedQuantity = ? WHERE id = ?',

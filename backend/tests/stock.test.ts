@@ -790,6 +790,9 @@ describe('stock counts blind flow', () => {
     const moves = full.run.mock.calls.filter(([s]: string[]) => String(s).includes('INSERT INTO stock_moves'));
     expect(moves).toHaveLength(1); // only the -1 variance line
     expect(moves[0][1]).toContain(-1);
+    // Điều chỉnh kiểm kê giờ đi qua postMove nên mỗi move có audit trail riêng.
+    const moveLog = full.run.mock.calls.find(([s]: string[]) => String(s).includes('warehouse_activity_logs'));
+    expect(moveLog?.[1]).toContain('STOCK_ADJUSTMENT_CREATED');
     expect(full.run.mock.calls.some(([s]: string[]) => String(s).includes("status = ?, approvedBy = ?"))).toBe(true);
   });
 

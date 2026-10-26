@@ -1,4 +1,5 @@
 import { beginStockTransaction } from '../utils/stockTransaction.js';
+import { adjustReserved } from '../utils/stockReserved.js';
 import { randomUUID } from 'crypto';
 
 const RESERVATION_EXPIRY_LOCK = 'reservation_expiry_lock';
@@ -54,10 +55,10 @@ async function releaseExpiredInContext(db: any, now: Date): Promise<number> {
         released++;
         continue;
       }
-      await db.run(
-        'UPDATE stock_balances SET reserved = reserved - ?, updatedAt = ? WHERE productId = ? AND warehouseId = ? AND locationId = ?',
-        [remaining, now.toISOString(), current.productId, current.warehouseId, current.locationId || '']
-      );
+      await adjustReserved(db.run.bind(db), {
+        kind: 'DECREMENT', productId: current.productId, warehouseId: current.warehouseId,
+        locationId: current.locationId, delta: remaining, now: now.toISOString(),
+      });
       await db.run('UPDATE reservations SET status = ? WHERE id = ?', ['RELEASED', current.id]);
       await db.run('DELETE FROM stock_document_line_reservations WHERE reservationId = ?', [current.id]).catch(() => undefined);
       await db.run(

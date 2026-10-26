@@ -7,7 +7,7 @@ import { beginStockTransaction } from '../../utils/stockTransaction.js';
 import type { StockContext } from './context.js';
 
 export function countsRoutes(ctx: StockContext) {
-  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, assertLocation, assertNotCounting, paginationOf, recordWarehouseActivity } = ctx;
+  const { db, listScope, isDirector, requireWarehouse, requireWarehouseManager, assertLocation, assertNotCounting, postMove, paginationOf, recordWarehouseActivity } = ctx;
   const router = Router();
   // ── Kiểm kê blind-count (§19–20) ────────────────────────────────────────────
 
@@ -283,17 +283,13 @@ export function countsRoutes(ctx: StockContext) {
           if (variance === 0) continue;
           varianceLines += 1;
           totalVariance += variance;
-          await db.run(
-            `INSERT INTO stock_moves (id, productId, warehouseId, locationId, quantity, moveType, referenceType, referenceId, documentLineId, createdBy, createdAt)
-             VALUES (?, ?, ?, ?, ?, 'ADJUSTMENT', 'COUNT', ?, ?, ?, ?)`,
-            [randomUUID(), line.productId, count.warehouseId, line.locationId || '', variance, count.id, line.id, user.id, now]
-          );
-          await db.run(
-            `INSERT INTO stock_balances (productId, warehouseId, locationId, onHand, reserved, updatedAt)
-             VALUES (?, ?, ?, ?, 0, ?)
-             ON DUPLICATE KEY UPDATE onHand = onHand + VALUES(onHand), updatedAt = VALUES(updatedAt)`,
-            [line.productId, count.warehouseId, line.locationId || '', variance, now]
-          );
+          // Đang trong lúc đóng kiểm kê nên status vẫn là COUNTING: bỏ qua
+          // assertNotCounting để không tự chặn chính mình.
+          await postMove(db.run.bind(db), {
+            productId: line.productId, warehouseId: count.warehouseId, locationId: line.locationId || '',
+            quantity: variance, moveType: 'ADJUSTMENT', referenceType: 'COUNT',
+            referenceId: count.id, documentLineId: line.id, createdBy: user.id,
+          }, { skipCountingCheck: true });
         }
         await db.run('UPDATE stock_counts SET status = ?, approvedBy = ?, updatedAt = ? WHERE id = ?', ['DONE', user.id, now, count.id]);
         await recordWarehouseActivity(db.run.bind(db), {

@@ -52,6 +52,7 @@ function makeDb(opts: {
   oldLinks?: any[];
   reservations?: any[];
   products?: string[];
+  failOn?: (sql: string) => boolean;
 } = {}) {
   const runs: [string, any[]][] = [];
   const db: any = {
@@ -87,6 +88,7 @@ function makeDb(opts: {
     }),
     run: vi.fn(async (sql: string, params: any[] = []) => {
       runs.push([String(sql), params]);
+      if (opts.failOn?.(String(sql))) throw new Error('ER_LOCK_DEADLOCK');
       return { changes: 1 };
     }),
   };
@@ -217,6 +219,38 @@ describe('Phase 6B reservation links on issue documents', () => {
     expect(sqls(deleteDb).some((sql) => sql.includes('UPDATE stock_balances SET reserved'))).toBe(false);
   });
 
+  it('rolls back the whole cancel when a cleanup write fails', async () => {
+    const db = makeDb({
+      doc: issueDoc({ status: 'DRAFT' }), lines: [issueLine()],
+      failOn: (sql) => sql.includes('UPDATE stock_serials'),
+    });
+    const res = await request(appFor(tp, db)).post('/documents/doc1/cancel').send({}).expect(500);
+    // Không lộ lỗi MySQL nội bộ cho client.
+    expect(res.body.error).toBe('Failed to cancel document');
+    expect(sqls(db)[sqls(db).length - 1]).toContain('ROLLBACK');
+    expect(sqls(db).some((sql) => sql.includes('UPDATE stock_documents SET status'))).toBe(false);
+    expect(sqls(db).some((sql) => sql.includes('START TRANSACTION'))).toBe(true);
+  });
+
+  it('rolls back the whole cancel when a lot cleanup write fails', async () => {
+    const db = makeDb({
+      doc: issueDoc({ status: 'DRAFT' }), lines: [issueLine()],
+      failOn: (sql) => sql.includes('DELETE FROM stock_lot_movements'),
+    });
+    await request(appFor(tp, db)).post('/documents/doc1/cancel').send({}).expect(500);
+    expect(sqls(db)[sqls(db).length - 1]).toContain('ROLLBACK');
+    expect(sqls(db).some((sql) => sql.includes('UPDATE stock_documents SET status'))).toBe(false);
+  });
+
+  it('locks only the warehouses of the cancelled document', async () => {
+    const db = makeDb({ doc: issueDoc({ status: 'DRAFT' }), lines: [issueLine()] });
+    await request(appFor(tp, db)).post('/documents/doc1/cancel').send({}).expect(200);
+    const lock = db.all.mock.calls.find(([sql]: string[]) => String(sql).includes('FOR UPDATE'));
+    expect(lock?.[0]).toContain('WHERE id IN (?)');
+    expect(lock?.[1]).toEqual(['wh-hn']);
+    expect(sqls(db).some((sql) => sql.includes('COMMIT'))).toBe(true);
+  });
+
   it('settles only the remaining quantity after a partial issue consumption', async () => {
     const releaseDb = makeDb({
       reservations: [reservation({ quantity: 10, consumedQuantity: 4 })],
@@ -234,6 +268,13 @@ describe('Phase 6B reservation links on issue documents', () => {
     await request(appFor(tp, consumeDb)).post('/reservations/r1/consume').send({}).expect(200);
     const move = consumeDb.runs.find(([sql]: [string, any[]]) => sql.includes('INSERT INTO stock_moves'));
     expect(move?.[1]?.[4]).toBe(-6);
+    expect(move?.[1]).toContain('ISSUE');
+    expect(move?.[1]).toContain('RESERVATION');
+    // onHand đến từ postMove (upsert), reserved đến từ adjustReserved — không trừ onHand hai lần.
+    const consumeBalance = consumeDb.runs.find(([sql]: [string, any[]]) => sql.includes('UPDATE stock_balances SET reserved = reserved - ?'));
+    expect(consumeBalance?.[1]?.[0]).toBe(6);
+    expect(sqls(consumeDb).some((sql) => sql.includes('UPDATE stock_balances SET onHand'))).toBe(false);
+    expect(sqls(consumeDb).some((sql) => sql.includes('warehouse_activity_logs'))).toBe(true);
     const consumed = consumeDb.runs.find(([sql]: [string, any[]]) => sql.includes('UPDATE reservations SET status = ?, consumedQuantity = ?'));
     expect(consumed?.[1]).toEqual(['CONSUMED', 10, 'r1']);
   });
