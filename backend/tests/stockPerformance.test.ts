@@ -213,4 +213,19 @@ describe('Phase 4-5 stock posting performance', () => {
     expect(scopedAnomalies?.[0]).toContain('FROM stock_balances WHERE warehouseId IN (?,?) GROUP BY');
     expect(scopedAnomalies?.[1]).toEqual(['wh-hn', 'wh-hcm', 'wh-hn', 'wh-hcm']);
   });
+
+  it('pages MISA sync logs instead of hardcoding the newest 200 rows', async () => {
+    const db = routeDb({
+      onAll: (sql) => (sql.includes('FROM misa_sync_logs') ? [{ id: 'log-1' }] : undefined),
+      onGet: (sql) => (sql.includes('COUNT(*) AS total FROM misa_sync_logs') ? { total: 731 } : undefined),
+    });
+    const res = await request(appFor(db)).get('/misa-logs?limit=50&offset=100&status=FAILED').expect(200);
+    expect(res.body).toEqual([{ id: 'log-1' }]);
+    // Body là mảng trần nên tổng số dòng chỉ có chỗ ở header (FE đã đọc header này).
+    expect(res.headers['x-total-count']).toBe('731');
+    const page = db.allCalls.find(([sql]: [string, any[]]) => String(sql).includes('FROM misa_sync_logs'));
+    expect(page?.[0]).toContain('LIMIT ? OFFSET ?');
+    expect(page?.[0]).not.toContain('LIMIT 200');
+    expect(page?.[1]).toEqual(['FAILED', 50, 100]);
+  });
 });

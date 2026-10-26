@@ -2,7 +2,6 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
-import { normalizeManagementLevel, MANAGEMENT_LEVELS } from '../../middleware/auth.js';
 import { beginStockTransaction } from '../../utils/stockTransaction.js';
 import type { StockContext } from './context.js';
 

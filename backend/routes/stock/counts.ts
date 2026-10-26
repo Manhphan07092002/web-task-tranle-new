@@ -185,9 +185,17 @@ export function countsRoutes(ctx: StockContext) {
           // Cặp (product, location) chưa có trong snapshot: lấy tồn hiện tại
           // làm expectedQty thay vì 0 — nếu không approve luôn 409.
           const existing = await db.get(
-            'SELECT id FROM stock_count_lines WHERE countId = ? AND productId = ? AND locationId = ?',
+            'SELECT id, actualQty, countedBy FROM stock_count_lines WHERE countId = ? AND productId = ? AND locationId = ?',
             [String(req.params.id), line.productId, line.locationId || '']
           );
+          // Số đếm đã nhập là chữ ký của người đếm: người khác ghi đè sẽ phá
+          // blind-count (hai người đếm lệch nhau mà không ai biết), nên chỉ
+          // chính họ hoặc quản lý kho mới được sửa.
+          if (existing && existing.actualQty !== null && existing.actualQty !== undefined
+            && existing.countedBy && existing.countedBy !== user.id
+            && !requireWarehouseManager(user)) {
+            return res.status(403).json({ error: 'Chỉ người đã đếm hoặc quản lý kho mới được sửa số đếm này' });
+          }
           let expectedQty = 0;
           if (!existing) {
             const bal = await db.get(

@@ -2,7 +2,6 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
-import { normalizeManagementLevel, MANAGEMENT_LEVELS } from '../../middleware/auth.js';
 import { beginStockTransaction } from '../../utils/stockTransaction.js';
 import { getWarrantyStartType, resolveWarrantyStart, warrantyEndDate, toDateOnly } from '../../utils/warranty.js';
 import type { StockContext } from './context.js';
@@ -138,12 +137,10 @@ export function serialsRoutes(ctx: StockContext) {
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       const { status, locationId, customerName, projectId, warrantyStart, warrantyMonths, notes, supplier } = req.body;
       // Đổi trạng thái cần TP+ (NV chỉ quét/xem) — kho đổi bằng luồng điều chuyển.
-      if (status !== undefined && status !== existing.status
-        && normalizeManagementLevel(user.managementLevel) < MANAGEMENT_LEVELS.MANAGER) {
+      if (status !== undefined && status !== existing.status && !requireWarehouseManager(user)) {
         return res.status(403).json({ error: 'Only warehouse managers can change serial status' });
       }
-      if (locationId !== undefined && locationId !== existing.locationId
-        && normalizeManagementLevel(user.managementLevel) < MANAGEMENT_LEVELS.MANAGER) {
+      if (locationId !== undefined && locationId !== existing.locationId && !requireWarehouseManager(user)) {
         return res.status(403).json({ error: 'Chỉ quản lý kho mới được đổi vị trí Serial trực tiếp; hãy dùng phiếu điều chuyển' });
       }
       if (locationId !== undefined && locationId !== existing.locationId

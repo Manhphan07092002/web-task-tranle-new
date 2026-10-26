@@ -2,11 +2,10 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
-import { normalizeManagementLevel, MANAGEMENT_LEVELS } from '../../middleware/auth.js';
 import type { StockContext } from './context.js';
 
 export function misaRoutes(ctx: StockContext) {
-  const { db, scopeOf, isDirector, requireWarehouseManager, recordWarehouseActivity } = ctx;
+  const { db, scopeOf, isDirector, requireWarehouseManager, paginationOf, recordWarehouseActivity } = ctx;
   const router = Router();
   const MISA_ENTITY_TYPES = [
     'PRODUCT_ITEM', 'PRODUCT_INVENTORY_ACCOUNT', 'PARTNER_PAYABLE_ACCOUNT',
@@ -113,12 +112,16 @@ export function misaRoutes(ctx: StockContext) {
       if (!user) return res.status(401).json({ error: 'Unauthorized' });
       if (!requireWarehouseManager(user)) return res.status(403).json({ error: 'Warehouse manager access required' });
       const { status, entityType } = req.query as Record<string, string | undefined>;
-      let query = 'SELECT * FROM misa_sync_logs WHERE 1=1';
+      let where = 'FROM misa_sync_logs WHERE 1=1';
       const params: any[] = [];
-      if (status?.trim()) { query += ' AND status = ?'; params.push(status.trim()); }
-      if (entityType?.trim()) { query += ' AND entityType = ?'; params.push(entityType.trim()); }
-      query += ' ORDER BY createdAt DESC LIMIT 200';
-      res.json(await db.all(query, params));
+      if (status?.trim()) { where += ' AND status = ?'; params.push(status.trim()); }
+      if (entityType?.trim()) { where += ' AND entityType = ?'; params.push(entityType.trim()); }
+      // Trước đây cố định LIMIT 200 nên không thể xem log cũ hơn; giờ phân trang
+      // như các list endpoint khác và báo tổng qua header vì body là mảng trần.
+      const totalRow = await db.get(`SELECT COUNT(*) AS total ${where}`, params);
+      const page = paginationOf(req.query as Record<string, string | undefined>);
+      res.setHeader('X-Total-Count', String(Number(totalRow?.total || 0)));
+      res.json(await db.all(`SELECT * ${where} ORDER BY createdAt DESC LIMIT ? OFFSET ?`, [...params, page.limit, page.offset]));
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch MISA sync logs' }); }
   });
 
