@@ -63,6 +63,9 @@ export function reservationsRoutes(ctx: StockContext) {
       transactionOpen = true;
       const access = await requireWarehouse(user, warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
+      // Kho đang kiểm kê: số đếm thực tế là nguồn chân lý, giữ hàng trong lúc này
+      // sẽ làm lệch available ngay sau khi approve. Chặn cả hold lẫn release.
+      await assertNotCounting(warehouseId);
       const product = await db.get('SELECT id FROM products WHERE id = ?', [productId]);
       if (!product) return res.status(400).json({ error: `Unknown product: ${productId}` });
       if (!(await assertLocation(warehouseId, locationId ?? null))) {
@@ -144,6 +147,9 @@ export function reservationsRoutes(ctx: StockContext) {
             locationId: r.locationId, delta: remaining, now,
           });
         } else {
+          // Đối xứng với nhánh CONSUMED: nhả giữ hàng cũng đổi available, nên kho
+          // đang kiểm kê phải chặn để số đếm không bị lệch giữa lúc đếm.
+          await assertNotCounting(r.warehouseId);
           await adjustReserved(db.run.bind(db), {
             kind: 'DECREMENT', productId: r.productId, warehouseId: r.warehouseId,
             locationId: r.locationId, delta: remaining, now,

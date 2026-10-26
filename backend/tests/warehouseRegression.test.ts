@@ -127,6 +127,28 @@ describe('warehouse stock integrity regressions', () => {
     expect(f.balance.onHand).toBe(10);
   });
 
+  it('blocks holds while a count is open', async () => {
+    const f = fixture({ counting: true });
+    const res = await request(f.app).post('/reservations').send({ productId: 'p1', warehouseId: 'w1', quantity: 6 });
+    expect(res.status).toBe(409);
+    expect(f.balance.reserved).toBe(0);
+    expect(f.writes.some(write => write.sql.includes('INSERT INTO reservations'))).toBe(false);
+    expect(f.writes.some(write => write.sql.includes('INSERT INTO stock_balances'))).toBe(false);
+    expect(f.writes.at(-1)?.sql).toBe('ROLLBACK');
+  });
+
+  it('blocks releasing and consuming a hold while a count is open', async () => {
+    for (const action of ['release', 'consume']) {
+      const f = fixture({ counting: true, reserved: 4 });
+      const res = await request(f.app).post(`/reservations/r1/${action}`).send({});
+      expect(res.status, action).toBe(409);
+      expect(f.balance.reserved, action).toBe(4);
+      expect(f.writes.some(write => write.sql.includes('UPDATE reservations SET status')), action).toBe(false);
+      expect(f.writes.some(write => write.sql.includes('INSERT INTO stock_moves')), action).toBe(false);
+      expect(f.writes.at(-1)?.sql, action).toBe('ROLLBACK');
+    }
+  });
+
   it.each([
     { name: 'receipt', path: '/receipts/d1/complete', type: 'RECEIPT', status: 'READY' },
     { name: 'issue', path: '/issues/d1/complete', type: 'ISSUE', status: 'READY' },
