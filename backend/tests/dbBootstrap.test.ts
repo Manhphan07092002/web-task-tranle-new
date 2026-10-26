@@ -10,7 +10,7 @@ type Row = Record<string, any>;
 
 // Persistent query double: reopen connections on restart, retain committed rows,
 // and roll back writes on failure. No real MySQL server or credentials are used.
-function database() {
+function database(options: { columnTypes?: (table: string, column: string) => Row | undefined } = {}) {
   let tables = new Map<string, Map<string, Row>>();
   let snapshot: typeof tables | undefined;
   let failure: RegExp | undefined;
@@ -35,7 +35,13 @@ function database() {
     if (sql.includes('FROM information_schema.tables')) {
       return [[{ count: ['users', 'roles', 'departments', 'tasks', 'system_config', '_migrations'].filter(t => tables.has(t)).length }]];
     }
-    if (sql.includes('FROM information_schema.columns')) return [[{ count: 1 }]];
+    if (sql.includes('FROM information_schema.columns')) {
+      if (options.columnTypes && sql.includes('DATA_TYPE')) {
+        const row = options.columnTypes(String(params[0]), String(params[1]));
+        return [row ? [row] : []];
+      }
+      return [[{ count: 1 }]];
+    }
     if (sql.includes('FROM information_schema.statistics')) return [[{ count: 0 }]]; // Index checks
     if (sql.includes('FROM information_schema.key_column_usage')) return [[]]; // No legacy FKs in test DB
     if (sql.startsWith('CREATE INDEX')) return [{ affectedRows: 0 }];
@@ -136,7 +142,7 @@ describe('first-install database bootstrap', () => {
     expect(store.rows('tasks').size).toBe(0);
     expect(store.rows('system_config').size).toBe(0);
     expect(store.rows('_bootstrap').get('1')?.completed).toBe(1);
-    expect(store.rows('_migrations').size).toBe(37); // v34-v43: LOT allocation/transfer, Serial lifecycle, tracking, audit log, MISA enum, alert state, issue reservation links
+    expect(store.rows('_migrations').size).toBe(41); // v34-v47: LOT allocation/transfer, Serial lifecycle, tracking, audit log, MISA enum, alert state, issue reservation links, hot-path indexes, DECIMAL quantities/vatRate/prices
   });
 
   it('does not recreate accounts, roles, or config after all application data is deleted', async () => {
@@ -184,5 +190,31 @@ describe('first-install database bootstrap', () => {
     expect(store.rows('positions').get('pos-1')).toBeDefined();
     expect(store.query.mock.calls.some(([sql]) => String(sql).includes('DROP TABLE IF EXISTS `positions`'))).toBe(false);
     expect(store.query.mock.calls.some(([sql]) => String(sql).includes('DROP TABLE IF EXISTS `user_positions`'))).toBe(true);
+  });
+
+  // Bỏ qua cột legacy `qty` (đã được migration cũ đổi sang DECIMAL và code không
+  // còn đọc) để chỉ đo v45–v47.
+  const decimalAlters = (store: ReturnType<typeof database>) => store.query.mock.calls
+    .map(([sql]) => String(sql))
+    .filter((sql) => sql.startsWith('ALTER TABLE') && sql.includes('DECIMAL(') && !sql.includes('MODIFY COLUMN qty '));
+
+  it('converts stock quantity columns to DECIMAL when the current type is unknown', async () => {
+    const store = database();
+    await restart();
+    expect(decimalAlters(store)).toHaveLength(31); // 26 quantities + 2 vatRate + 3 product prices
+    expect(decimalAlters(store)).toContain('ALTER TABLE `stock_balances` MODIFY COLUMN `onHand` DECIMAL(18,3) NOT NULL DEFAULT 0');
+    expect(decimalAlters(store)).toContain('ALTER TABLE `stock_documents` MODIFY COLUMN `vatRate` DECIMAL(7,4) NOT NULL DEFAULT 0');
+  });
+
+  it('skips the ALTER when the column already has the target DECIMAL type', async () => {
+    // Chốt idempotency: boot lại trên DB đã migrate không được phát ALTER nào.
+    const store = database({
+      columnTypes: (table, column) => ({
+        dataType: 'decimal',
+        numericScale: column === 'vatRate' ? 4 : table === 'products' ? 2 : 3,
+      }),
+    });
+    await restart();
+    expect(decimalAlters(store)).toEqual([]);
   });
 });

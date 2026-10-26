@@ -11,7 +11,11 @@ export function serialsRoutes(ctx: StockContext) {
   const router = Router();
   // ── Serial / Lô Phase B (§22: đăng ký + truy vết cơ bản) ──────────────────────
 
-  const SERIAL_STATUSES = ['SALEABLE', 'WARRANTY', 'DAMAGED', 'DEMO', 'QUARANTINE', 'SOLD'];
+  const SERIAL_STATUSES = ['SALEABLE', 'WARRANTY', 'DAMAGED', 'DEMO', 'QUARANTINE', 'SOLD'] as const;
+  // stockStatus là trạng thái tồn do chứng từ điều khiển (IN_STOCK → RESERVED →
+  // OUT). 'RESERVED' là giá trị legacy vẫn còn trong dữ liệu cũ nên vẫn phải chặn xóa.
+  const STOCK_STATUS_RESERVED = 'RESERVED';
+  const STOCK_STATUSES = ['IN_STOCK', STOCK_STATUS_RESERVED, 'OUT'] as const;
 
   router.get('/serials', async (req, res) => {
     try {
@@ -59,7 +63,8 @@ export function serialsRoutes(ctx: StockContext) {
     lotCode: z.string().trim().max(191).nullable().optional(),
     warehouseId: z.string().trim().min(1).max(191),
     locationId: z.string().trim().max(191).nullable().optional(),
-    status: z.enum(['SALEABLE', 'WARRANTY', 'DAMAGED', 'DEMO', 'QUARANTINE', 'SOLD']).optional(),
+    status: z.enum(SERIAL_STATUSES).optional(),
+    stockStatus: z.enum(STOCK_STATUSES).optional(),
     supplier: z.string().max(300).nullable().optional(),
     receiptId: z.string().max(191).nullable().optional(),
     receiptDocumentId: z.string().max(191).nullable().optional(),
@@ -185,7 +190,7 @@ export function serialsRoutes(ctx: StockContext) {
       if (!existing) return res.status(404).json({ error: 'Không tìm thấy Serial' });
       const access = await requireWarehouse(user, existing.warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
-      if (existing.receiptDocumentId || existing.issueDocumentId || existing.stockStatus === 'OUT' || existing.stockStatus === 'RESERVED') {
+      if (existing.receiptDocumentId || existing.issueDocumentId || existing.stockStatus === 'OUT' || existing.stockStatus === STOCK_STATUS_RESERVED) {
         return res.status(409).json({ error: 'Không thể xóa Serial đã liên kết chứng từ hoặc đã phát sinh xuất/giữ hàng' });
       }
       const move = await db.get('SELECT id FROM stock_moves WHERE serialId = ? LIMIT 1', [existing.id]);

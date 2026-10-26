@@ -52,10 +52,11 @@ function normalizeSql(sql: string): string {
 }
 
 // ─── Row wrapper ─────────────────────────────────────────────────────────────
-// mysql2 can return BIGINT/DECIMAL (e.g. from COUNT(*)) as BigInt or string
-// depending on server/driver config. Coerce those to Number so routes that read
-// `row.count` keep working. Property access is case-insensitive as a safety net
-// for any identifier case differences, matching the PostgreSQL adapter.
+// mysql2 can return BIGINT (e.g. from COUNT(*)) as BigInt depending on server/
+// driver config. Coerce those to Number so routes that read `row.count` keep
+// working. DECIMAL is handled at the driver via `decimalNumbers`. Property
+// access is case-insensitive as a safety net for any identifier case
+// differences, matching the PostgreSQL adapter.
 
 function wrapRow(row: Record<string, any>): any {
   const normalized: Record<string, any> = {};
@@ -399,9 +400,11 @@ CREATE TABLE IF NOT EXISTS clients (
 
 CREATE TABLE IF NOT EXISTS products (
   id VARCHAR(191) PRIMARY KEY, name VARCHAR(191) NOT NULL, unit TEXT, origin TEXT,
-  defaultPrice DOUBLE DEFAULT 0, createdAt TEXT NOT NULL, category VARCHAR(191),
+  defaultPrice DECIMAL(18,2) DEFAULT 0, createdAt TEXT NOT NULL, category VARCHAR(191),
   importQuantity INT DEFAULT 0, remainingQuantity INT DEFAULT 0,
-  importPrice DOUBLE DEFAULT 0, salePrice DOUBLE DEFAULT 0, importCode VARCHAR(191), invoiceDate TEXT, warrantyMonths INT NOT NULL DEFAULT 0
+  importPrice DECIMAL(18,2) DEFAULT 0, salePrice DECIMAL(18,2) DEFAULT 0, importCode VARCHAR(191), invoiceDate TEXT, warrantyMonths INT NOT NULL DEFAULT 0,
+  INDEX idx_prod_name (name),
+  INDEX idx_prod_import_code (importCode)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS mail_quotas (
@@ -463,9 +466,9 @@ CREATE TABLE IF NOT EXISTS stock_documents (
   invoiceNumber VARCHAR(100) NULL, invoiceDate VARCHAR(40) NULL,
   customsDeclarationNumber VARCHAR(100) NULL,
   invoiceLookupCode VARCHAR(100) NULL, invoiceLookupUrl TEXT NULL,
-  totalPreTax DOUBLE NOT NULL DEFAULT 0, vatRate DOUBLE NOT NULL DEFAULT 0,
-  vatAmount DOUBLE NOT NULL DEFAULT 0, totalAmount DOUBLE NOT NULL DEFAULT 0,
-  shippingFee DOUBLE NOT NULL DEFAULT 0,
+  totalPreTax DECIMAL(18,3) NOT NULL DEFAULT 0, vatRate DECIMAL(7,4) NOT NULL DEFAULT 0,
+  vatAmount DECIMAL(18,3) NOT NULL DEFAULT 0, totalAmount DECIMAL(18,3) NOT NULL DEFAULT 0,
+  shippingFee DECIMAL(18,3) NOT NULL DEFAULT 0,
   paymentStatus VARCHAR(32) NOT NULL DEFAULT 'UNPAID', paymentDueDate VARCHAR(40) NULL,
   deliveryDate VARCHAR(40) NULL, installationDate VARCHAR(40) NULL, acceptanceDate VARCHAR(40) NULL,
   referenceType VARCHAR(64) NULL, referenceId VARCHAR(191) NULL,
@@ -482,22 +485,22 @@ CREATE TABLE IF NOT EXISTS stock_documents (
 
 CREATE TABLE IF NOT EXISTS stock_document_lines (
   id VARCHAR(191) PRIMARY KEY, documentId VARCHAR(191) NOT NULL, productId VARCHAR(191) NOT NULL,
-  quantity DOUBLE NOT NULL DEFAULT 0, unitPrice DOUBLE NOT NULL DEFAULT 0,
+  quantity DECIMAL(18,3) NOT NULL DEFAULT 0, unitPrice DECIMAL(18,3) NOT NULL DEFAULT 0,
   locationId VARCHAR(191) NULL, note TEXT NULL,
   accountDebit VARCHAR(32) NULL DEFAULT '1561',
   accountCredit VARCHAR(32) NULL DEFAULT '331',
-  vatRate DOUBLE NOT NULL DEFAULT 0, vatAmount DOUBLE NOT NULL DEFAULT 0,
-  totalAmount DOUBLE NOT NULL DEFAULT 0,
+  vatRate DECIMAL(7,4) NOT NULL DEFAULT 0, vatAmount DECIMAL(18,3) NOT NULL DEFAULT 0,
+  totalAmount DECIMAL(18,3) NOT NULL DEFAULT 0,
   projectId VARCHAR(191) NULL, costItem VARCHAR(100) NULL,
   processingStatus VARCHAR(16) NOT NULL DEFAULT 'PENDING',
-  actualQty DOUBLE NULL, varianceQty DOUBLE NULL, varianceReason VARCHAR(500) NULL,
+  actualQty DECIMAL(18,3) NULL, varianceQty DECIMAL(18,3) NULL, varianceReason VARCHAR(500) NULL,
   INDEX idx_sdline_document (documentId),
   INDEX idx_sdline_product (productId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS stock_moves (
   id VARCHAR(191) PRIMARY KEY, productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
-  locationId VARCHAR(191) NULL, quantity DOUBLE NOT NULL,
+  locationId VARCHAR(191) NULL, quantity DECIMAL(18,3) NOT NULL,
   moveType VARCHAR(32) NOT NULL, referenceType VARCHAR(64) NULL, referenceId VARCHAR(191) NULL,
   documentLineId VARCHAR(191) NULL, serialId VARCHAR(191) NULL, lotId VARCHAR(191) NULL, createdBy VARCHAR(191) NULL,
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -513,15 +516,16 @@ CREATE TABLE IF NOT EXISTS stock_moves (
 
 CREATE TABLE IF NOT EXISTS stock_balances (
   productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL, locationId VARCHAR(191) NOT NULL DEFAULT '',
-  onHand DOUBLE NOT NULL DEFAULT 0, reserved DOUBLE NOT NULL DEFAULT 0,
+  onHand DECIMAL(18,3) NOT NULL DEFAULT 0, reserved DECIMAL(18,3) NOT NULL DEFAULT 0,
   updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (productId, warehouseId, locationId)
+  PRIMARY KEY (productId, warehouseId, locationId),
+  INDEX idx_bal_warehouse (warehouseId, productId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS product_warehouse_policies (
   productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
-  minStock DOUBLE NOT NULL DEFAULT 0, maxStock DOUBLE NOT NULL DEFAULT 0,
-  reorderPoint DOUBLE NOT NULL DEFAULT 0, leadTimeDays INT NOT NULL DEFAULT 0,
+  minStock DECIMAL(18,3) NOT NULL DEFAULT 0, maxStock DECIMAL(18,3) NOT NULL DEFAULT 0,
+  reorderPoint DECIMAL(18,3) NOT NULL DEFAULT 0, leadTimeDays INT NOT NULL DEFAULT 0,
   updatedBy VARCHAR(191) NULL, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (productId, warehouseId),
   INDEX idx_pwp_warehouse (warehouseId)
@@ -529,14 +533,15 @@ CREATE TABLE IF NOT EXISTS product_warehouse_policies (
 
 CREATE TABLE IF NOT EXISTS reservations (
   id VARCHAR(191) PRIMARY KEY, productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
-  locationId VARCHAR(191) NULL, quantity DOUBLE NOT NULL DEFAULT 0,
-  consumedQuantity DOUBLE NOT NULL DEFAULT 0,
+  locationId VARCHAR(191) NULL, quantity DECIMAL(18,3) NOT NULL DEFAULT 0,
+  consumedQuantity DECIMAL(18,3) NOT NULL DEFAULT 0,
   sourceType VARCHAR(32) NOT NULL DEFAULT 'INTERNAL', sourceId VARCHAR(191) NULL,
   requestedBy VARCHAR(191) NULL, status VARCHAR(32) NOT NULL DEFAULT 'HELD',
   expiresAt DATETIME NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_res_wh_product (warehouseId, productId),
   INDEX idx_res_wh_status_created (warehouseId, status, createdAt),
   INDEX idx_res_status (status),
+  INDEX idx_res_status_expires (status, expiresAt),
   INDEX idx_res_source (sourceType, sourceId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -561,14 +566,15 @@ CREATE TABLE IF NOT EXISTS stock_serials (
   INDEX idx_sser_status (status),
   INDEX idx_sser_stock_status (stockStatus),
   INDEX idx_sser_receipt (receiptDocumentId, receiptLineId),
-  INDEX idx_sser_issue (issueDocumentId, issueLineId)
+  INDEX idx_sser_issue (issueDocumentId, issueLineId),
+  INDEX idx_sser_product_serial (productId, serialNumber)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS stock_lots (
   id VARCHAR(191) PRIMARY KEY, productId VARCHAR(191) NOT NULL,
   lotCode VARCHAR(191) NOT NULL, coilCode VARCHAR(191) NULL,
   warehouseId VARCHAR(191) NOT NULL, locationId VARCHAR(191) NULL,
-  initialQty DOUBLE NOT NULL DEFAULT 0, remainingQty DOUBLE NOT NULL DEFAULT 0,
+  initialQty DECIMAL(18,3) NOT NULL DEFAULT 0, remainingQty DECIMAL(18,3) NOT NULL DEFAULT 0,
   unit VARCHAR(32) NULL,
   manufacturedAt VARCHAR(40) NULL, supplier VARCHAR(300) NULL,
   receiptDocumentId VARCHAR(191) NULL, receiptLineId VARCHAR(191) NULL,
@@ -583,7 +589,7 @@ CREATE TABLE IF NOT EXISTS stock_lots (
 CREATE TABLE IF NOT EXISTS stock_lot_movements (
   id VARCHAR(191) PRIMARY KEY, lotId VARCHAR(191) NOT NULL,
   productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
-  quantity DOUBLE NOT NULL,
+  quantity DECIMAL(18,3) NOT NULL,
   moveType VARCHAR(32) NOT NULL, referenceType VARCHAR(64) NULL, referenceId VARCHAR(191) NULL,
   documentLineId VARCHAR(191) NULL, createdBy VARCHAR(191) NULL,
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -594,7 +600,7 @@ CREATE TABLE IF NOT EXISTS stock_lot_movements (
 
 CREATE TABLE IF NOT EXISTS stock_document_line_lots (
   id VARCHAR(191) PRIMARY KEY, documentLineId VARCHAR(191) NOT NULL,
-  lotId VARCHAR(191) NOT NULL, quantity DOUBLE NOT NULL DEFAULT 0,
+  lotId VARCHAR(191) NOT NULL, quantity DECIMAL(18,3) NOT NULL DEFAULT 0,
   createdBy VARCHAR(191) NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY unique_document_line_lot (documentLineId, lotId),
   INDEX idx_sdll_line (documentLineId),
@@ -604,7 +610,7 @@ CREATE TABLE IF NOT EXISTS stock_document_line_lots (
 CREATE TABLE IF NOT EXISTS stock_transfer_line_lots (
   id VARCHAR(191) PRIMARY KEY, documentLineId VARCHAR(191) NOT NULL,
   sourceLotId VARCHAR(191) NOT NULL, destLotId VARCHAR(191) NULL,
-  quantity DOUBLE NOT NULL DEFAULT 0, createdBy VARCHAR(191) NULL,
+  quantity DECIMAL(18,3) NOT NULL DEFAULT 0, createdBy VARCHAR(191) NULL,
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY unique_transfer_line_source_lot (documentLineId, sourceLotId),
   INDEX idx_stll_line (documentLineId), INDEX idx_stll_source_lot (sourceLotId),
@@ -641,7 +647,7 @@ CREATE TABLE IF NOT EXISTS stock_counts (
 CREATE TABLE IF NOT EXISTS stock_count_lines (
   id VARCHAR(191) PRIMARY KEY, countId VARCHAR(191) NOT NULL,
   productId VARCHAR(191) NOT NULL, locationId VARCHAR(191) NOT NULL DEFAULT '',
-  expectedQty DOUBLE NOT NULL DEFAULT 0, actualQty DOUBLE NULL,
+  expectedQty DECIMAL(18,3) NOT NULL DEFAULT 0, actualQty DECIMAL(18,3) NULL,
   note TEXT NULL, countedBy VARCHAR(191) NULL,
   UNIQUE KEY unique_count_line (countId, productId, locationId),
   INDEX idx_scline_count (countId)
@@ -700,6 +706,9 @@ export async function initDbMysql(): Promise<MysqlDb> {
     connectTimeout: 20000,
     charset: 'utf8mb4',
     timezone: 'Z',
+    // Cột DECIMAL (v45–v47) mặc định về string trong mysql2; routes và frontend
+    // đều khai báo number và tính toán trực tiếp, nên ép về number tại driver.
+    decimalNumbers: true,
   };
 
   let conn = await mysql.createConnection(connectionConfig);
@@ -732,6 +741,43 @@ export async function initDbMysql(): Promise<MysqlDb> {
         if (!existing || Number(existing.count) === 0) {
           await db.run(`ALTER TABLE \`${table}\` ADD COLUMN ${definition}`);
         }
+      };
+
+      const columnExists = async (table: string, column: string) => {
+        const row = await db.get(
+          'SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+          [table, column]
+        );
+        return Number(row?.count) > 0;
+      };
+      const tableIndexExists = async (table: string, index: string) => {
+        const row = await db.get(
+          'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+          [table, index]
+        );
+        return Number(row?.count) > 0;
+      };
+      const createTableIndex = async (table: string, index: string, definition: string) => {
+        if (!(await tableIndexExists(table, index))) await db.run(definition);
+      };
+
+      /**
+       * Đổi kiểu cột số khi còn lệch kiểu. Idempotent theo từng cột: DDL của MySQL
+       * auto-commit nên nếu migration chết giữa đường, lần boot sau chỉ ALTER những
+       * cột còn lệch (cột đã đúng kiểu được bỏ qua), không phải chạy lại từ đầu.
+       * Row không có = bảng/cột chưa tồn tại → bỏ qua; DATA_TYPE đọc không được
+       * (mock/khác driver) → coi như lệch kiểu để ALTER, tránh im lặng bỏ qua.
+       */
+      const ensureColumnType = async (table: string, column: string, targetType: string, targetScale: number, definition: string) => {
+        const row = await db.get(
+          `SELECT DATA_TYPE AS dataType, NUMERIC_SCALE AS numericScale FROM information_schema.columns
+           WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+          [table, column]
+        );
+        if (!row) return;
+        const dataType = row.dataType === undefined ? '' : String(row.dataType).toLowerCase();
+        if (dataType === targetType && Number(row.numericScale) === targetScale) return;
+        await db.run(`ALTER TABLE \`${table}\` MODIFY COLUMN ${definition}`);
       };
 
       // Version history is append-only: numbers are never reused. Gaps are intentional —
@@ -1098,23 +1144,7 @@ export async function initDbMysql(): Promise<MysqlDb> {
         // type/docId/qty... trong khi code dùng docType/documentId/quantity... (ER_BAD_FIELD_ERROR,
         // vd GET /api/stock/documents 500 vì thiếu d.docType). Mọi bước đều kiểm tra tồn tại
         // trước nên an toàn trên DB fresh, DB cũ trống lẫn DB cũ có dữ liệu.
-        const columnExists = async (table: string, column: string) => {
-          const row = await db.get(
-            'SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
-            [table, column]
-          );
-          return Number(row?.count) > 0;
-        };
-        const tableIndexExists = async (table: string, index: string) => {
-          const row = await db.get(
-            'SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
-            [table, index]
-          );
-          return Number(row?.count) > 0;
-        };
-        const createTableIndex = async (table: string, index: string, definition: string) => {
-          if (!(await tableIndexExists(table, index))) await db.run(definition);
-        };
+        // columnExists/tableIndexExists/createTableIndex đã được nhấc lên scope chung.
 
         // ── stock_documents (code: docType/source+destWarehouseId/reference*/approvedBy) ──
         await ensureColumn('stock_documents', 'docType', '`docType` VARCHAR(32) NOT NULL');
@@ -1545,12 +1575,77 @@ export async function initDbMysql(): Promise<MysqlDb> {
             id VARCHAR(191) PRIMARY KEY,
             documentLineId VARCHAR(191) NOT NULL,
             reservationId VARCHAR(191) NOT NULL,
-            quantity DOUBLE NOT NULL DEFAULT 0,
+            quantity DECIMAL(18,3) NOT NULL DEFAULT 0,
             createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
             UNIQUE KEY uq_sdlr_reservation (reservationId),
             INDEX idx_sdlr_line (documentLineId)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
+      });
+
+      // v44 chạy TRƯỚC v45/v46: ALTER … MODIFY rebuild bảng, nên index phải có sẵn
+      // để không phải rebuild lần hai. Đây là các query nóng: scheduler quét
+      // reservation hết hạn mỗi 5 phút, tra sản phẩm theo tên/mã, đối soát tồn và
+      // lookup serial khi ghi sổ.
+      await runVersionedMigration(db, 44, 'stock_hot_path_indexes', async () => {
+        await createTableIndex('reservations', 'idx_res_status_expires', 'CREATE INDEX idx_res_status_expires ON reservations (status, expiresAt)');
+        await createTableIndex('products', 'idx_prod_name', 'CREATE INDEX idx_prod_name ON products (name)');
+        await createTableIndex('products', 'idx_prod_import_code', 'CREATE INDEX idx_prod_import_code ON products (importCode)');
+        await createTableIndex('stock_balances', 'idx_bal_warehouse', 'CREATE INDEX idx_bal_warehouse ON stock_balances (warehouseId, productId)');
+        await createTableIndex('stock_serials', 'idx_sser_product_serial', 'CREATE INDEX idx_sser_product_serial ON stock_serials (productId, serialNumber)');
+      });
+
+      // v45: số lượng/tồn của module kho từ DOUBLE sang DECIMAL(18,3). DOUBLE cộng
+      // dồn sai số nhị phân (0.1 + 0.2) làm lệch ledger và kiểm kê; 3 số lẻ phủ
+      // được mét/cuộn và đơn vị lẻ. Không đụng cột legacy `qty` (đã được migration
+      // cũ đổi kiểu và code không đọc nữa).
+      await runVersionedMigration(db, 45, 'stock_quantity_decimal', async () => {
+        const columns: [string, string, string][] = [
+          ['stock_documents', 'totalPreTax', '`totalPreTax` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_documents', 'vatAmount', '`vatAmount` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_documents', 'totalAmount', '`totalAmount` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_documents', 'shippingFee', '`shippingFee` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_document_lines', 'quantity', '`quantity` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_document_lines', 'unitPrice', '`unitPrice` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_document_lines', 'vatAmount', '`vatAmount` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_document_lines', 'totalAmount', '`totalAmount` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_document_lines', 'actualQty', '`actualQty` DECIMAL(18,3) NULL'],
+          ['stock_document_lines', 'varianceQty', '`varianceQty` DECIMAL(18,3) NULL'],
+          ['stock_moves', 'quantity', '`quantity` DECIMAL(18,3) NOT NULL'],
+          ['stock_balances', 'onHand', '`onHand` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_balances', 'reserved', '`reserved` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['reservations', 'quantity', '`quantity` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['reservations', 'consumedQuantity', '`consumedQuantity` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['product_warehouse_policies', 'minStock', '`minStock` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['product_warehouse_policies', 'maxStock', '`maxStock` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['product_warehouse_policies', 'reorderPoint', '`reorderPoint` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_lots', 'initialQty', '`initialQty` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_lots', 'remainingQty', '`remainingQty` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_lot_movements', 'quantity', '`quantity` DECIMAL(18,3) NOT NULL'],
+          ['stock_document_line_lots', 'quantity', '`quantity` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_transfer_line_lots', 'quantity', '`quantity` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_document_line_reservations', 'quantity', '`quantity` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_count_lines', 'expectedQty', '`expectedQty` DECIMAL(18,3) NOT NULL DEFAULT 0'],
+          ['stock_count_lines', 'actualQty', '`actualQty` DECIMAL(18,3) NULL'],
+        ];
+        for (const [table, column, definition] of columns) {
+          await ensureColumnType(table, column, 'decimal', 3, definition);
+        }
+      });
+
+      // v46 tách riêng vatRate: giá trị 0–100 nhưng cần 4 số lẻ (8.0000, 10.0000)
+      // nên không dùng chung thang 3 số lẻ của số lượng.
+      await runVersionedMigration(db, 46, 'stock_vat_rate_decimal', async () => {
+        await ensureColumnType('stock_documents', 'vatRate', 'decimal', 4, '`vatRate` DECIMAL(7,4) NOT NULL DEFAULT 0');
+        await ensureColumnType('stock_document_lines', 'vatRate', 'decimal', 4, '`vatRate` DECIMAL(7,4) NOT NULL DEFAULT 0');
+      });
+
+      // v47 để cuối và riêng version vì `products` là bảng dùng chung với Bán
+      // hàng/Hợp đồng; tiền dùng 2 số lẻ (khác 3 số lẻ của số lượng).
+      await runVersionedMigration(db, 47, 'product_price_decimal', async () => {
+        await ensureColumnType('products', 'defaultPrice', 'decimal', 2, '`defaultPrice` DECIMAL(18,2) DEFAULT 0');
+        await ensureColumnType('products', 'importPrice', 'decimal', 2, '`importPrice` DECIMAL(18,2) DEFAULT 0');
+        await ensureColumnType('products', 'salePrice', 'decimal', 2, '`salePrice` DECIMAL(18,2) DEFAULT 0');
       });
 
 

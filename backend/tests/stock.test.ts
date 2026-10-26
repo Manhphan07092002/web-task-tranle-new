@@ -893,6 +893,11 @@ describe('serials register, search and status', () => {
     await request(appFor(tp, db({ serial: undefined }))).put('/serials/ghost').send({ status: 'DAMAGED' }).expect(404);
   });
 
+  it('rejects an unknown stockStatus value before touching the database', async () => {
+    const res = await request(appFor(tp, db())).put('/serials/s1').send({ stockStatus: 'LOST' }).expect(400);
+    expect(res.body.details?.[0]?.field).toBe('stockStatus');
+  });
+
   it('only lets a manager delete an orphan serial with no stock movement', async () => {
     const orphan = { id: 's1', productId: 'p1', warehouseId: 'wh-hn', status: 'SALEABLE', stockStatus: 'IN_STOCK', receiptDocumentId: null, issueDocumentId: null };
     await request(appFor(nv, db({ serial: orphan }))).delete('/serials/s1').expect(403);
