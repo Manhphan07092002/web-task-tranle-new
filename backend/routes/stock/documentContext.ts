@@ -1337,3 +1337,6 @@ export function createDocumentContext(ctx: StockContext) {
     refreshProcessingAfterSerialScan,
   };
 }
+
+/** StockContext + helper chứng từ trong cùng một object phẳng để sub-router destructure. */
+export type DocumentContext = StockContext & ReturnType<typeof createDocumentContext>;
