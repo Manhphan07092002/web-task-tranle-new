@@ -12,10 +12,12 @@ function fixture(options: { type?: string; quantities?: number[]; onHand?: numbe
   const balance = { onHand: options.onHand ?? 10, reserved: options.reserved ?? 0 };
   const reservation: any = { id: 'r1', productId: 'p1', warehouseId: 'w1', locationId: '', status: 'HELD', quantity: 4 };
   const writes: { sql: string; params: any[] }[] = [];
+  const locks: { sql: string; params: any[] }[] = [];
   let snapshot: any;
   const db: any = {
     runWithRequestContext: (fn: () => any) => gate.runWithRequestContext(fn),
     all: (sql: string, params: any[] = []) => gate.run(sql, async () => {
+      if (sql.includes('FROM warehouses') && sql.includes('FOR UPDATE')) locks.push({ sql, params });
       if (sql.includes('FROM user_warehouse_scopes')) return [{ warehouseId: 'w1' }, { warehouseId: 'w2' }];
       if (sql.includes('FROM stock_document_lines')) return structuredClone(lines);
       if (sql.includes('FROM reservations')) return [structuredClone(reservation)];
@@ -62,7 +64,7 @@ function fixture(options: { type?: string; quantities?: number[]; onHand?: numbe
   app.use(express.json());
   app.use((req: any, _res, next) => { req.user = { id: 'u1', managementLevel: options.level ?? 20 }; db.runWithRequestContext(next); });
   app.use(stockRoutes(db));
-  return { app, db, balance, doc, reservation, writes };
+  return { app, db, balance, doc, reservation, writes, locks };
 }
 
 describe('warehouse stock integrity regressions', () => {
@@ -151,5 +153,77 @@ describe('warehouse stock integrity regressions', () => {
     await request(f.app).post('/reservations/r1/consume').send({}).expect(403);
     await request(f.app).get('/misa-mappings').expect(403);
     await request(f.app).get('/misa-logs').expect(403);
+  });
+
+  describe('warehouse row locking scope', () => {
+    // Khóa FOR UPDATE phải giới hạn ở kho mà luồng đó thực sự ghi. Khóa cả bảng
+    // warehouses (nhánh ids rỗng) dựng hàng mọi luồng ghi tồn khác.
+    function expectLocks(f: { locks: { sql: string; params: any[] }[] }, ids: string[]) {
+      expect(f.locks.length).toBeGreaterThan(0);
+      const placeholders = ids.map(() => '?').join(', ');
+      for (const lock of f.locks) {
+        expect(lock.sql).toBe(`SELECT id FROM warehouses WHERE id IN (${placeholders}) ORDER BY id FOR UPDATE`);
+        expect(lock.params).toEqual(ids);
+      }
+    }
+
+    it.each([
+      { name: 'receipt complete', path: '/receipts/d1/complete', type: 'RECEIPT', status: 'READY', ids: ['w1'] },
+      { name: 'issue complete', path: '/issues/d1/complete', type: 'ISSUE', status: 'READY', ids: ['w1'] },
+      { name: 'return complete', path: '/returns/d1/complete', type: 'RETURN', status: 'READY', ids: ['w1'] },
+      { name: 'transfer ship', path: '/transfers/d1/ship', type: 'TRANSFER', status: 'READY', ids: ['w1', 'w2'] },
+      { name: 'transfer receive', path: '/transfers/d1/receive', type: 'TRANSFER', status: 'IN_TRANSIT', ids: ['w2'] },
+      { name: 'cancel document', path: '/documents/d1/cancel', type: 'ISSUE', status: 'DRAFT', ids: ['w1', 'w2'] },
+    ])('locks only the warehouses touched by $name', async ({ path, type, status, ids }) => {
+      const f = fixture({ type, status });
+      const res = await request(f.app).post(path).send(status === 'IN_TRANSIT' ? { locationId: 'dest' } : {});
+      expect(res.status, res.body.error).toBe(200);
+      expectLocks(f, ids);
+    });
+
+    it('locks only the document warehouses when deleting a draft', async () => {
+      const f = fixture({ type: 'ISSUE', status: 'DRAFT' });
+      await request(f.app).delete('/documents/d1').expect(200);
+      expectLocks(f, ['w1', 'w2']);
+    });
+
+    it('locks only the edited document warehouses on update', async () => {
+      const f = fixture({ type: 'ISSUE', status: 'DRAFT' });
+      await request(f.app).put('/documents/d1').send({ notes: 'sửa ghi chú' }).expect(200);
+      expectLocks(f, ['w1', 'w2']);
+    });
+
+    it('locks only the target warehouse for holds and releases', async () => {
+      const hold = fixture();
+      await request(hold.app).post('/reservations').send({ productId: 'p1', warehouseId: 'w1', quantity: 6 }).expect(201);
+      expectLocks(hold, ['w1']);
+
+      const release = fixture({ reserved: 4 });
+      await request(release.app).post('/reservations/r1/release').send({}).expect(200);
+      expectLocks(release, ['w1']);
+    });
+
+    it('locks only the reservation warehouse when expiring holds', async () => {
+      const f = fixture({ reserved: 4 });
+      f.reservation.expiresAt = '2020-01-01T00:00:00.000Z';
+      expect(await releaseExpiredReservations(f.db)).toBe(1);
+      expectLocks(f, ['w1']);
+    });
+
+    it('never locks the whole warehouses table', async () => {
+      const flows = [
+        { type: 'RECEIPT', status: 'READY', path: '/receipts/d1/complete', method: 'post' as const },
+        { type: 'ISSUE', status: 'READY', path: '/issues/d1/complete', method: 'post' as const },
+        { type: 'ISSUE', status: 'DRAFT', path: '/documents/d1/cancel', method: 'post' as const },
+        { type: 'ISSUE', status: 'DRAFT', path: '/documents/d1', method: 'delete' as const },
+        { type: 'TRANSFER', status: 'READY', path: '/transfers/d1/ship', method: 'post' as const },
+      ];
+      for (const flow of flows) {
+        const f = fixture({ type: flow.type, status: flow.status });
+        const req = flow.method === 'delete' ? request(f.app).delete(flow.path) : request(f.app).post(flow.path).send({});
+        await req;
+        expect(f.locks.some((lock) => !lock.sql.includes('WHERE')), `${flow.path} khóa toàn bảng warehouses`).toBe(false);
+      }
+    });
   });
 });

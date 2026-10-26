@@ -54,7 +54,7 @@ export function warehouseRoutes(db: any) {
       const dup = await db.get('SELECT id FROM warehouses WHERE code = ?', [normalizedCode]);
       if (dup) return res.status(409).json({ error: 'Warehouse code already exists' });
       const id = `wh-${randomUUID().slice(0, 8)}`;
-      await beginStockTransaction(db);
+      await beginStockTransaction(db, [id]);
       transactionOpen = true;
       try {
         await db.run(
@@ -128,7 +128,7 @@ export function warehouseRoutes(db: any) {
       if (refs.length > 0 || moves.length > 0 || balances.length > 0 || holds.length > 0 || counts.length > 0) {
         return res.status(400).json({ error: 'Kho còn chứng từ/tồn/giữ hàng/kiểm kê, không thể xóa' });
       }
-      await beginStockTransaction(db);
+      await beginStockTransaction(db, [id]);
       transactionOpen = true;
       try {
         await db.run('DELETE FROM stock_locations WHERE warehouseId = ?', [id]);

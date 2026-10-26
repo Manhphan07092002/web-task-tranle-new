@@ -26,13 +26,15 @@ async function releaseExpiredWithLock(db: any, now: Date): Promise<number> {
 
 async function releaseExpiredInContext(db: any, now: Date): Promise<number> {
   const candidates = await db.all(
-    `SELECT id FROM reservations
+    `SELECT id, warehouseId FROM reservations
      WHERE status = 'HELD' AND expiresAt IS NOT NULL AND expiresAt <= ?`,
     [now.toISOString()]
   );
   let released = 0;
   for (const candidate of candidates) {
-    await beginStockTransaction(db);
+    // Chỉ khóa kho của reservation đang xét: khóa toàn bảng warehouses sẽ dựng
+    // hàng mọi luồng ghi tồn khác mỗi 5 phút.
+    await beginStockTransaction(db, [candidate.warehouseId]);
     try {
       // Re-read the row under lock. The initial scan is only a candidate list:
       // between that read and this transaction the reservation may have been
@@ -50,7 +52,7 @@ async function releaseExpiredInContext(db: any, now: Date): Promise<number> {
       const remaining = Math.max(0, Number(current.quantity ?? 0) - Number(current.consumedQuantity ?? 0));
       if (remaining <= 0) {
         await db.run('UPDATE reservations SET status = ? WHERE id = ?', ['RELEASED', current.id]);
-        await db.run('DELETE FROM stock_document_line_reservations WHERE reservationId = ?', [current.id]).catch(() => undefined);
+        await db.run('DELETE FROM stock_document_line_reservations WHERE reservationId = ?', [current.id]);
         await db.run('COMMIT');
         released++;
         continue;
@@ -60,7 +62,7 @@ async function releaseExpiredInContext(db: any, now: Date): Promise<number> {
         locationId: current.locationId, delta: remaining, now: now.toISOString(),
       });
       await db.run('UPDATE reservations SET status = ? WHERE id = ?', ['RELEASED', current.id]);
-      await db.run('DELETE FROM stock_document_line_reservations WHERE reservationId = ?', [current.id]).catch(() => undefined);
+      await db.run('DELETE FROM stock_document_line_reservations WHERE reservationId = ?', [current.id]);
       await db.run(
         `INSERT INTO warehouse_activity_logs
          (id, actionType, entityType, entityId, productId, warehouseId, quantity, metadata, createdAt)
@@ -70,8 +72,9 @@ async function releaseExpiredInContext(db: any, now: Date): Promise<number> {
       );
       await db.run('COMMIT');
       released++;
-    } catch {
+    } catch (err) {
       try { await db.run('ROLLBACK'); } catch { /* ignore */ }
+      console.error('[Scheduler] Failed to release expired reservation:', err);
     }
   }
   return released;

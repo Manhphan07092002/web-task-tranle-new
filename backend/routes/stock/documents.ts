@@ -251,7 +251,7 @@ export function documentsRoutes(ctx: StockContext) {
       if (doc.status !== 'DRAFT' && doc.status !== 'PROCESSING' && doc.status !== 'CANCELLED') {
         return res.status(400).json({ error: 'Cannot delete processed document' });
       }
-      await beginStockTransaction(db);
+      await beginStockTransaction(db, docWarehouseIds(doc));
       try {
         await dropDocReservationLinks(id);
         await releaseReservedSerials(id);
@@ -330,7 +330,7 @@ export function documentsRoutes(ctx: StockContext) {
       let vatAmount = doc.vatAmount;
       let totalAmount = doc.totalAmount;
 
-      await beginStockTransaction(db);
+      await beginStockTransaction(db, docWarehouseIds(doc));
       try {
         if (body.resetProcessing) await resetDocProcessing(id);
         if (Array.isArray(body.lines) && body.lines.length > 0) {
@@ -552,7 +552,10 @@ export function documentsRoutes(ctx: StockContext) {
       body.referenceType = null;
     }
 
-    await beginStockTransaction(db);
+    // Khóa cả 2 đầu của TRANSFER; không khóa toàn bảng warehouses vì mọi
+    // luồng tạo phiếu khác sẽ bị xếp hàng chờ.
+    const lockWarehouseIds = [warehouses.warehouseId, warehouses.sourceWarehouseId, warehouses.destWarehouseId].filter(Boolean) as string[];
+    await beginStockTransaction(db, lockWarehouseIds);
     let attempts = 0;
     for (;;) {
       attempts += 1;
@@ -634,7 +637,7 @@ export function documentsRoutes(ctx: StockContext) {
       // Mã do người dùng nhập thì báo 409 ngay.
       if (!userCode && error?.message?.includes('Duplicate') && attempts < 3) {
         finalCode = await nextDocCode(DOC_CODE_PREFIX[docType] || 'PXK');
-        await beginStockTransaction(db);
+        await beginStockTransaction(db, lockWarehouseIds);
         continue;
       }
       throw error;

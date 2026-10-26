@@ -103,7 +103,7 @@ export function serialsRoutes(ctx: StockContext) {
       }
       const now = new Date().toISOString();
       const id = randomUUID();
-      await beginStockTransaction(db);
+      await beginStockTransaction(db, [warehouseId]);
       try {
         await db.run(
           `INSERT INTO stock_serials (id, productId, serialNumber, lotCode, warehouseId, locationId, status, supplier, receiptId, receiptDocumentId, receiptLineId, customerName, projectId, warrantyStart, warrantyMonths, notes, createdBy, createdAt, updatedAt, stockStatus)
@@ -150,7 +150,7 @@ export function serialsRoutes(ctx: StockContext) {
         && !(await assertLocation(existing.warehouseId, locationId || null))) {
         return res.status(400).json({ error: 'Invalid location for this warehouse' });
       }
-      await beginStockTransaction(db);
+      await beginStockTransaction(db, [existing.warehouseId]);
       try {
         await db.run(
           `UPDATE stock_serials SET status = ?, locationId = ?, customerName = ?, projectId = ?,
@@ -193,7 +193,7 @@ export function serialsRoutes(ctx: StockContext) {
       }
       const move = await db.get('SELECT id FROM stock_moves WHERE serialId = ? LIMIT 1', [existing.id]);
       if (move) return res.status(409).json({ error: 'Không thể xóa Serial đã có lịch sử biến động kho' });
-      await beginStockTransaction(db);
+      await beginStockTransaction(db, [existing.warehouseId]);
       try {
         await db.run('DELETE FROM stock_serials WHERE id = ?', [existing.id]);
         await recordWarehouseActivity(db.run.bind(db), {
