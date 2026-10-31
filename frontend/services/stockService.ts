@@ -7,6 +7,10 @@ export interface StockBalanceRow {
   onHand: number;
   reserved: number;
   available: number;
+  /** Phần onHand đang nằm trong kiện (IN_STOCK/HELD/PARTIAL_ISSUED) cùng kho + vị trí. */
+  packagedQty?: number;
+  /** onHand - packagedQty: phần rời/bản ghi cũ chưa đóng kiện. */
+  looseQty?: number;
   productName: string | null;
   productCode?: string | null;
   warehouseCode: string | null;
@@ -42,6 +46,8 @@ export interface AvailableInventoryRow {
   onHand: number;
   reserved: number;
   available: number;
+  packagedQty?: number;
+  looseQty?: number;
   productName: string | null;
   productCode?: string | null;
   unit: string | null;
@@ -534,7 +540,12 @@ export interface StockReconciliationRow {
   productName?: string | null; warehouseName?: string | null; unit?: string | null;
 }
 export interface StockAnomalyRow { anomalyType: string; productId?: string; productName?: string | null; warehouseId?: string; warehouseName?: string | null; message: string; [key: string]: unknown; }
-export async function getStockReconciliation(params: { warehouseId?: string; productId?: string } = {}): Promise<{ rows: StockReconciliationRow[]; total: number }> {
+/** AC9: hàng trong kiện vượt tồn ghi sổ, hoặc dòng kiện vượt lượng ban đầu / held quá tồn. */
+export interface StockPackageDriftRow {
+  productId: string; warehouseId: string; productName?: string | null; warehouseName?: string | null; unit?: string | null;
+  packagedQty: number; onHand: number; excessQty: number; overInitialLines: number; heldOverQty: number;
+}
+export async function getStockReconciliation(params: { warehouseId?: string; productId?: string } = {}): Promise<{ rows: StockReconciliationRow[]; total: number; packageDrift?: StockPackageDriftRow[] }> {
   const qs = new URLSearchParams(); Object.entries(params).forEach(([k, v]) => { if (v) qs.set(k, v); });
   const res = await apiFetch(`/api/stock/reconciliation${qs.toString() ? `?${qs}` : ''}`); const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Không tải được đối soát tồn'); return data;
@@ -772,6 +783,9 @@ export interface DocLineProgress {
   quantityConfirmed?: boolean;
   serialSkipped?: boolean;
   canEnableSerial?: boolean;
+  lotIssueMode?: 'LOT' | 'LOOSE' | null;
+  lotBroken?: boolean;
+  canLooseLot?: boolean;
   status: 'PENDING' | 'PARTIAL' | 'COMPLETED';
   availability?: { onHand: number; reserved: number; available: number; afterIssue: number } | null;
 }
@@ -780,6 +794,8 @@ export interface DocProgress {
   documentId: string;
   code: string | null;
   status: string;
+  docType?: string;
+  warehouseId?: string | null;
   lines: DocLineProgress[];
   allCompleted: boolean;
 }
@@ -855,6 +871,40 @@ export const registerLot = (body: {
 export const allocateLot = (body: {
   documentId: string; documentLineId: string; lotCode: string; quantity: number;
 }) => postStock('/api/stock/lots/allocate', body);
+
+export interface LotTracking {
+  productId: string;
+  warehouseId: string;
+  mode: 'LOT' | 'LOOSE';
+  brokenAt?: string | null;
+  brokenBy?: string | null;
+  breakDocumentId?: string | null;
+  breakReason?: string | null;
+  resetAt?: string | null;
+  onHand: number;
+  lots: { id: string; lotCode: string; coilCode?: string | null; initialQty: number; remainingQty: number; unit?: string | null; status: string }[];
+  affectedQuantity: number;
+  recordedLots: { id: string; lotCode: string; initialQty: number; unit?: string | null }[];
+}
+
+export async function getLotTracking(productId: string, warehouseId: string): Promise<LotTracking> {
+  const res = await apiFetch(`/api/stock/lot-tracking/${encodeURIComponent(productId)}/${encodeURIComponent(warehouseId)}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Không tải được trạng thái lô');
+  return data;
+}
+
+export interface LooseLotConfirmation {
+  success: boolean;
+  alreadyBroken: boolean;
+  mode: 'LOOSE';
+  lineIds: string[];
+  lots: { id: string; lotCode: string; remainingQty: number }[];
+  quantity: number;
+}
+
+export const confirmLooseLot = (lineId: string): Promise<LooseLotConfirmation> =>
+  postStock(`/api/stock/lines/${lineId}/confirm-loose-lot`, {});
 
 export interface SerialTimeline {
   serial: {
@@ -940,6 +990,56 @@ export async function getProcessingSummary(params: { docType?: string; warehouse
   const res = await apiFetch(`/api/stock/documents/processing-summary${qs.toString() ? `?${qs}` : ''}`);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Không tải được tiến độ');
+  return data;
+}
+
+export type PackageSuggestionRule = 'FIFO' | 'FEFO';
+
+export interface PackageSuggestionLine {
+  packageId: string;
+  packageCode: string;
+  packageLineId: string;
+  productId: string;
+  warehouseId: string;
+  locationId?: string | null;
+  status: string;
+  /** qtyRemaining - qtyHeld: phần dòng kiện chưa bị giữ. */
+  qtyAvailable: number;
+  suggestedQty: number;
+  receivedAt?: string | null;
+  expiryDate?: string | null;
+}
+
+export interface PackageSuggestionResult {
+  productId: string;
+  warehouseId: string;
+  rule: PackageSuggestionRule;
+  lines: PackageSuggestionLine[];
+  requestedQty: number;
+  suggestedQty: number;
+  missingQty: number;
+  sufficient: boolean;
+}
+
+/**
+ * Gợi ý kiện cho một lượng xuất (§R3). Chỉ đọc — lượng hàng chưa bị giữ, nên khi
+ * lập phiếu vẫn phải để backend tái kiểm tra lúc khóa dòng kiện.
+ */
+export async function suggestPackages(params: {
+  productId: string;
+  warehouseId: string;
+  quantity: number;
+  rule?: PackageSuggestionRule;
+}): Promise<PackageSuggestionResult> {
+  const qs = new URLSearchParams({
+    productId: params.productId,
+    warehouseId: params.warehouseId,
+    quantity: String(params.quantity),
+  });
+  if (params.rule) qs.set('rule', params.rule);
+  const res = await apiFetch(`/api/stock/packages/suggest?${qs}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Không gợi ý được kiện');
   return data;
 }
 

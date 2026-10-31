@@ -2,6 +2,9 @@ import { randomUUID } from 'crypto';
 import { normalizeManagementLevel, MANAGEMENT_LEVELS } from '../../middleware/auth.js';
 import { getWarehouseScope } from '../../services/rbacService.js';
 
+/** Move đã ghi sổ, đủ để luồng khác nối ngược về (kiện ↔ stock_moves). */
+export type StockMoveRef = { id: string; documentLineId: string | null; productId: string; quantity: number };
+
 // Helpers dùng chung cho mọi sub-router kho: scope, vị trí, tồn,
 // ghi moves + balances, mã chứng từ, phân trang.
 export function createStockContext(db: any) {
@@ -95,6 +98,118 @@ export function createStockContext(db: any) {
     if (active) throw Object.assign(new Error('Kho đang kiểm kê; hoàn tất kiểm kê trước khi ghi sổ.'), { status: 409 });
   }
 
+  type LotMode = 'LOT' | 'LOOSE';
+  const lotModeKey = (productId: string, warehouseId: string) => `${productId}|${warehouseId}`;
+
+  function uniqueLotPairs(pairs: { productId: string; warehouseId: string }[]) {
+    const seen = new Map<string, { productId: string; warehouseId: string }>();
+    for (const pair of pairs) {
+      if (!pair?.productId || !pair?.warehouseId) continue;
+      seen.set(lotModeKey(pair.productId, pair.warehouseId), pair);
+    }
+    return [...seen.values()];
+  }
+
+  /** Mode hiện tại của (sản phẩm, kho). Không có dòng tracking = LOT. */
+  async function lotModeOf(productId: string, warehouseId: string): Promise<LotMode> {
+    if (!productId || !warehouseId) return 'LOT';
+    const row = await db.get(
+      'SELECT mode FROM stock_lot_tracking WHERE productId = ? AND warehouseId = ?',
+      [productId, warehouseId]
+    ).catch(() => undefined);
+    return row?.mode === 'LOOSE' ? 'LOOSE' : 'LOT';
+  }
+
+  /** Batch mode cho nhiều cặp (product, kho); key = `${productId}|${warehouseId}`. */
+  async function lotModesOf(pairs: { productId: string; warehouseId: string }[]): Promise<Map<string, LotMode>> {
+    const uniq = uniqueLotPairs(pairs);
+    const out = new Map<string, LotMode>();
+    if (uniq.length === 0) return out;
+    const where = uniq.map(() => '(productId = ? AND warehouseId = ?)').join(' OR ');
+    const rows = await db.all(
+      `SELECT productId, warehouseId, mode FROM stock_lot_tracking WHERE ${where}`,
+      uniq.flatMap((pair) => [pair.productId, pair.warehouseId])
+    ).catch(() => []);
+    for (const row of rows || []) {
+      out.set(lotModeKey(row.productId, row.warehouseId), row.mode === 'LOOSE' ? 'LOOSE' : 'LOT');
+    }
+    return out;
+  }
+
+  /** Xuất lẻ phá lô TOÀN BỘ mã hàng trong kho: đưa mọi lô còn lại về 0 và
+   * chuyển mode sang LOOSE. initialQty được giữ nguyên để truy vết. */
+  async function breakProductLots(args: {
+    productId: string; warehouseId: string; documentId: string;
+    documentLineId?: string | null; reason?: string | null; userId?: string | null;
+  }): Promise<{ lots: { id: string; lotCode: string; quantity: number }[]; quantity: number }> {
+    const now = new Date().toISOString();
+    const rows = await db.all(
+      `SELECT id, lotCode, remainingQty FROM stock_lots
+       WHERE productId = ? AND warehouseId = ? AND remainingQty > 0 FOR UPDATE`,
+      [args.productId, args.warehouseId]
+    );
+    const broken: { id: string; lotCode: string; quantity: number }[] = [];
+    for (const lot of rows || []) {
+      const remaining = Number(lot.remainingQty || 0);
+      if (!(remaining > 0)) continue;
+      await db.run('UPDATE stock_lots SET remainingQty = 0, status = ?, updatedAt = ? WHERE id = ?', ['DEPLETED', now, lot.id]);
+      await db.run(
+        `INSERT INTO stock_lot_movements
+         (id, lotId, productId, warehouseId, quantity, moveType, referenceType, referenceId, documentLineId, createdBy, createdAt)
+         VALUES (?, ?, ?, ?, ?, 'LOT_BROKEN', 'ISSUE', ?, ?, ?, ?)`,
+        [randomUUID(), lot.id, args.productId, args.warehouseId, -remaining, args.documentId, args.documentLineId ?? null, args.userId ?? null, now]
+      );
+      broken.push({ id: lot.id, lotCode: lot.lotCode, quantity: remaining });
+    }
+    await db.run(
+      `INSERT INTO stock_lot_tracking
+       (productId, warehouseId, mode, brokenAt, brokenBy, breakDocumentId, breakReason, resetAt, updatedAt)
+       VALUES (?, ?, 'LOOSE', ?, ?, ?, ?, NULL, ?)
+       ON DUPLICATE KEY UPDATE mode = 'LOOSE', brokenAt = VALUES(brokenAt), brokenBy = VALUES(brokenBy),
+         breakDocumentId = VALUES(breakDocumentId), breakReason = VALUES(breakReason), resetAt = NULL, updatedAt = VALUES(updatedAt)`,
+      [args.productId, args.warehouseId, now, args.userId ?? null, args.documentId, args.reason ?? null, now]
+    );
+    await recordWarehouseActivities(db.run.bind(db), [{
+      actionType: 'LOT_MODE_BROKEN', entityType: 'PRODUCT', entityId: args.productId,
+      documentId: args.documentId, productId: args.productId, warehouseId: args.warehouseId,
+      quantity: broken.reduce((sum, lot) => sum + lot.quantity, 0), userId: args.userId ?? null,
+      metadata: { lots: broken, reason: args.reason ?? null },
+    }]);
+    return { lots: broken, quantity: broken.reduce((sum, lot) => sum + lot.quantity, 0) };
+  }
+
+  /** Khi tồn kho về 0, mode LOOSE tự trở lại LOT để lần nhập sau đi theo lô. */
+  async function resetDepletedLotModes(
+    run: (sql: string, params?: any[]) => Promise<unknown>,
+    pairs: { productId: string; warehouseId: string }[]
+  ): Promise<void> {
+    const uniq = uniqueLotPairs(pairs);
+    if (uniq.length === 0) return;
+    const where = uniq.map(() => '(t.productId = ? AND t.warehouseId = ?)').join(' OR ');
+    const rows = await db.all(
+      `SELECT t.productId, t.warehouseId FROM stock_lot_tracking t
+       WHERE t.mode = 'LOOSE' AND (${where})
+         AND NOT EXISTS (
+           SELECT 1 FROM stock_balances b
+           WHERE b.productId = t.productId AND b.warehouseId = t.warehouseId AND b.onHand > 0
+         )`,
+      uniq.flatMap((pair) => [pair.productId, pair.warehouseId])
+    ).catch(() => []);
+    const now = new Date().toISOString();
+    for (const row of rows || []) {
+      await run(
+        `UPDATE stock_lot_tracking SET mode = 'LOT', resetAt = ?, updatedAt = ?
+         WHERE productId = ? AND warehouseId = ? AND mode = 'LOOSE'`,
+        [now, now, row.productId, row.warehouseId]
+      );
+      await recordWarehouseActivities(run, [{
+        actionType: 'LOT_MODE_RESET', entityType: 'PRODUCT', entityId: row.productId,
+        productId: row.productId, warehouseId: row.warehouseId, userId: null,
+        metadata: { resetAt: now },
+      }]);
+    }
+  }
+
   type MoveInput = {
     productId: string; warehouseId: string; locationId: string; quantity: number;
     moveType: string; referenceType: string | null; referenceId: string;
@@ -151,8 +266,8 @@ export function createStockContext(db: any) {
   async function postMove(
     run: (sql: string, params?: any[]) => Promise<unknown>,
     args: MoveInput,
-    opts?: { skipCountingCheck?: boolean }
-  ): Promise<void> {
+    opts?: { skipCountingCheck?: boolean; deferModeReset?: boolean }
+  ): Promise<string> {
     // Luồng chứng từ đã gọi assertNotCounting trong preflightPosting (cùng
     // transaction) nên không cần kiểm tra lại cho từng move/chiếc.
     if (!opts?.skipCountingCheck) await assertNotCounting(args.warehouseId);
@@ -180,6 +295,10 @@ export function createStockContext(db: any) {
       metadata: { moveType: args.moveType, referenceType: args.referenceType, documentLineId: args.documentLineId },
       createdAt: now,
     }]);
+    if (!opts?.deferModeReset && args.quantity < 0) {
+      await resetDepletedLotModes(run, [{ productId: args.productId, warehouseId: args.warehouseId }]);
+    }
+    return moveId;
   }
 
   /** Ghi nhiều move trong ít round-trip. Phiếu nhỏ vẫn đi qua postMove để giữ
@@ -188,13 +307,19 @@ export function createStockContext(db: any) {
   async function postMoves(
     run: (sql: string, params?: any[]) => Promise<unknown>,
     moves: MoveInput[],
-    opts?: { skipCountingCheck?: boolean }
-  ): Promise<void> {
-    if (moves.length === 0) return;
+    opts?: { skipCountingCheck?: boolean; deferModeReset?: boolean }
+  ): Promise<StockMoveRef[]> {
+    if (moves.length === 0) return [];
+    const refOf = (move: MoveInput, id: string): StockMoveRef => ({ id, documentLineId: move.documentLineId ?? null, productId: move.productId, quantity: move.quantity });
     const BATCH_THRESHOLD = 20;
+    const resetPairs = () => resetDepletedLotModes(run, moves
+      .filter((move) => move.quantity < 0)
+      .map((move) => ({ productId: move.productId, warehouseId: move.warehouseId })));
     if (moves.length <= BATCH_THRESHOLD) {
-      for (const move of moves) await postMove(run, move, opts);
-      return;
+      const refs: StockMoveRef[] = [];
+      for (const move of moves) refs.push(refOf(move, await postMove(run, move, { ...opts, deferModeReset: true })));
+      if (!opts?.deferModeReset) await resetPairs();
+      return refs;
     }
     if (!opts?.skipCountingCheck) {
       for (const warehouseId of new Set(moves.map((move) => move.warehouseId))) {
@@ -251,6 +376,8 @@ export function createStockContext(db: any) {
       metadata: { moveType: move.moveType, referenceType: move.referenceType, documentLineId: move.documentLineId },
       createdAt: now,
     })));
+    if (!opts?.deferModeReset) await resetPairs();
+    return rows.map((move) => refOf(move, move.id));
   }
 
   /** Mapping kế toán/MISA là cấu hình, không suy diễn bằng mã tài khoản cố định. */
@@ -326,7 +453,7 @@ export function createStockContext(db: any) {
     return level >= MANAGEMENT_LEVELS.MANAGER && level !== MANAGEMENT_LEVELS.ADMIN;
   }
   return {
-    db, scopeOf, listScope, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, isSaleableLocation, availableOf, saleableLocationSet, saleableAvailableOf, assertNotCounting, postMove, postMoves, recordWarehouseActivity, resolveAccountingDefaults, docCode, nextDocCode, paginationOf,
+    db, scopeOf, listScope, isDirector, requireWarehouse, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument, assertLocation, isSaleableLocation, availableOf, saleableLocationSet, saleableAvailableOf, assertNotCounting, lotModeOf, lotModesOf, breakProductLots, resetDepletedLotModes, postMove, postMoves, recordWarehouseActivity, resolveAccountingDefaults, docCode, nextDocCode, paginationOf,
   };
 }
 

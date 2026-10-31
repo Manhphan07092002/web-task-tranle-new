@@ -3,18 +3,18 @@ import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
 import { normalizeManagementLevel, MANAGEMENT_LEVELS } from '../../middleware/auth.js';
 import { beginStockTransaction } from '../../utils/stockTransaction.js';
-import { RelocationSchema } from './documentSchemas.js';
+import { RelocationSchema, documentErrorBody } from './documentSchemas.js';
 import type { DocumentContext } from './documentContext.js';
 
 /** Chốt xử lý hàng hóa và GHI SỔ: sinh stock_moves + cập nhật balances. */
 export function documentsPostingRoutes(d: DocumentContext) {
   const {
-    db, requireWarehouse, canWriteDocument, assertLocation, saleableLocationSet, assertNotCounting, postMove,
+    db, requireWarehouse, canWriteDocument, assertLocation, saleableLocationSet, assertNotCounting, postMove, resetDepletedLotModes,
     recordWarehouseActivity, docCode, loadDocument, aggregateLines, validateLines, availableMap, insufficientStockMessage,
     preflightPosting, loadIssueReservationLinks, reservationCreditFromLinks, consumeIssueReservationLinks,
     registerReceiptSerials, consumeIssueLots, consumeIssueSerials, assertTransferSerialsReady, receiveTransferSerials,
     consumeTransferLotsOnShip, receiveTransferLots, postDocumentMoves, postTransferMoves, registerReturnSerials,
-    registerReturnLots,
+    registerReturnLots, activateReceiptPackages, consumeIssuePackages,
   } = d;
   const router = Router();
   // Chốt bước kiểm tra hàng hóa, chưa ghi nhận nhập/xuất kho.
@@ -95,6 +95,7 @@ export function documentsPostingRoutes(d: DocumentContext) {
 
       try {
         await registerReceiptSerials(loaded.doc, loaded.lines, user);
+        await activateReceiptPackages(loaded.doc, loaded.lines, user);
         await postDocumentMoves(loaded.doc, loaded.lines, 'RECEIPT', 1, user);
         await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['DONE', new Date().toISOString(), loaded.doc.id]);
         await db.run('COMMIT'); transactionOpen = false;
@@ -103,7 +104,7 @@ export function documentsPostingRoutes(d: DocumentContext) {
         throw e;
       }
       res.json({ success: true });
-    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to complete receipt' }); } finally {
+    } catch (e: any) { res.status(e.status || 500).json(documentErrorBody(e, 'Failed to complete receipt')); } finally {
       if (transactionOpen) await db.run('ROLLBACK');
     }
   });
@@ -151,7 +152,8 @@ export function documentsPostingRoutes(d: DocumentContext) {
         const lotPostings = await consumeIssueLots(loaded.doc, loaded.lines, user);
         await consumeIssueSerials(loaded.doc, loaded.lines, user);
         await consumeIssueReservationLinks(loaded.doc, reservationLinks);
-        await postDocumentMoves(loaded.doc, loaded.lines, 'ISSUE', -1, user, lotPostings);
+        const moveRefs = await postDocumentMoves(loaded.doc, loaded.lines, 'ISSUE', -1, user, lotPostings);
+        await consumeIssuePackages(loaded.doc, loaded.lines, moveRefs, user);
         await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['DONE', new Date().toISOString(), loaded.doc.id]);
         await db.run('COMMIT'); transactionOpen = false;
       } catch (e) {
@@ -159,7 +161,7 @@ export function documentsPostingRoutes(d: DocumentContext) {
         throw e;
       }
       res.json({ success: true });
-    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to complete issue' }); } finally {
+    } catch (e: any) { res.status(e.status || 500).json(documentErrorBody(e, 'Failed to complete issue')); } finally {
       if (transactionOpen) await db.run('ROLLBACK');
     }
   });
@@ -348,7 +350,7 @@ export function documentsPostingRoutes(d: DocumentContext) {
         referenceId: code,
         documentLineId: null,
         createdBy: user.id,
-      });
+      }, { deferModeReset: true });
 
       await postMove(db.run.bind(db), {
         productId,
@@ -360,7 +362,10 @@ export function documentsPostingRoutes(d: DocumentContext) {
         referenceId: code,
         documentLineId: null,
         createdBy: user.id,
-      });
+      }, { deferModeReset: true });
+      // Chuyển vị trí không đổi tổng tồn kho: chỉ kiểm tra reset sau khi đã
+      // cộng lại phần vừa trừ để không đổi mode LOT/LOOSE sai.
+      await resetDepletedLotModes(db.run.bind(db), [{ productId, warehouseId }]);
 
       await db.run('COMMIT');
       transactionOpen = false;

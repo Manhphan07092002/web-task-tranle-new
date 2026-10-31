@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
 import { beginStockTransaction } from '../../utils/stockTransaction.js';
+import { PACKAGED_QTY_BY_LOCATION, PACKAGED_QTY_BY_WAREHOUSE } from '../../services/packageService.js';
 import type { StockContext } from './context.js';
 
 export function balancesRoutes(ctx: StockContext) {
@@ -21,12 +22,16 @@ export function balancesRoutes(ctx: StockContext) {
       }
       let query = `SELECT b.productId, b.warehouseId, b.locationId, b.onHand, b.reserved,
           CASE WHEN b.locationId = '' OR (l.isActive = 1 AND l.purpose = 'SALEABLE') THEN b.onHand - b.reserved ELSE 0 END AS available,
+          COALESCE(pkg.packagedQty, 0) AS packagedQty,
+          b.onHand - COALESCE(pkg.packagedQty, 0) AS looseQty,
           p.name AS productName, p.importCode AS productCode, w.code AS warehouseCode, w.name AS warehouseName,
           l.code AS locationCode, l.purpose AS locationPurpose
         FROM stock_balances b
         LEFT JOIN products p ON p.id = b.productId
         LEFT JOIN warehouses w ON w.id = b.warehouseId
         LEFT JOIN stock_locations l ON l.id = b.locationId
+        LEFT JOIN (${PACKAGED_QTY_BY_LOCATION}) pkg
+          ON pkg.productId = b.productId AND pkg.warehouseId = b.warehouseId AND pkg.locationId = COALESCE(b.locationId, '')
         WHERE 1=1`;
       const params: any[] = [];
       if (warehouseId) { query += ' AND b.warehouseId = ?'; params.push(warehouseId); }
@@ -57,12 +62,16 @@ export function balancesRoutes(ctx: StockContext) {
           SUM(b.onHand) AS onHand, SUM(b.reserved) AS reserved,
           SUM(CASE WHEN b.locationId = '' OR (l.isActive = 1 AND l.purpose = 'SALEABLE')
             THEN b.onHand - b.reserved ELSE 0 END) AS available,
+          COALESCE(MAX(pkg.packagedQty), 0) AS packagedQty,
+          SUM(b.onHand) - COALESCE(MAX(pkg.packagedQty), 0) AS looseQty,
           p.name AS productName, p.importCode AS productCode, p.unit, p.category, p.origin, p.tracking,
           w.code AS warehouseCode, w.name AS warehouseName
         FROM stock_balances b
         LEFT JOIN products p ON p.id = b.productId
         LEFT JOIN warehouses w ON w.id = b.warehouseId
         LEFT JOIN stock_locations l ON l.id = b.locationId
+        LEFT JOIN (${PACKAGED_QTY_BY_WAREHOUSE}) pkg
+          ON pkg.productId = b.productId AND pkg.warehouseId = b.warehouseId
         WHERE 1=1`;
       const params: any[] = [];
       if (warehouseId) { query += ' AND b.warehouseId = ?'; params.push(warehouseId); }

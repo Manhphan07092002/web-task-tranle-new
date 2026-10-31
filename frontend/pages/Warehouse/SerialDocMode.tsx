@@ -4,12 +4,14 @@ import { ScanLine, RefreshCw, AlertCircle, CheckCircle2, ArrowLeft, Boxes, Hash,
 import { Card } from '../../components/UI';
 import {
   getStockDocument, getDocumentProgress, scanSerial, scanOutSerial, scanReturnSerial, editLineSerial, registerLot, allocateLot, confirmLineQty, confirmLineWithoutSerial, enableLineSerial, smartScanSerial,
-  type DocProgress, type DocLineProgress,
+  getLotTracking, confirmLooseLot,
+  type DocProgress, type DocLineProgress, type LotTracking,
 } from '../../services/stockService';
 import { getDeptHomePath, getDeptModulePath } from '../../components/layout/menus/departmentMenus';
 import type { DeptKey } from '../../components/layout/menus/menuTypes';
 import { ScannerModal } from './StockDocs/ScannerModal';
 import { resolveTracking } from '../../utils/tracking';
+import { resolveLineProcessingMode } from '../../utils/lineProcessing';
 import { useBarcodeScanner } from '../../hooks/useBarcodeScanner';
 import { playSuccessBeep, playErrorBuzz, playWarningBeep } from '../../utils/scannerFeedback';
 
@@ -58,9 +60,12 @@ export default function SerialDocMode({
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
+  // Phiếu chỉ hiện quét thông minh khi còn dòng Serial cần xử lý.
+  const hasSerialLines = Boolean(progress?.lines.some((line) => line.tracking === 'SERIAL' && line.status !== 'COMPLETED'));
+
   // Lắng nghe súng bắn barcode phần cứng toàn trang (USB / Bluetooth / PDA)
   useBarcodeScanner({
-    enabled: Boolean(doc?.status === 'DRAFT' || doc?.status === 'PROCESSING' || doc?.status === 'READY') && !showSmartScanner,
+    enabled: hasSerialLines && Boolean(doc?.status === 'DRAFT' || doc?.status === 'PROCESSING' || doc?.status === 'READY') && !showSmartScanner,
     onScan: async (scannedCode) => {
       if (!progress || loading) return;
       setError(null);
@@ -188,7 +193,7 @@ export default function SerialDocMode({
           )}
 
           {/* Thanh Quét thông minh tự khớp sản phẩm - Thiết kế Responsive & Mobile-first */}
-          {doc && (doc.status === 'DRAFT' || doc.status === 'PROCESSING' || doc.status === 'READY') && !progress.allCompleted && (
+          {doc && hasSerialLines && (doc.status === 'DRAFT' || doc.status === 'PROCESSING' || doc.status === 'READY') && !progress.allCompleted && (
             <Card className="p-3.5 sm:p-4 bg-gradient-to-r from-emerald-50/90 via-teal-50/50 to-white border border-emerald-200 shadow-xs rounded-2xl">
               <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5 sm:gap-3">
@@ -272,14 +277,14 @@ export default function SerialDocMode({
 
           <div className={embedded ? 'rounded-2xl border border-gray-100 overflow-hidden bg-white' : 'space-y-3'}>
             {progress.lines.map((line) => (
-              <LineCard key={line.lineId} line={line} docType={doc?.docType || ''} documentId={progress.documentId} onDone={fetchAll} compact={embedded} canEdit={doc?.status === 'DRAFT' || doc?.status === 'PROCESSING' || doc?.status === 'READY'} />
+              <LineCard key={line.lineId} line={line} docType={doc?.docType || ''} warehouseId={progress.warehouseId || null} documentId={progress.documentId} onDone={fetchAll} compact={embedded} canEdit={doc?.status === 'DRAFT' || doc?.status === 'PROCESSING' || doc?.status === 'READY'} />
             ))}
           </div>
         </div>
       )}
 
       {/* Floating Action Button (FAB) cho Mobile: Bấm quét nhanh bằng ngón cái bất cứ lúc nào */}
-      {doc && (doc.status === 'DRAFT' || doc.status === 'PROCESSING' || doc.status === 'READY') && !progress?.allCompleted && (
+      {doc && hasSerialLines && (doc.status === 'DRAFT' || doc.status === 'PROCESSING' || doc.status === 'READY') && !progress?.allCompleted && (
         <div className="sm:hidden fixed bottom-4 right-4 z-40">
           <button
             type="button"
@@ -315,9 +320,11 @@ function statusBadge(status: string) {
   return <span className="px-2 py-0.5 rounded-full text-[11px] font-bold border bg-gray-100 text-gray-500 border-gray-200">Chưa xử lý</span>;
 }
 
-function LineCard({ line, docType, documentId, onDone, compact = false, canEdit = true }: { line: DocLineProgress; docType: string; documentId: string; onDone: () => Promise<void>; compact?: boolean; canEdit?: boolean }) {
+function LineCard({ line, docType, warehouseId, documentId, onDone, compact = false, canEdit = true }: { line: DocLineProgress; docType: string; warehouseId?: string | null; documentId: string; onDone: () => Promise<void>; compact?: boolean; canEdit?: boolean }) {
   const isIssue = docType === 'ISSUE' || docType === 'TRANSFER';
   const tracking = resolveTracking(line.tracking);
+  const looseIssue = docType === 'ISSUE' && tracking === 'LOT' && Boolean(line.lotIssueMode === 'LOOSE' || line.lotBroken);
+  const mode = resolveLineProcessingMode(line.tracking, docType, looseIssue);
   const remaining = Math.max(0, line.required - line.processed);
   const percent = line.required > 0 ? Math.min(100, Math.round((line.processed / line.required) * 100)) : 100;
   const isDone = line.status === 'COMPLETED';
@@ -329,13 +336,29 @@ function LineCard({ line, docType, documentId, onDone, compact = false, canEdit 
           <p className="font-bold text-gray-900 text-sm sm:text-base leading-snug">{line.productName}</p>
           <p className="text-xs text-gray-400 font-mono mt-0.5">{line.productId}</p>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
           <span className="px-2 py-0.5 rounded-full text-[10px] sm:text-[11px] font-bold bg-gray-100 text-gray-600">
             {TRACK_LABEL[tracking] || tracking}
           </span>
+          {line.lotBroken && (
+            <span className="px-2 py-0.5 rounded-full text-[10px] sm:text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-200" title="Lô của toàn bộ mã hàng đã được tách; xuất theo số lượng.">
+              Đã tách lô
+            </span>
+          )}
           {statusBadge(line.status)}
         </div>
       </div>
+
+      {looseIssue && (
+        <div className="mt-2 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <AlertCircle size={14} className="mt-0.5 shrink-0" />
+          <span>
+            {line.lotBroken
+              ? 'Kho đang xuất lẻ cho mã hàng này — lô đã tách, xử lý theo số lượng.'
+              : 'Dòng hàng đã xác nhận xuất lẻ — xử lý theo số lượng; lô của mã hàng sẽ tách khi ghi sổ.'}
+          </span>
+        </div>
+      )}
 
       {/* Tiến độ chi tiết & thanh trực quan */}
       <div className="mt-2.5 space-y-1.5">
@@ -372,13 +395,35 @@ function LineCard({ line, docType, documentId, onDone, compact = false, canEdit 
         </div>
       )}
       <div className="mt-3">
-        <SerialBox
-          line={line}
-          scanMode={docType === 'RETURN' ? 'return' : isIssue ? 'out' : 'in'}
-          documentId={documentId}
-          onDone={onDone}
-          canEdit={canEdit}
-        />
+        {mode === 'SERIAL' && (
+          <SerialBox
+            line={line}
+            scanMode={docType === 'RETURN' ? 'return' : isIssue ? 'out' : 'in'}
+            documentId={documentId}
+            onDone={onDone}
+            canEdit={canEdit}
+          />
+        )}
+        {mode === 'LOT_RECEIPT' && <LotBox line={line} documentId={documentId} onDone={onDone} />}
+        {mode === 'LOT_ISSUE' && (
+          <>
+            <LotIssueBox line={line} documentId={documentId} onDone={onDone} />
+            {line.canLooseLot && canEdit && warehouseId && (
+              <LooseLotAction line={line} warehouseId={warehouseId} onDone={onDone} />
+            )}
+          </>
+        )}
+        {mode === 'QUANTITY' && (
+          <>
+            {tracking === 'LOT' && docType === 'RETURN' && (
+              <p className="text-xs text-gray-500 mb-2">Lô trả được ghi nhận tự động khi hoàn tất phiếu.</p>
+            )}
+            {looseIssue && (
+              <p className="text-xs text-gray-500 mb-2">Xuất lẻ theo số lượng — lô của toàn bộ mã hàng sẽ được tách khi hoàn tất phiếu.</p>
+            )}
+            <QuantityBox line={line} onDone={onDone} />
+          </>
+        )}
       </div>
     </Card>
   );
@@ -632,6 +677,7 @@ function LotBox({ line, documentId, onDone }: { line: DocLineProgress; documentI
   const [unit, setUnit] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const hasRecorded = line.lots.some((lot) => lot.status === 'RECORDED');
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -656,6 +702,12 @@ function LotBox({ line, documentId, onDone }: { line: DocLineProgress; documentI
 
   return (
     <div>
+      {hasRecorded && (
+        <div className="mb-2 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <AlertCircle size={14} className="mt-0.5 shrink-0" />
+          <span>Kho đang xuất lẻ — các lô dưới đây chỉ lưu vết, không dùng để phân bổ khi xuất.</span>
+        </div>
+      )}
       {line.lots.length > 0 && (
         <div className="mb-2 border border-gray-100 rounded-xl overflow-hidden">
           <table className="wh-table wh-table-compact w-full text-xs">
@@ -668,7 +720,10 @@ function LotBox({ line, documentId, onDone }: { line: DocLineProgress; documentI
             <tbody className="divide-y divide-gray-50">
               {line.lots.map((l) => (
                 <tr key={l.id}>
-                  <td className="py-1.5 px-3 font-mono font-bold text-gray-800">{l.lotCode}{l.coilCode ? ` · ${l.coilCode}` : ''}</td>
+                  <td className="py-1.5 px-3 font-mono font-bold text-gray-800">
+                    {l.lotCode}{l.coilCode ? ` · ${l.coilCode}` : ''}
+                    {l.status === 'RECORDED' && <span className="ml-1 text-[10px] font-bold text-amber-700">(lưu vết)</span>}
+                  </td>
                   <td className="py-1.5 px-3 text-right tabular-nums">{Number(l.initialQty).toLocaleString('vi-VN')}{l.unit ? ` ${l.unit}` : ''}</td>
                 </tr>
               ))}
@@ -788,6 +843,110 @@ function LotIssueBox({ line, documentId, onDone }: { line: DocLineProgress; docu
         </form>
       )}
       {err && <p className="text-xs text-red-600 mt-1.5 flex items-center gap-1"><AlertCircle size={12} />{err}</p>}
+    </div>
+  );
+}
+
+function LooseLotAction({ line, warehouseId, onDone }: { line: DocLineProgress; warehouseId: string; onDone: () => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [tracking, setTracking] = useState<LotTracking | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const openPanel = async () => {
+    setOpen(true); setErr(''); setLoading(true);
+    try {
+      setTracking(await getLotTracking(line.productId, warehouseId));
+    } catch (e: any) {
+      setErr(e.message || 'Không tải được trạng thái lô');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const confirm = async () => {
+    if (busy) return;
+    setBusy(true); setErr('');
+    try {
+      await confirmLooseLot(line.lineId);
+      setOpen(false);
+      await onDone();
+    } catch (e: any) {
+      setErr(e.message || 'Không thể xác nhận xuất lẻ');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <div className="mt-3 border-t border-dashed border-gray-200 pt-3">
+        <p className="text-xs text-gray-500">Không đủ lô để xuất? Chuyển mã hàng sang xuất lẻ theo số lượng.</p>
+        <button
+          type="button"
+          onClick={openPanel}
+          className="mt-2 flex items-center gap-1.5 px-4 py-2 border border-amber-500 text-amber-700 hover:bg-amber-50 rounded-xl font-bold text-sm cursor-pointer"
+        >
+          <AlertCircle size={15} /> Xuất lẻ theo số lượng
+        </button>
+      </div>
+    );
+  }
+
+  const affected = tracking?.lots || [];
+  const quantity = Number(tracking?.affectedQuantity || 0);
+
+  return (
+    <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50/70 p-3 space-y-2">
+      <p className="text-xs font-bold text-amber-900">Xác nhận xuất lẻ cho toàn bộ mã hàng</p>
+      {loading ? (
+        <p className="text-xs text-amber-700">Đang kiểm tra lô còn lại...</p>
+      ) : (
+        <>
+          <p className="text-xs text-amber-800">
+            Khi hoàn tất phiếu, toàn bộ lô còn lại của mã hàng này trong kho sẽ bị tách (về 0) và chuyển sang xuất lẻ
+            cho đến khi hết tồn. Áp dụng cho mọi dòng cùng mã hàng trên phiếu.
+          </p>
+          {affected.length > 0 ? (
+            <div className="rounded-lg border border-amber-200 bg-white overflow-hidden">
+              <table className="wh-table wh-table-compact w-full text-xs">
+                <thead className="bg-amber-50">
+                  <tr>
+                    <th className="text-left py-1.5 px-3 font-bold text-amber-700 uppercase">Lô sẽ tách</th>
+                    <th className="text-right py-1.5 px-3 font-bold text-amber-700 uppercase">Còn lại</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-amber-50">
+                  {affected.map((lot) => (
+                    <tr key={lot.id}>
+                      <td className="py-1.5 px-3 font-mono font-bold text-gray-800">{lot.lotCode}{lot.coilCode ? ` · ${lot.coilCode}` : ''}</td>
+                      <td className="py-1.5 px-3 text-right tabular-nums">{Number(lot.remainingQty).toLocaleString('vi-VN')}{lot.unit ? ` ${lot.unit}` : ''}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="px-3 py-1.5 text-xs font-bold text-amber-800 border-t border-amber-100">
+                Tổng còn lại: {quantity.toLocaleString('vi-VN')}
+              </p>
+            </div>
+          ) : (
+            <p className="text-xs text-amber-700">Không còn lô nào có tồn — xác nhận để chuyển mã hàng sang xuất lẻ.</p>
+          )}
+        </>
+      )}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={confirm}
+          disabled={busy || loading}
+          className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold disabled:opacity-60 cursor-pointer"
+        >
+          {busy ? 'Đang lưu...' : 'Xác nhận xuất lẻ'}
+        </button>
+        <button type="button" onClick={() => setOpen(false)} className="px-3 py-1.5 text-xs text-gray-500 hover:text-gray-800 cursor-pointer">Hủy</button>
+      </div>
+      {err && <p className="text-xs text-red-600 flex items-center gap-1"><AlertCircle size={12} />{err}</p>}
     </div>
   );
 }

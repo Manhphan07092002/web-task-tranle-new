@@ -23,6 +23,7 @@ interface ProcOpts {
   trackings?: Record<string, string>;
   serials?: Record<string, any>;
   lots?: any[];
+  allocations?: any[];
   lotHit?: any;
 }
 
@@ -65,6 +66,7 @@ function procDb(opts: ProcOpts = {}) {
       if (sql.includes('FROM stock_balances')) {
         return [{ productId: 'p1', locationId: '', onHand: 10, reserved: 0 }];
       }
+      if (sql.includes('FROM stock_document_line_lots')) return opts.allocations ?? [];
       if (sql.includes('FROM stock_lots')) return opts.lots ?? [];
       if (sql.includes('FROM warehouses')) return [{ id: 'wh-hn' }, { id: 'wh-hcm' }];
       return [];
@@ -108,6 +110,10 @@ function procDb(opts: ProcOpts = {}) {
       calls.push([sql, params]);
       if (sql.includes('UPDATE stock_documents') && sql.includes('SET status')) {
         doc.status = sql.includes("SET status = 'PROCESSING'") ? 'PROCESSING' : params[0];
+      }
+      if (sql.includes('UPDATE stock_document_lines') && sql.includes('SET actualQty = ?')) {
+        const line = lines.find((l) => l.id === params[3]);
+        if (line) { line.actualQty = params[0]; line.varianceQty = params[1]; line.varianceReason = params[2]; line.processingStatus = 'COMPLETED'; }
       }
       if (sql.includes('UPDATE stock_document_lines SET serialLot')) {
         const line = lines.find((l) => l.id === params[2]);
@@ -515,12 +521,12 @@ describe('progress + confirm-qty + lots (Phase 3 backend)', () => {
     expect(res.body.allCompleted).toBe(false);
     const byId: Record<string, any> = Object.fromEntries(res.body.lines.map((l: any) => [l.lineId, l]));
     expect(byId.l1).toMatchObject({ required: 2, processed: 1, tracking: 'SERIAL', status: 'PARTIAL' });
-    expect(byId.l2).toMatchObject({ required: 100, processed: 0, tracking: 'SERIAL', status: 'PENDING' });
-    expect(byId.l3).toMatchObject({ required: 500, processed: 0, tracking: 'SERIAL', status: 'PENDING' });
+    expect(byId.l2).toMatchObject({ required: 100, processed: 0, tracking: 'LOT', status: 'PENDING' });
+    expect(byId.l3).toMatchObject({ required: 500, processed: 0, tracking: 'QUANTITY', status: 'PENDING' });
   });
 
   it('does not allow a quantity variance to bypass required Serial scans', async () => {
-    const db = procDb({ lines: multiLines, trackings });
+    const db = procDb({ lines: [{ ...multiLines[2], serialRequired: 1 }], trackings });
     const res = await request(appFor(tp, db)).post('/lines/l3/confirm-qty')
       .send({ actualQty: 495, varianceReason: 'Hao hut van chuyen' }).expect(400);
     expect(res.body.error).toMatch(/quét đủ 500 Serial/);
@@ -543,7 +549,7 @@ describe('progress + confirm-qty + lots (Phase 3 backend)', () => {
     await request(appFor(tp, db)).post('/lines/l3/confirm-qty').send({ actualQty: 500 }).expect(200);
   });
 
-  it('presents legacy lines as Serial-required and upgrades their persisted setting', async () => {
+  it('presents legacy lines with product tracking and keeps the Serial upgrade path', async () => {
     const db = procDb({
       docType: 'ISSUE',
       trackings: { p3: 'QUANTITY' },
@@ -551,7 +557,7 @@ describe('progress + confirm-qty + lots (Phase 3 backend)', () => {
       serials: { 'SN-LEGACY': { productId: 'p3', warehouseId: 'wh-hn', stockStatus: 'IN_STOCK', receiptDocumentId: 'pnk1' } },
     });
     const progress = await request(appFor(tp, db)).get('/documents/doc1/progress').expect(200);
-    expect(progress.body.lines[0]).toMatchObject({ tracking: 'SERIAL', canEnableSerial: false });
+    expect(progress.body.lines[0]).toMatchObject({ tracking: 'QUANTITY', canEnableSerial: true });
     const response = await request(appFor(tp, db)).post('/lines/l3/enable-serial').send({}).expect(200);
     expect(response.body).toEqual({ success: true, serialRequired: true });
     expect(db.lines[0]).toMatchObject({ serialRequired: 1, processingStatus: 'PENDING' });
@@ -604,6 +610,65 @@ describe('progress + confirm-qty + lots (Phase 3 backend)', () => {
     await request(appFor(tp, db)).post('/lots/register').send({
       documentId: 'doc1', documentLineId: 'l1', lotCode: 'X-01', quantity: 1,
     }).expect(400);
+  });
+
+  it('reports LOT coverage from registered and allocated lots', async () => {
+    const receiptDb = procDb({
+      lines: [{ ...multiLines[1], serialLot: 'L1' }],
+      trackings,
+      lots: [{ id: 'lot1', lotCode: 'L1', coilCode: null, initialQty: 60, remainingQty: 60, unit: 'm', status: 'ACTIVE' }],
+    });
+    const receipt = await request(appFor(tp, receiptDb)).get('/documents/doc1/progress').expect(200);
+    expect(receipt.body.lines[0]).toMatchObject({ tracking: 'LOT', processed: 60, status: 'PARTIAL' });
+    expect(receipt.body.lines[0].lots[0]).toMatchObject({ lotCode: 'L1', initialQty: 60 });
+
+    const issueDb = procDb({
+      docType: 'ISSUE',
+      lines: [{ ...multiLines[1], serialLot: 'L1' }],
+      trackings,
+      allocations: [{ id: 'lot1', lotCode: 'L1', allocatedQty: 40, initialQty: 100, remainingQty: 60, unit: 'm', status: 'ACTIVE' }],
+    });
+    const issue = await request(appFor(tp, issueDb)).get('/documents/doc1/progress').expect(200);
+    expect(issue.body.lines[0]).toMatchObject({ tracking: 'LOT', processed: 40, status: 'PARTIAL' });
+  });
+
+  it('accepts a quantity variance with a reason on QUANTITY lines', async () => {
+    const db = procDb({ lines: [{ ...multiLines[2], quantity: 500 }], trackings: { p3: 'QUANTITY' } });
+    const res = await request(appFor(tp, db)).post('/lines/l3/confirm-qty')
+      .send({ actualQty: 495, varianceReason: 'Hao hụt vận chuyển' }).expect(200);
+    expect(res.body).toMatchObject({ quantityConfirmed: true, actualQty: 495, varianceQty: -5 });
+    const progress = await request(appFor(tp, db)).get('/documents/doc1/progress').expect(200);
+    expect(progress.body.lines[0]).toMatchObject({ tracking: 'QUANTITY', processed: 500, status: 'COMPLETED' });
+  });
+
+  it('requires a reason when QUANTITY actual differs from the document', async () => {
+    const db = procDb({ lines: [{ ...multiLines[2], quantity: 500 }], trackings: { p3: 'QUANTITY' } });
+    const res = await request(appFor(tp, db)).post('/lines/l3/confirm-qty').send({ actualQty: 495 }).expect(400);
+    expect(res.body.error).toMatch(/nhập lý do/);
+  });
+
+  it('allows decimal quantities for LOT but not SERIAL at creation', async () => {
+    const lotDb = procDb({ trackings: { p1: 'LOT' } });
+    await request(appFor(tp, lotDb)).post('/receipts')
+      .send({ warehouseId: 'wh-hn', lines: [{ productId: 'p1', quantity: 1.5 }] }).expect(201);
+    const serialDb = procDb({ trackings: { p1: 'SERIAL' } });
+    const res = await request(appFor(tp, serialDb)).post('/receipts')
+      .send({ warehouseId: 'wh-hn', lines: [{ productId: 'p1', quantity: 1.5 }] }).expect(400);
+    expect(res.body.error).toMatch(/số nguyên/);
+  });
+
+  it('snapshots serialRequired from product tracking when creating lines', async () => {
+    const serialDb = procDb({ trackings: { p1: 'SERIAL' } });
+    await request(appFor(tp, serialDb)).post('/receipts')
+      .send({ warehouseId: 'wh-hn', lines: [{ productId: 'p1', quantity: 2 }] }).expect(201);
+    const serialInsert = serialDb.calls.find(([sql]: [string, any[]]) => String(sql).includes('INSERT INTO stock_document_lines'));
+    expect(serialInsert?.[1]?.[16]).toBe(1);
+
+    const quantityDb = procDb({ trackings: { p1: 'QUANTITY' } });
+    await request(appFor(tp, quantityDb)).post('/receipts')
+      .send({ warehouseId: 'wh-hn', lines: [{ productId: 'p1', quantity: 2 }] }).expect(201);
+    const quantityInsert = quantityDb.calls.find(([sql]: [string, any[]]) => String(sql).includes('INSERT INTO stock_document_lines'));
+    expect(quantityInsert?.[1]?.[16]).toBe(0);
   });
 });
 

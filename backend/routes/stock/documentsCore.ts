@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { normalizeManagementLevel, MANAGEMENT_LEVELS } from '../../middleware/auth.js';
 import { beginStockTransaction } from '../../utils/stockTransaction.js';
-import { DEFAULT_VAT_RATE, DOC_CODE_PREFIX } from './documentSchemas.js';
+import { DEFAULT_VAT_RATE, DOC_CODE_PREFIX, documentErrorBody } from './documentSchemas.js';
 import type { DocumentContext } from './documentContext.js';
 
 /** Đọc/sửa/hủy/xóa chứng từ, mã phiếu dự kiến — phần lõi trước mọi luồng ghi sổ. */
@@ -10,8 +10,11 @@ export function documentsCoreRoutes(d: DocumentContext) {
   const {
     db, listScope, isDirector, requireWarehouseManager, docWarehouseIds, canReadDocument, canWriteDocument,
     recordWarehouseActivity, resolveAccountingDefaults, nextDocCode, paginationOf, validateLines, parseSerials,
+    productTrackings,
     processingStarted, resetDocProcessing, dropDocLots, releaseReservedSerials, dropDocReservationLinks,
     loadIssueReservationLinks, syncDocumentReservationLinks,
+    replaceDraftPackages, cancelDraftPackages, dropDraftPackages, loadDocumentPackages,
+    resolveIssueLinePackages, loadPackagesForLines,
   } = d;
   const router = Router();
   router.get('/documents', async (req, res) => {
@@ -201,7 +204,13 @@ export function documentsCoreRoutes(d: DocumentContext) {
         };
       }
       const reservationLinks = doc.docType === 'ISSUE' ? await loadIssueReservationLinks(id) : [];
-      res.json({ ...doc, lines, reservationLinks, returnTrace });
+      // `packages`: phiếu nhập trả toàn bộ cây bản nháp/tồn của phiếu; phiếu xuất
+      // chỉ trả bộ kiện mà dòng phiếu trỏ tới — phiếu không dùng kiện thì body
+      // giữ nguyên như trước khi có mô hình Kiện (AC10).
+      const packages = doc.docType === 'RECEIPT'
+        ? await loadDocumentPackages(id)
+        : (await loadPackagesForLines(lines));
+      res.json({ ...doc, lines, reservationLinks, returnTrace, ...(packages.length > 0 ? { packages } : {}) });
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to fetch document detail' }); }
   });
 
@@ -224,6 +233,7 @@ export function documentsCoreRoutes(d: DocumentContext) {
         await dropDocReservationLinks(id);
         await releaseReservedSerials(id);
         await dropDocLots(id);
+        await cancelDraftPackages(id, doc.code ?? null, user);
         await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ?', ['CANCELLED', new Date().toISOString(), id]);
         await db.run('COMMIT');
       } catch (err) {
@@ -231,7 +241,7 @@ export function documentsCoreRoutes(d: DocumentContext) {
         throw err;
       }
       res.json({ success: true });
-    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to cancel document' }); }
+    } catch (e: any) { res.status(e.status || 500).json(documentErrorBody(e, 'Failed to cancel document')); }
   });
 
   router.delete('/documents/:id', async (req, res) => {
@@ -253,6 +263,7 @@ export function documentsCoreRoutes(d: DocumentContext) {
         await dropDocReservationLinks(id);
         await releaseReservedSerials(id);
         await dropDocLots(id);
+        await dropDraftPackages(id);
         await db.run('DELETE FROM stock_document_lines WHERE documentId = ?', [id]);
         await db.run('DELETE FROM stock_documents WHERE id = ?', [id]);
         await db.run('COMMIT');
@@ -261,7 +272,7 @@ export function documentsCoreRoutes(d: DocumentContext) {
         throw err;
       }
       res.json({ success: true });
-    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to delete document' }); }
+    } catch (e: any) { res.status(e.status || 500).json(documentErrorBody(e, 'Failed to delete document')); }
   });
 
   router.put('/documents/:id', async (req, res) => {
@@ -327,6 +338,18 @@ export function documentsCoreRoutes(d: DocumentContext) {
       let vatAmount = doc.vatAmount;
       let totalAmount = doc.totalAmount;
 
+      // Kiện thay thế theo mảng gửi lên (mảng rỗng = xóa hết bản nháp), nên chỉ
+      // kiểm tra hình thức ở đây; đối chiếu số lượng với dòng phiếu do
+      // packageService lo toàn bộ trong transaction.
+      if (body.packages !== undefined) {
+        if (!Array.isArray(body.packages)) {
+          return res.status(400).json({ error: 'Danh sách kiện phải là mảng.' });
+        }
+        if (body.packages.length > 0 && doc.docType !== 'RECEIPT') {
+          return res.status(400).json({ error: 'Kiện chỉ được khai báo trên phiếu nhập.' });
+        }
+      }
+
       await beginStockTransaction(db, docWarehouseIds(doc));
       try {
         if (body.resetProcessing) await resetDocProcessing(id);
@@ -334,6 +357,7 @@ export function documentsCoreRoutes(d: DocumentContext) {
           const lineWh = doc.warehouseId || doc.sourceWarehouseId || '';
           const err = await validateLines(body.lines, lineWh);
           if (err) throw Object.assign(new Error(err), { status: 400 });
+          const packageIdByLineId = await resolveIssueLinePackages(doc.docType, lineWh, body.lines);
 
           let computedPreTax = 0;
           let computedVat = 0;
@@ -346,6 +370,7 @@ export function documentsCoreRoutes(d: DocumentContext) {
           await dropDocReservationLinks(id);
           await db.run('DELETE FROM stock_document_lines WHERE documentId = ?', [id]);
           const newLineIds: { id: string; productId: string; locationId: string; quantity: number }[] = [];
+          const lineTrackings = await productTrackings(body.lines.map((line: any) => line.productId));
           for (const line of body.lines) {
             const q = Number(line.quantity) || 0;
             const p = Number(line.unitPrice) || 0;
@@ -355,24 +380,28 @@ export function documentsCoreRoutes(d: DocumentContext) {
             const lineTotal = canEditFinancials && line.totalAmount !== undefined ? Number(line.totalAmount) : (linePreTax + lineVat);
             computedPreTax += linePreTax;
             computedVat += lineVat;
-            // Mọi dòng hàng đều truy vết bằng Serial, kể cả phiếu cũ được sửa lại.
-            const serialRequired = true;
+            // Snapshot theo tracking hiện tại của sản phẩm; hàng Serial vẫn bắt buộc quét từng chiếc.
+            const serialRequired = lineTrackings.get(line.productId) === 'SERIAL';
             const codes = parseSerials(line.serialLot);
-            const st = codes.length === q ? 'COMPLETED' : codes.length > 0 ? 'PARTIAL' : 'PENDING';
+            const st = serialRequired
+              ? (codes.length === q ? 'COMPLETED' : codes.length > 0 ? 'PARTIAL' : 'PENDING')
+              : 'PENDING';
             const newId = randomUUID();
             newLineIds.push({ id: newId, productId: line.productId, locationId: line.locationId || '', quantity: q });
             await db.run(
               `INSERT INTO stock_document_lines (
                 id, documentId, productId, quantity, unitPrice, locationId, note,
-                accountDebit, accountCredit, vatRate, vatAmount, totalAmount, projectId, costItem, serialLot, costObjectId, processingStatus, serialRequired
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                accountDebit, accountCredit, vatRate, vatAmount, totalAmount, projectId, costItem, serialLot, costObjectId, processingStatus, serialRequired, packageId, packageLineId
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
                 newId, id, line.productId, q, p, line.locationId ?? null, line.note ?? null,
                 (requireWarehouseManager(user) ? line.accountDebit : null) || (await resolveAccountingDefaults(line.productId, body.partnerCode || body.partnerName, line.projectId)).accountDebit,
                 (requireWarehouseManager(user) ? line.accountCredit : null) || (await resolveAccountingDefaults(line.productId, body.partnerCode || body.partnerName, line.projectId)).accountCredit,
                 rate, lineVat, lineTotal, line.projectId ?? null,
                 requireWarehouseManager(user) ? line.costItem ?? null : null,
-                line.serialLot ?? null, requireWarehouseManager(user) ? line.costObjectId ?? null : null, st, serialRequired ? 1 : 0
+                line.serialLot ?? null, requireWarehouseManager(user) ? line.costObjectId ?? null : null, st, serialRequired ? 1 : 0,
+                packageIdByLineId.get(String(line.packageLineId ?? '').trim()) ?? null,
+                String(line.packageLineId ?? '').trim() || null,
               ]
             );
           }
@@ -393,6 +422,15 @@ export function documentsCoreRoutes(d: DocumentContext) {
           totalPreTax = computedPreTax;
           vatAmount = computedVat;
           totalAmount = totalPreTax + vatAmount;
+        }
+
+        if (Array.isArray(body.packages) && doc.docType === 'RECEIPT') {
+          // Số lượng đối chiếu lấy theo dòng mới vừa ghi; nếu PUT không gửi lines
+          // thì phải đọc lại dòng trong DB (kèm actualQty đã xác nhận lệch).
+          const packageBasis = Array.isArray(body.lines) && body.lines.length > 0
+            ? body.lines
+            : await db.all('SELECT productId, quantity, actualQty FROM stock_document_lines WHERE documentId = ?', [id]);
+          await replaceDraftPackages(id, doc.warehouseId || '', body.packages, packageBasis, user);
         }
 
         const attachmentsStr = body.attachments !== undefined
@@ -443,7 +481,11 @@ export function documentsCoreRoutes(d: DocumentContext) {
           toWarehouseId: doc.destWarehouseId || null,
           userId: user.id,
           oldData: { status: doc.status, totalAmount: doc.totalAmount },
-          newData: { totalAmount, resetProcessing: Boolean(body.resetProcessing), lineCount: Array.isArray(body.lines) ? body.lines.length : undefined },
+          newData: {
+            totalAmount, resetProcessing: Boolean(body.resetProcessing),
+            lineCount: Array.isArray(body.lines) ? body.lines.length : undefined,
+            packageCount: Array.isArray(body.packages) ? body.packages.length : undefined,
+          },
         });
         await db.run('COMMIT');
       } catch (error) {
@@ -451,7 +493,7 @@ export function documentsCoreRoutes(d: DocumentContext) {
         throw error;
       }
       res.json({ success: true });
-    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to update document' }); }
+    } catch (e: any) { res.status(e.status || 500).json(documentErrorBody(e, 'Failed to update document')); }
   });
 
   // ── Chứng từ: tạo ─────────────────────────────────────────────────────────

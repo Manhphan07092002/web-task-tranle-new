@@ -494,6 +494,8 @@ CREATE TABLE IF NOT EXISTS stock_document_lines (
   projectId VARCHAR(191) NULL, costItem VARCHAR(100) NULL,
   processingStatus VARCHAR(16) NOT NULL DEFAULT 'PENDING',
   actualQty DECIMAL(18,3) NULL, varianceQty DECIMAL(18,3) NULL, varianceReason VARCHAR(500) NULL,
+  lotIssueMode VARCHAR(16) NULL,
+  packageId VARCHAR(191) NULL, packageLineId VARCHAR(191) NULL,
   INDEX idx_sdline_document (documentId),
   INDEX idx_sdline_product (productId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -577,6 +579,7 @@ CREATE TABLE IF NOT EXISTS stock_lots (
   initialQty DECIMAL(18,3) NOT NULL DEFAULT 0, remainingQty DECIMAL(18,3) NOT NULL DEFAULT 0,
   unit VARCHAR(32) NULL,
   manufacturedAt VARCHAR(40) NULL, supplier VARCHAR(300) NULL,
+  expiryDate VARCHAR(40) NULL,
   receiptDocumentId VARCHAR(191) NULL, receiptLineId VARCHAR(191) NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
   createdBy VARCHAR(191) NULL,
@@ -615,6 +618,73 @@ CREATE TABLE IF NOT EXISTS stock_transfer_line_lots (
   UNIQUE KEY unique_transfer_line_source_lot (documentLineId, sourceLotId),
   INDEX idx_stll_line (documentLineId), INDEX idx_stll_source_lot (sourceLotId),
   INDEX idx_stll_dest_lot (destLotId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_lot_tracking (
+  productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
+  mode VARCHAR(16) NOT NULL DEFAULT 'LOT',
+  brokenAt DATETIME NULL, brokenBy VARCHAR(191) NULL,
+  breakDocumentId VARCHAR(191) NULL, breakReason VARCHAR(500) NULL,
+  resetAt DATETIME NULL, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (productId, warehouseId),
+  INDEX idx_lottrack_warehouse_mode (warehouseId, mode)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_package_types (
+  id VARCHAR(191) PRIMARY KEY, code VARCHAR(50) NOT NULL UNIQUE, name VARCHAR(191) NOT NULL,
+  lengthCm DOUBLE NULL, widthCm DOUBLE NULL, heightCm DOUBLE NULL,
+  maxWeightKg DOUBLE NULL, maxLines INT NULL,
+  isActive TINYINT NOT NULL DEFAULT 1,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_pkgtype_active (isActive)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_packages (
+  id VARCHAR(191) PRIMARY KEY, packageCode VARCHAR(100) NOT NULL,
+  packageTypeId VARCHAR(191) NULL, warehouseId VARCHAR(191) NOT NULL, locationId VARCHAR(191) NULL,
+  sourceReceiptId VARCHAR(191) NULL, sourcePackageId VARCHAR(191) NULL, parentPackageId VARCHAR(191) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING', notes TEXT NULL,
+  receivedAt DATETIME NULL, receivedBy VARCHAR(191) NULL,
+  pickedAt DATETIME NULL, pickedBy VARCHAR(191) NULL,
+  createdBy VARCHAR(191) NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_package_code (packageCode),
+  INDEX idx_pkg_wh_status (warehouseId, status),
+  INDEX idx_pkg_wh_loc (warehouseId, locationId),
+  INDEX idx_pkg_receipt (sourceReceiptId),
+  INDEX idx_pkg_source (sourcePackageId),
+  INDEX idx_pkg_parent (parentPackageId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_package_lines (
+  id VARCHAR(191) PRIMARY KEY, packageId VARCHAR(191) NOT NULL, productId VARCHAR(191) NOT NULL,
+  lineKey VARCHAR(191) NOT NULL,
+  qtyInitial DECIMAL(18,3) NOT NULL DEFAULT 0, qtyRemaining DECIMAL(18,3) NOT NULL DEFAULT 0,
+  qtyHeld DECIMAL(18,3) NOT NULL DEFAULT 0,
+  serialId VARCHAR(191) NULL, lotId VARCHAR(191) NULL, expiryDate VARCHAR(40) NULL,
+  unitCost DECIMAL(18,3) NOT NULL DEFAULT 0,
+  receiptDocumentId VARCHAR(191) NULL, receiptLineId VARCHAR(191) NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_pkg_line (packageId, lineKey),
+  INDEX idx_pkgl_package (packageId),
+  INDEX idx_pkgl_product (productId),
+  INDEX idx_pkgl_serial (serialId),
+  INDEX idx_pkgl_lot (lotId),
+  INDEX idx_pkgl_expiry (expiryDate)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_package_movements (
+  id VARCHAR(191) PRIMARY KEY,
+  packageId VARCHAR(191) NOT NULL, packageLineId VARCHAR(191) NULL,
+  productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
+  quantity DECIMAL(18,3) NOT NULL, moveType VARCHAR(32) NOT NULL,
+  referenceType VARCHAR(64) NULL, referenceId VARCHAR(191) NULL,
+  documentLineId VARCHAR(191) NULL, moveId VARCHAR(191) NULL,
+  createdBy VARCHAR(191) NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_pkgm_package (packageId, createdAt),
+  INDEX idx_pkgm_line (packageLineId),
+  INDEX idx_pkgm_move (moveId),
+  INDEX idx_pkgm_reference (referenceType, referenceId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS product_bundles (
@@ -1648,9 +1718,113 @@ export async function initDbMysql(): Promise<MysqlDb> {
         await ensureColumnType('products', 'salePrice', 'decimal', 2, '`salePrice` DECIMAL(18,2) DEFAULT 0');
       });
 
+      // v48: xuất lẻ phá lô theo TOÀN BỘ mã hàng trong kho. Mode LOOSE tồn tại
+      // đến khi onHand về 0; mọi lô còn lại bị đưa remainingQty = 0 (giữ
+      // initialQty để truy vết). lotIssueMode là snapshot xác nhận trên dòng.
+      await runVersionedMigration(db, 48, 'stock_lot_loose_issue', async () => {
+        await db.run(`CREATE TABLE IF NOT EXISTS stock_lot_tracking (
+          productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
+          mode VARCHAR(16) NOT NULL DEFAULT 'LOT',
+          brokenAt DATETIME NULL, brokenBy VARCHAR(191) NULL,
+          breakDocumentId VARCHAR(191) NULL, breakReason VARCHAR(500) NULL,
+          resetAt DATETIME NULL, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (productId, warehouseId),
+          INDEX idx_lottrack_warehouse_mode (warehouseId, mode)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+        await createTableIndex(
+          'stock_lot_tracking', 'idx_lottrack_warehouse_mode',
+          'CREATE INDEX idx_lottrack_warehouse_mode ON stock_lot_tracking (warehouseId, mode)'
+        );
+        await ensureColumn('stock_document_lines', 'lotIssueMode', '`lotIssueMode` VARCHAR(16) NULL');
+      });
 
+      // v49: nền tảng mô hình Kiện. Kiện là phân hoạch của onHand chứ không phải
+      // nguồn tồn mới, nên không có bảng balance riêng; mọi biến động kiện đi qua
+      // stock_package_movements để stock_moves giữ nguyên SQL ledger.
+      await runVersionedMigration(db, 49, 'stock_packages', async () => {
+        await db.run(`CREATE TABLE IF NOT EXISTS stock_package_types (
+          id VARCHAR(191) PRIMARY KEY, code VARCHAR(50) NOT NULL UNIQUE, name VARCHAR(191) NOT NULL,
+          lengthCm DOUBLE NULL, widthCm DOUBLE NULL, heightCm DOUBLE NULL,
+          maxWeightKg DOUBLE NULL, maxLines INT NULL,
+          isActive TINYINT NOT NULL DEFAULT 1,
+          createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_pkgtype_active (isActive)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+        await db.run(`CREATE TABLE IF NOT EXISTS stock_packages (
+          id VARCHAR(191) PRIMARY KEY, packageCode VARCHAR(100) NOT NULL,
+          packageTypeId VARCHAR(191) NULL, warehouseId VARCHAR(191) NOT NULL, locationId VARCHAR(191) NULL,
+          sourceReceiptId VARCHAR(191) NULL, sourcePackageId VARCHAR(191) NULL, parentPackageId VARCHAR(191) NULL,
+          status VARCHAR(32) NOT NULL DEFAULT 'PENDING', notes TEXT NULL,
+          receivedAt DATETIME NULL, receivedBy VARCHAR(191) NULL,
+          pickedAt DATETIME NULL, pickedBy VARCHAR(191) NULL,
+          createdBy VARCHAR(191) NULL,
+          createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_package_code (packageCode),
+          INDEX idx_pkg_wh_status (warehouseId, status),
+          INDEX idx_pkg_wh_loc (warehouseId, locationId),
+          INDEX idx_pkg_receipt (sourceReceiptId),
+          INDEX idx_pkg_source (sourcePackageId),
+          INDEX idx_pkg_parent (parentPackageId)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+        await db.run(`CREATE TABLE IF NOT EXISTS stock_package_lines (
+          id VARCHAR(191) PRIMARY KEY, packageId VARCHAR(191) NOT NULL, productId VARCHAR(191) NOT NULL,
+          lineKey VARCHAR(191) NOT NULL,
+          qtyInitial DECIMAL(18,3) NOT NULL DEFAULT 0, qtyRemaining DECIMAL(18,3) NOT NULL DEFAULT 0,
+          qtyHeld DECIMAL(18,3) NOT NULL DEFAULT 0,
+          serialId VARCHAR(191) NULL, lotId VARCHAR(191) NULL, expiryDate VARCHAR(40) NULL,
+          unitCost DECIMAL(18,3) NOT NULL DEFAULT 0,
+          receiptDocumentId VARCHAR(191) NULL, receiptLineId VARCHAR(191) NULL,
+          createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_pkg_line (packageId, lineKey),
+          INDEX idx_pkgl_package (packageId),
+          INDEX idx_pkgl_product (productId),
+          INDEX idx_pkgl_serial (serialId),
+          INDEX idx_pkgl_lot (lotId),
+          INDEX idx_pkgl_expiry (expiryDate)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+        await db.run(`CREATE TABLE IF NOT EXISTS stock_package_movements (
+          id VARCHAR(191) PRIMARY KEY,
+          packageId VARCHAR(191) NOT NULL, packageLineId VARCHAR(191) NULL,
+          productId VARCHAR(191) NOT NULL, warehouseId VARCHAR(191) NOT NULL,
+          quantity DECIMAL(18,3) NOT NULL, moveType VARCHAR(32) NOT NULL,
+          referenceType VARCHAR(64) NULL, referenceId VARCHAR(191) NULL,
+          documentLineId VARCHAR(191) NULL, moveId VARCHAR(191) NULL,
+          createdBy VARCHAR(191) NULL, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_pkgm_package (packageId, createdAt),
+          INDEX idx_pkgm_line (packageLineId),
+          INDEX idx_pkgm_move (moveId),
+          INDEX idx_pkgm_reference (referenceType, referenceId)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
+        const PACKAGE_TYPES: [string, string, string][] = [
+          ['CARTON', 'Thùng carton', 'pkgtype-carton'],
+          ['KIEN_GO', 'Kiện gỗ', 'pkgtype-wood'],
+          ['PALLET', 'Pallet', 'pkgtype-pallet'],
+          ['MEMG_CO', 'Kiện màng co', 'pkgtype-shrink'],
+        ];
+        for (const [code, name, id] of PACKAGE_TYPES) {
+          await db.run('INSERT IGNORE INTO stock_package_types (id, code, name) VALUES (?, ?, ?)', [id, code, name]);
+        }
 
+        await ensureColumn('stock_document_lines', 'packageId', '`packageId` VARCHAR(191) NULL');
+        await ensureColumn('stock_document_lines', 'packageLineId', '`packageLineId` VARCHAR(191) NULL');
+        await ensureColumn('warehouse_activity_logs', 'packageId', '`packageId` VARCHAR(191) NULL');
+        await ensureColumn('warehouse_activity_logs', 'packageCode', '`packageCode` VARCHAR(100) NULL');
+        await ensureColumn('stock_lots', 'expiryDate', '`expiryDate` VARCHAR(40) NULL');
+        await ensureColumn('products', 'trackByPackage', '`trackByPackage` TINYINT NOT NULL DEFAULT 0');
+        await ensureColumn('products', 'packSize', '`packSize` DOUBLE NULL');
+        await ensureColumn('products', 'suggestionRule', '`suggestionRule` VARCHAR(16) NULL');
+        await ensureColumn('products', 'expiryRequired', '`expiryRequired` TINYINT NOT NULL DEFAULT 0');
+
+        await createTableIndex(
+          'stock_package_lines', 'idx_pkgl_product_remaining',
+          'CREATE INDEX idx_pkgl_product_remaining ON stock_package_lines (productId, qtyRemaining)'
+        );
+        await createTableIndex(
+          'warehouse_activity_logs', 'idx_wh_activity_package',
+          'CREATE INDEX idx_wh_activity_package ON warehouse_activity_logs (packageId, createdAt)'
+        );
+      });
     }, () => seedInitialData(db));
     await migrateMailCredentials(db);
   });

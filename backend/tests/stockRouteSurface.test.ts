@@ -82,6 +82,19 @@ const EXPECTED_SURFACE = [
   'GET /misa-reconcile',
   'POST /misa-reconcile/log',
   'GET /activity-logs',
+  'GET /lot-tracking/:productId/:warehouseId',
+  'POST /lines/:id/confirm-loose-lot',
+  'GET /packages',
+  'GET /packages/lookup',
+  'GET /packages/suggest',
+  'GET /packages/:id',
+  'GET /packages/:id/trace',
+  'PATCH /packages/:id',
+  'GET /package-inventory',
+  'GET /package-types',
+  'POST /package-types',
+  'PUT /package-types/:id',
+  'DELETE /package-types/:id',
 ];
 
 function fakeDb() {
@@ -121,6 +134,18 @@ describe('stock route surface', () => {
   it('declares count variances before the :id wildcard', () => {
     expect(surface.indexOf('GET /counts/variances'))
       .toBeLessThan(surface.indexOf('GET /counts/:id'));
+  });
+
+  it('declares package lookup and suggest before the package :id wildcard', () => {
+    // Quét kiện gửi mã ở ?code=, gợi ý gửi ?productId=; nếu /packages/:id đứng
+    // trước thì "lookup"/"suggest" bị coi là id kiện và endpoint trả blocked,
+    // ứng viên gợi ý cho FE không bao giờ chạy.
+    expect(surface.indexOf('GET /packages/lookup'))
+      .toBeLessThan(surface.indexOf('GET /packages/:id'));
+    expect(surface.indexOf('GET /packages/suggest'))
+      .toBeLessThan(surface.indexOf('GET /packages/:id'));
+    expect(surface.indexOf('GET /packages/:id'))
+      .toBeLessThan(surface.indexOf('GET /packages/:id/trace'));
   });
 
   it('keeps the document serial routes ahead of the serial master routes', () => {

@@ -7,7 +7,7 @@ import type { DocumentContext } from './documentContext.js';
 
 /** Phân bổ / đăng ký lô (cuộn, mã lô) cho từng dòng phiếu. */
 export function documentsLotsRoutes(d: DocumentContext) {
-  const { db, canWriteDocument, parseSerials, productTrackings, touchProcessing } = d;
+  const { db, canWriteDocument, parseSerials, productTrackings, touchProcessing, lotModeOf } = d;
   const router = Router();
   router.post('/lots/allocate', validate(z.object({
     documentId: z.string().trim().min(1).max(191),
@@ -29,6 +29,12 @@ export function documentsLotsRoutes(d: DocumentContext) {
       if (!line) return res.status(404).json({ error: 'Document line not found' });
       if ((await productTrackings([line.productId])).get(line.productId) !== 'LOT') {
         return res.status(400).json({ error: 'Sản phẩm không quản lý theo Lô/Cuộn' });
+      }
+      if (line.lotIssueMode === 'LOOSE' || (await lotModeOf(line.productId, allocationWarehouseId)) === 'LOOSE') {
+        return res.status(409).json({
+          error: 'Mã hàng đã được xác nhận xuất lẻ; không thể phân bổ lô. Hãy đặt lại xử lý nếu muốn xuất theo lô.',
+          code: 'LOT_MODE_BROKEN',
+        });
       }
 
       await beginStockTransaction(db, [allocationWarehouseId]);
@@ -77,7 +83,7 @@ export function documentsLotsRoutes(d: DocumentContext) {
           );
         }
         await db.run(
-          `UPDATE stock_document_lines SET serialLot = ?, processingStatus = ? WHERE id = ?`,
+          `UPDATE stock_document_lines SET serialLot = ?, processingStatus = ?, lotIssueMode = 'LOT' WHERE id = ?`,
           [lotCode, nextTotal >= Number(line.quantity) ? 'COMPLETED' : 'PARTIAL', documentLineId]
         );
         await db.run('UPDATE stock_documents SET status = ?, updatedAt = ? WHERE id = ? AND status = \'DRAFT\'', ['PROCESSING', now, documentId]);
@@ -121,6 +127,8 @@ export function documentsLotsRoutes(d: DocumentContext) {
         return res.status(400).json({ error: 'Sản phẩm không quản lý theo Lô/Cuộn' });
       }
       const qty = Number(quantity);
+      // Kho đang xuất lẻ: lô nhập chỉ lưu vết (RECORDED), không chọn để xuất.
+      const receiptLoose = (await lotModeOf(line.productId, doc.warehouseId)) === 'LOOSE';
       await beginStockTransaction(db, [doc.warehouseId]);
       transactionOpen = true;
       try {
@@ -144,15 +152,17 @@ export function documentsLotsRoutes(d: DocumentContext) {
         const lotId = randomUUID();
         await db.run(
           `INSERT INTO stock_lots (id, productId, lotCode, coilCode, warehouseId, locationId, initialQty, remainingQty, unit, manufacturedAt, supplier, receiptDocumentId, receiptLineId, status, createdBy, createdAt, updatedAt)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [lotId, line.productId, code, coilCode?.trim() || null, doc.warehouseId, line.locationId || null,
-            qty, qty, unit?.trim() || null, manufacturedAt?.trim() || null, supplier?.trim() || doc.partnerName || null,
-            documentId, documentLineId, user.id, now, now]
+            qty, receiptLoose ? 0 : qty, unit?.trim() || null, manufacturedAt?.trim() || null,
+            supplier?.trim() || doc.partnerName || null, documentId, documentLineId,
+            receiptLoose ? 'RECORDED' : 'ACTIVE', user.id, now, now]
         );
         await db.run(
           `INSERT INTO stock_lot_movements (id, lotId, productId, warehouseId, quantity, moveType, referenceType, referenceId, documentLineId, createdBy, createdAt)
-           VALUES (?, ?, ?, ?, ?, 'RECEIPT', 'RECEIPT', ?, ?, ?, ?)`,
-          [randomUUID(), lotId, line.productId, doc.warehouseId, qty, documentId, documentLineId, user.id, now]
+           VALUES (?, ?, ?, ?, ?, ?, 'RECEIPT', ?, ?, ?, ?)`,
+          [randomUUID(), lotId, line.productId, doc.warehouseId, qty,
+            receiptLoose ? 'RECEIPT_RECORDED' : 'RECEIPT', documentId, documentLineId, user.id, now]
         );
         // Giữ text serialLot đồng bộ để luồng complete-time tương thích.
         const fresh = await db.get('SELECT serialLot FROM stock_document_lines WHERE id = ? FOR UPDATE', [documentLineId]);
@@ -172,7 +182,7 @@ export function documentsLotsRoutes(d: DocumentContext) {
         );
         await touchProcessing(documentId);
         await db.run('COMMIT'); transactionOpen = false;
-        res.status(201).json({ lotId, lotCode: code, covered: total, required: Number(line.quantity) });
+        res.status(201).json({ lotId, lotCode: code, covered: total, required: Number(line.quantity), recorded: receiptLoose });
       } catch (e) {
         await db.run('ROLLBACK'); transactionOpen = false;
         throw e;

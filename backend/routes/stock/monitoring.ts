@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
 import { beginStockTransaction } from '../../utils/stockTransaction.js';
 import { listStockAlerts } from '../../services/stockAlerts.js';
+import { fetchPackageDrift } from '../../services/packageService.js';
 import type { StockContext } from './context.js';
 
 export function monitoringRoutes(ctx: StockContext) {
@@ -64,7 +65,7 @@ export function monitoringRoutes(ctx: StockContext) {
       const { warehouseId, productId } = req.query as Record<string, string | undefined>;
       if (!isDirector(user)) {
         if (warehouseId && !scope.includes(warehouseId)) return res.status(403).json({ error: 'Warehouse outside your scope' });
-        if (!warehouseId && scope.length === 0) return res.json({ rows: [], total: 0 });
+        if (!warehouseId && scope.length === 0) return res.json({ rows: [], total: 0, packageDrift: [] });
       }
       const filters: string[] = [];
       const params: any[] = [];
@@ -98,7 +99,14 @@ export function monitoringRoutes(ctx: StockContext) {
         HAVING ABS(difference) > 0.000001
         ORDER BY ABS(difference) DESC`;
       const rows = await db.all(query, [...moveParams, ...params]);
-      res.json({ rows, total: rows.length });
+      // AC9: Kiện là tập con của onHand. Đối soát riêng, không trộn vào rows vì
+      // rows so ledger↔balance, còn drift so kiện↔balance.
+      const packageDrift = await fetchPackageDrift(db, {
+        warehouseId: warehouseId?.trim() || null,
+        warehouseIds: isDirector(user) ? null : scope,
+        productId: productId?.trim() || null,
+      });
+      res.json({ rows, total: rows.length, packageDrift });
     } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to reconcile stock ledger' }); }
   });
 

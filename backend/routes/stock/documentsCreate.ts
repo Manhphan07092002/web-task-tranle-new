@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { validate } from '../../middleware/validate.js';
-import { ReceiptSchema, TransferSchema } from './documentSchemas.js';
+import { ReceiptSchema, TransferSchema, documentErrorBody } from './documentSchemas.js';
 import type { DocumentContext } from './documentContext.js';
 
 /** Tạo phiếu nháp (PNK/PXK/DCK/PTH). Mọi validate ghi sổ nằm ở bước complete. */
@@ -14,7 +14,7 @@ export function documentsCreateRoutes(d: DocumentContext) {
       const access = await requireWarehouse(user, req.body.warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       res.status(201).json(await createDocument('RECEIPT', await nextDocCode('PNK'), { warehouseId: req.body.warehouseId }, req.body, user));
-    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to create receipt' }); }
+    } catch (e: any) { res.status(e.status || 500).json(documentErrorBody(e, 'Failed to create receipt')); }
   });
 
   router.post('/issues', validate(ReceiptSchema), async (req, res) => {
@@ -24,7 +24,7 @@ export function documentsCreateRoutes(d: DocumentContext) {
       const access = await requireWarehouse(user, req.body.warehouseId);
       if (!access.ok) return res.status(403).json({ error: 'Warehouse outside your scope' });
       res.status(201).json(await createDocument('ISSUE', await nextDocCode('PXK'), { warehouseId: req.body.warehouseId }, req.body, user));
-    } catch (e: any) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Failed to create issue' }); }
+    } catch (e: any) { res.status(e.status || 500).json(documentErrorBody(e, 'Failed to create issue')); }
   });
 
   router.post('/transfers', validate(TransferSchema), async (req, res) => {

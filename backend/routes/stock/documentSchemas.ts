@@ -20,11 +20,33 @@ export const LineSchema = z.object({
   serialLot: z.string().max(191).nullable().optional(),
   costObjectId: z.string().max(191).nullable().optional(),
   reservationIds: z.array(z.string().trim().min(1).max(191)).max(100).optional(),
+  /** Dòng kiện nguồn — chỉ phiếu xuất dùng (§4.2); `packageId` được ghi theo DB
+   * chứ không theo giá trị client, vì nó suy ra từ packageLineId. */
+  packageLineId: z.string().trim().max(191).nullable().optional(),
+  packageId: z.string().trim().max(191).nullable().optional(),
 });
+/** Dòng hàng bên trong một kiện (§4.1). Số lượng kiện là phân hoạch của dòng phiếu. */
+export const PackageLineSchema = z.object({
+  productId: z.string().trim().min(1).max(191),
+  quantity: z.number().finite().positive().max(1_000_000_000),
+  serialNumber: z.string().trim().max(191).nullable().optional(),
+  lotCode: z.string().trim().max(191).nullable().optional(),
+  expiryDate: z.string().trim().max(40).nullable().optional(),
+  unitCost: z.number().finite().min(0).max(1_000_000_000_000).nullable().optional(),
+});
+export const PackageInputSchema = z.object({
+  packageCode: z.string().trim().max(50).nullable().optional(),
+  packageTypeId: z.string().trim().max(191).nullable().optional(),
+  locationId: z.string().trim().max(191).nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+  lines: z.array(PackageLineSchema).min(1).max(500),
+});
+
 export const ReceiptSchema = z.object({
   code: z.string().trim().max(100).optional(),
   warehouseId: z.string().trim().min(1).max(191),
   lines: z.array(LineSchema).min(1).max(500),
+  packages: z.array(PackageInputSchema).max(500).optional(),
   receiptSubType: z.string().max(64).optional(),
   partnerCode: z.string().max(100).nullable().optional(),
   partnerName: z.string().max(255).nullable().optional(),
@@ -87,4 +109,16 @@ export const SmartScanSchema = z.object({
   documentId: z.string().trim().min(1).max(191),
   serial: z.string().trim().min(1).max(191),
 });
+
+/**
+ * Body lỗi cho luồng chứng từ. Giữ `code`/`details` có cấu trúc của PackageError
+ * để FE định vị đúng kiện/dòng hàng lệch số lượng; lỗi cũ chỉ có message thì
+ * response không đổi so với trước khi có kiện.
+ */
+export function documentErrorBody(error: any, fallback: string): Record<string, unknown> {
+  const body: Record<string, unknown> = { error: error?.status ? error.message : fallback };
+  if (error?.code) body.code = String(error.code);
+  if (error?.details !== undefined) body.details = error.details;
+  return body;
+}
 
